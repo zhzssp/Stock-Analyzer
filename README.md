@@ -70,23 +70,31 @@ Stock-Analyzer/
 
 这个门禁不是多余的——首轮用官方公开演示 licence 实测时，`000001`、`600038`、`002230` 返回了**完全相同**的价格与市值，历史 K 线也恒为同一份 50 条平安银行数据且无视 `st`/`et` 参数。没有这道门禁，就会得出「API 只能回溯 1 年、17年后底不可行」的错误结论。
 
-## 本机运行（S1/S2）
+## 本机运行
+
+新机器（没有 Python 3.11+ / 没有 `.venv`）先一键配置：
+
+```bat
+.\scripts\setup.cmd
+```
+
+会查找本机 Python 3.11+；找不到则用 winget 安装 3.12，再建虚拟环境、装依赖、复制 `.env`。装完 Python 后若仍提示找不到，关掉终端再跑一次 `setup.cmd`。
+
+然后启动：
 
 ```bat
 .\scripts\run-server.cmd
 ```
 
-若坚持用 PowerShell 脚本，当前机器默认禁止未签名脚本，可改为：
+没有 `.venv` 时，启动脚本会先跑 setup。若坚持用 PowerShell 且执行策略较严：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run-server.ps1
 ```
 
-浏览器打开 http://127.0.0.1:8765 ，默认账号 `hanish` / `change-me`。
+浏览器打开 http://127.0.0.1:8765 ，默认账号 `hanish` / `change-me`。离线模式即可进工作台，不必先填 licence。
 
-首次会按 `.env.example` 生成 `.env`。把 `MAIRUI_OFFLINE` 改为 `0` 并填写 `MAIRUI_LICENCE` 后，查询走正式接口；演示 licence 仍会被门禁拒绝写入缓存。
-
-问答默认走 **DeepSeek**：在 `.env` 填 `LLM_API_KEY`，`LLM_BASE_URL=https://api.deepseek.com/v1`，`LLM_MODEL=deepseek-chat`。不填 key 时仍用确定性 Tool 编排，不编数字。
+可选：`.env` 里 `MAIRUI_OFFLINE=0` 并填写 `MAIRUI_LICENCE` 走正式行情；`LLM_API_KEY` 走 DeepSeek。演示 licence 仍会被门禁拒绝写入缓存。不填 key 时问答用确定性 Tool 编排，不编数字。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
