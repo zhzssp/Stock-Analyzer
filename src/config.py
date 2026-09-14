@@ -22,9 +22,12 @@ class Settings(BaseSettings):
     mairui_base: str = "https://api.mairuiapi.com"
     demo_licence: str = "LICENCE-66D8-9F96-0C7F0FBCD073"
     data_dir: Path = ROOT / "data"
+    llm_provider: str = "deepseek"
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.openai.com/v1"
-    llm_model: str = "gpt-4o-mini"
+    llm_base_url: str = "https://api.deepseek.com/v1"
+    llm_model: str = "deepseek-chat"
+    llm_timeout: float = 45.0
+    alert_webhook: str = ""
     query_sync_limit: int = 40
 
     @property

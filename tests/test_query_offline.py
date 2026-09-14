@@ -14,6 +14,12 @@ def test_offline_query_has_figure1_fields():
     assert rows[0]["price"] == 26.86
     keys = {s.key for s in registry.all()}
     assert keys.issubset(rows[0].keys())
+    assert rows[0]["low1y"] == 24.6
+    assert rows[0]["low_long"] == 24.6
+    assert rows[0]["high"] == 36.9
+    assert rows[0]["target"] == 36.9
+    assert rows[0]["off_low"] == 9.19
+    assert rows[0]["pb"] == 1.25
 
 
 def test_code_normalizer_keeps_suffix():

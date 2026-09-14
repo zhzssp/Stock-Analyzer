@@ -168,7 +168,7 @@ class MarketClient:
             return fixtures.QUOTE.get(inst.code6, {"source": "offline"})
         data = self._get(f"/hsrl/ssjy/{inst.code6}")
         row = data[0] if isinstance(data, list) else data
-        return {"p": row.get("p"), "pc": row.get("pc"), "pe": row.get("pe"), "source": "live"}
+        return {"p": row.get("p"), "pc": row.get("pc"), "pe": row.get("pe"), "sjl": row.get("sjl"), "source": "live"}
 
     def profile(self, inst: Instrument) -> dict:
         if self.offline:
@@ -246,6 +246,167 @@ class MarketClient:
             except MarketError:
                 pass
         return out
+
+
+    def quotes_many(self, insts: list[Instrument]) -> dict[str, dict]:
+        if self.offline:
+            return {i.code6: self.quote(i) for i in insts}
+        out: dict[str, dict] = {}
+        batch: list[Instrument] = []
+        for inst in insts:
+            batch.append(inst)
+            if len(batch) == 20:
+                out.update(self._quotes_batch(batch))
+                batch = []
+        if batch:
+            out.update(self._quotes_batch(batch))
+        return out
+
+    def _quotes_batch(self, insts: list[Instrument]) -> dict[str, dict]:
+        codes = ",".join(i.code6 for i in insts)
+        try:
+            data = self._get(f"/hsrl/ssjy_more/{codes}")
+            rows = data if isinstance(data, list) else [data]
+            mapped = {}
+            by_code = {str(r.get("dm") or r.get("code") or "").split(".")[0]: r for r in rows if isinstance(r, dict)}
+            for inst in insts:
+                row = by_code.get(inst.code6)
+                if row:
+                    mapped[inst.code6] = {
+                        "p": row.get("p"),
+                        "pc": row.get("pc"),
+                        "pe": row.get("pe"),
+                        "sjl": row.get("sjl"),
+                        "source": "live",
+                    }
+                else:
+                    mapped[inst.code6] = self.quote(inst)
+            return mapped
+        except MarketError:
+            return {i.code6: self.quote(i) for i in insts}
+
+    def history(
+        self,
+        inst: Instrument,
+        adjust: str = "n",
+        start: str | None = None,
+        end: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        if self.offline:
+            out = list(fixtures.BARS.get(inst.code6) or [])
+        elif inst.market == "bj":
+            out = []
+        else:
+            try:
+                data = self._get(f"/hsstock/history/{inst.code_full}/d/{adjust}")
+            except MarketError:
+                data = []
+            rows = data if isinstance(data, list) else []
+            out = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                out.append(
+                    {
+                        "d": row.get("t") or row.get("d") or row.get("date"),
+                        "o": row.get("o"),
+                        "h": row.get("h"),
+                        "l": row.get("l"),
+                        "c": row.get("c"),
+                        "v": row.get("v"),
+                    }
+                )
+        return _filter_bars(out, start=start, end=end, limit=limit)
+
+    def capital_flow(self, inst: Instrument) -> list[dict]:
+        if self.offline:
+            return list(fixtures.FLOW.get(inst.code6) or [])
+        try:
+            data = self._get(f"/hsstock/history/transaction/{inst.code_full}")
+        except MarketError:
+            return []
+        rows = data if isinstance(data, list) else []
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            net = row.get("zljme") or row.get("net_in") or row.get("jlje")
+            out.append({"d": row.get("t") or row.get("d"), "net_in": net, "raw": {k: row.get(k) for k in list(row)[:8]}})
+        return out
+
+    def events(self, inst: Instrument) -> dict:
+        if self.offline:
+            return fixtures.EVENTS.get(inst.code6, {"dividends": [], "seo": [], "unlock": []})
+        out = {"dividends": [], "seo": [], "unlock": []}
+        try:
+            data = self._get(f"/hscp/jnfh/{inst.code6}")
+            rows = data if isinstance(data, list) else [data]
+            for row in rows[:8]:
+                if isinstance(row, dict):
+                    out["dividends"].append(row)
+        except MarketError:
+            pass
+        try:
+            data = self._get(f"/hscp/jnzf/{inst.code6}")
+            rows = data if isinstance(data, list) else [data]
+            for row in rows[:8]:
+                if isinstance(row, dict):
+                    out["seo"].append(row)
+        except MarketError:
+            pass
+        try:
+            data = self._get(f"/hscp/jjxs/{inst.code6}")
+            rows = data if isinstance(data, list) else [data]
+            for row in rows[:8]:
+                if isinstance(row, dict):
+                    out["unlock"].append(row)
+        except MarketError:
+            pass
+        return out
+
+    def list_index(self, code: str) -> list[Instrument]:
+        from src.market.indices import CANDIDATE_PATHS, index_status
+
+        st = index_status(code)
+        if st["enabled"] and st["codes"]:
+            return [normalize_instrument(c) for c in st["codes"]]
+        if self.offline or self.sample_only:
+            return []
+        cached = self._cache_get(f"index_{code}")
+        if cached:
+            return [normalize_instrument(x.get("dm", ""), x.get("mc", ""), x.get("jys", "")) for x in cached]
+        for tmpl in CANDIDATE_PATHS:
+            try:
+                data = self._get(tmpl.format(code=code))
+            except MarketError:
+                continue
+            if isinstance(data, list) and len(data) >= 10:
+                if not self.sample_only:
+                    self._cache_put(f"index_{code}", data)
+                return [normalize_instrument(x.get("dm") or x.get("code") or "", x.get("mc") or x.get("name") or "", x.get("jys", "")) for x in data if isinstance(x, dict)]
+        return []
+
+
+def _bar_day(row: dict) -> str:
+    return str(row.get("d") or row.get("t") or row.get("date") or "").replace("-", "")[:8]
+
+
+def _filter_bars(rows: list[dict], start: str | None = None, end: str | None = None, limit: int | None = None) -> list[dict]:
+    out = list(rows)
+
+    def norm(value: str | None) -> str:
+        return str(value or "").replace("-", "")[:8]
+
+    if start:
+        ns = norm(start)
+        out = [r for r in out if _bar_day(r) >= ns]
+    if end:
+        ne = norm(end)
+        out = [r for r in out if _bar_day(r) <= ne]
+    if limit:
+        out = out[-max(1, int(limit)) :]
+    return out
 
 
 def resolve_instruments(codes: list[str], client: MarketClient) -> list[Instrument]:

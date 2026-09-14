@@ -31,7 +31,7 @@ def test_analyst_quote_holders_and_finance():
         assert any("quote" in (c.get("cite") or "") or c.get("source") == "quote" for c in body["cites"])
 
 
-def test_analyst_does_not_invent_bottom():
+def test_analyst_reports_bottom_from_bars():
     with TestClient(app) as client:
         headers = _auth(client)
         chat = client.post(
@@ -41,9 +41,9 @@ def test_analyst_does_not_invent_bottom():
         )
         body = chat.json()
         assert chat.status_code == 200
-        assert "9.2" not in body["answer"]
-        assert "24.6" not in body["answer"]
-        assert "不能编造" in body["answer"] or "日线" in body["answer"]
+        assert "24.6" in body["answer"]
+        assert "36.9" in body["answer"]
+        assert "bottom" in {t["id"] for t in body["tools"]}
 
 
 def test_analyst_cites_exported_excel():

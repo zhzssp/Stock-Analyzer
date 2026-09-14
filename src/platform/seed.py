@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 
 from src.config import settings
 from src.market.fixtures import WATCH_SEED
+from src.agents.watcher import ensure_jobs
 from src.models import User, WatchItem
 from src.platform.security import hash_password
 
@@ -27,3 +28,4 @@ def bootstrap(db: Session) -> None:
                 )
             )
     db.commit()
+    ensure_jobs(db, user)

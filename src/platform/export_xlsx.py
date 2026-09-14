@@ -31,6 +31,27 @@ def write_query_xlsx(rows: list[dict], field_keys: list[str], pool_name: str) ->
     return path
 
 
+def write_table_xlsx(headers: list, rows: list[dict], pool_name: str = "pasted") -> Path:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    filename = f"{stamp}_{_safe_token(pool_name)}.xlsx"
+    path = settings.artifact_dir / filename
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "query"
+    labels = [str(h) for h in (headers or [])]
+    if not labels and rows:
+        labels = [str(k) for k in rows[0].keys()]
+    ws.append(labels)
+    for row in rows:
+        ws.append([row.get(h) for h in labels])
+    meta = wb.create_sheet("meta")
+    meta.append(["exported_at", datetime.now().isoformat(timespec="seconds")])
+    meta.append(["pool", pool_name])
+    meta.append(["source", "pasted"])
+    wb.save(path)
+    return path
+
+
 def write_agent_xlsx(question: str, answer: str, cites: list, tools: list) -> Path:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = settings.artifact_dir / f"{stamp}_agent.xlsx"

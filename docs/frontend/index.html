@@ -137,6 +137,7 @@
     }
     .watch .rm:hover { color: var(--down); }
     .pick-card { width: 460px; max-width: calc(100vw - 32px); }
+    .col-card { width: 520px; }
     .pick-list { max-height: 280px; overflow: auto; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
     .pick-list label {
       display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px;
@@ -146,6 +147,7 @@
     .pick-list .sub { color: var(--muted); font-size: 11px; }
     .pick-actions { display: flex; gap: 8px; }
     .pick-empty { color: var(--muted); padding: 16px; text-align: center; }
+    .col-group { font-size: 11px; color: var(--muted); padding: 8px 10px 2px; }
     .split { display: grid; grid-template-columns: 1.3fr 0.9fr; flex: 1; min-height: 0; }
     .chat, .panel { padding: 16px; overflow: auto; }
     .panel { border-left: 1px solid var(--line); background: #faf9f6; }
@@ -154,7 +156,10 @@
     .bot { background: var(--paper); border: 1px solid var(--line); }
     .cites { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
     .cite { font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted); }
-    .composer { display: flex; gap: 8px; margin-top: 12px; }
+    .composer { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+    .composer-row { display: flex; gap: 8px; align-items: center; }
+    .composer textarea { min-height: 64px; resize: vertical; }
+    .attach-hint { color: var(--muted); font-size: 12px; flex: 1; }
     .alert {
       background: var(--paper);
       border: 1px solid var(--line);
@@ -190,7 +195,7 @@
 <body>
   <div class="app">
     <header class="topbar">
-      <div class="brand">Stock-Analyzer <span>本机工作台 · S5</span></div>
+      <div class="brand">Stock-Analyzer <span>本机工作台</span></div>
       <div class="user" id="userLabel">未登录</div>
     </header>
     <div class="shell">
@@ -226,7 +231,7 @@
             <button class="btn primary" id="queryBtn" type="button">查询</button>
             <button class="btn" id="refreshBtn" type="button">刷新</button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
-            <button class="btn ghost" type="button">列设置</button>
+            <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <span class="hint" id="queryHint">尚未查询</span>
           </div>
           <div class="table-wrap">
@@ -242,42 +247,46 @@
             <div class="chat" style="display:flex;flex-direction:column;">
               <div id="chatLog" style="flex:1;overflow:auto;">
                 <div class="bubble bot">
-                  可以问现价、股东、财务，或「最近导出的表里有什么」。没有日线深度时不会编造离底数字。未配置模型 key 时走确定性 Tool 编排。
+                  可以问现价、股东、财务、离底；也可粘贴 Excel。多轮对话会记住上下文。问「看市场」走 researcher。未配置 DeepSeek key 时走确定性编排。
                   <div class="cites">
+                    <span class="cite">excel_parse</span>
+                    <span class="cite">warehouse_get</span>
+                    <span class="cite">market_fetch</span>
                     <span class="cite">quote</span>
-                    <span class="cite">holders_flow</span>
-                    <span class="cite">finance_snapshot</span>
-                    <span class="cite">excel_read</span>
                   </div>
                 </div>
               </div>
               <div class="composer">
-                <input id="chatInput" placeholder="例如：中直股份现价和十大股东？" />
-                <button class="btn primary" id="chatSend" type="button">发送</button>
-                <button class="btn" id="chatExport" type="button">导出本轮</button>
+                <textarea id="chatInput" placeholder="例如：中直股份现价和十大股东？也可直接粘贴 Excel 单元格。Ctrl+Enter 发送。"></textarea>
+                <div class="composer-row">
+                  <input id="chatFile" type="file" accept=".xlsx,.xlsm,.csv,.tsv,.txt,text/csv" hidden />
+                  <button class="btn" id="chatAttach" type="button">上传表格</button>
+                  <button class="btn" id="chatNew" type="button">新对话</button>
+                  <button class="btn" id="chatResearch" type="button">看市场</button>
+                  <span class="attach-hint" id="chatAttachHint">未附文件。从 Excel 复制后粘贴到上方即可。</span>
+                  <button class="btn primary" id="chatSend" type="button">发送</button>
+                  <button class="btn" id="chatExport" type="button">导出本轮</button>
+                </div>
               </div>
             </div>
             <aside class="panel">
               <div class="side-title" style="margin-bottom:10px;">本轮引用</div>
               <div id="chatCites" class="alert"><span class="meta">尚无。问答后这里列出 Tool 来源。</span></div>
               <div class="side-title" style="margin:14px 0 10px;">Tool 轨迹</div>
-              <div id="chatTools" class="meta">监控规则是 S5，当前只跑 analyst。</div>
+              <div id="chatTools" class="meta">问答走 analyst；盯盘在监控中心。</div>
             </aside>
           </div>
         </div>
 
         <div id="monitor" class="view">
           <div class="toolbar">
-            <button class="btn primary" type="button">立刻跑一轮</button>
-            <span class="hint">日程：盘中每 5 分钟行情 · 交易日 20:20 日终</span>
+            <button class="btn primary" id="monitorRun" type="button">立刻跑一轮</button>
+            <span class="hint">交易日 09:00–15:00 每 5 分钟扫接近底部；20:20 跑全部已开启规则。期货/资讯仍未接数据源。</span>
           </div>
           <div class="panel" style="border:0; flex:1;">
-            <div class="job"><span>股东变动</span><span>已开启</span></div>
-            <div class="job"><span>资金异常</span><span>已开启</span></div>
-            <div class="job"><span>分红 / 增发 / 解禁</span><span>已开启</span></div>
-            <div class="job"><span>期货联动</span><span class="off">未启用 · 等待期货 Tool</span></div>
-            <div class="job"><span>资讯冲击</span><span class="off">未启用 · 等待检索 Tool</span></div>
-            <div class="job"><span>产业政策 / 基金调仓</span><span class="off">未启用 · 等待资讯 Tool</span></div>
+            <div id="monitorJobs"></div>
+            <div class="side-title" style="margin:16px 0 8px;">提醒</div>
+            <div id="monitorAlerts" class="meta">尚未跑过</div>
           </div>
         </div>
       </section>
@@ -303,6 +312,17 @@
       </div>
     </div>
   </div>
+  <div class="login-mask" id="colMask" style="display:none;">
+    <div class="login-card pick-card col-card">
+      <h2>列设置</h2>
+      <p>勾选后写入本机偏好，查询和导出都按这个清单。</p>
+      <div class="pick-list" id="colList"></div>
+      <div class="pick-actions">
+        <button class="btn primary" id="saveCols" type="button">保存并查询</button>
+        <button class="btn ghost" id="closeCols" type="button">取消</button>
+      </div>
+    </div>
+  </div>
   <div class="login-mask" id="loginMask">
     <form class="login-card" id="loginForm">
       <h2>登录本机工作台</h2>
@@ -324,6 +344,7 @@
         views.forEach((v) => v.classList.remove("on"));
         tab.classList.add("on");
         document.getElementById(tab.dataset.view).classList.add("on");
+        if (tab.dataset.view === "monitor") loadMonitor().catch((e) => toast(e.message));
       });
     });
 
@@ -335,6 +356,9 @@
       quoteItems: [],
       pickMarket: "all",
       lastChat: null,
+      attachFile: null,
+      sessionId: Number(sessionStorage.getItem("sa_session") || "") || null,
+      nextAgent: "auto",
       side: "watch",
       pool: "watch",
       pools: [],
@@ -364,8 +388,8 @@
 
     function fmt(key, value) {
       if (value === null || value === undefined || value === "") return "—";
-      if (key === "pct" && typeof value === "number") {
-        const sign = value > 0 ? "+" : "";
+      if ((key === "pct" || key === "off_low") && typeof value === "number") {
+        const sign = key === "pct" && value > 0 ? "+" : "";
         return sign + value.toFixed(2) + "%";
       }
       return value;
@@ -515,11 +539,106 @@
       document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}`;
     }
 
+    async function downloadArtifact(id, filename) {
+      if (!id) throw new Error("导出成功但没有档案编号");
+      const headers = {};
+      if (state.token) headers.Authorization = "Bearer " + state.token;
+      const res = await fetch("/api/artifacts/" + id + "/download", { headers });
+      if (res.status === 401) {
+        state.token = "";
+        sessionStorage.removeItem("sa_token");
+        document.getElementById("loginMask").style.display = "flex";
+        throw new Error("未登录");
+      }
+      if (!res.ok) throw new Error("本机下载失败");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || "export.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
     async function exportXlsx() {
       const pool = document.getElementById("sideQuote").classList.contains("on") ? state.pool : "watch";
       let data = await api("/query/export", { method: "POST", body: JSON.stringify({ pool }) });
       if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
-      toast("已导出 " + data.filename + "，并写入档案库");
+      await downloadArtifact(data.id, data.filename);
+      toast("已写入档案库，并下载 " + data.filename);
+    }
+
+    const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", bottom: "底/顶" };
+
+    async function openCols() {
+      const data = await api("/query/prefs");
+      const chosen = new Set(data.fields || []);
+      const groups = {};
+      (data.all || []).forEach((f) => {
+        (groups[f.group] || (groups[f.group] = [])).push(f);
+      });
+      document.getElementById("colList").innerHTML = Object.keys(groups).map((g) =>
+        `<div class="col-group">${GROUP_LABEL[g] || g}</div>` +
+        groups[g].map((f) =>
+          `<label><input type="checkbox" value="${f.key}" ${chosen.has(f.key) ? "checked" : ""} /><span>${f.label}<div class="sub">${f.key}</div></span></label>`
+        ).join("")
+      ).join("");
+      document.getElementById("colMask").style.display = "flex";
+    }
+
+    function closeCols() {
+      document.getElementById("colMask").style.display = "none";
+    }
+
+    async function saveCols() {
+      const fields = [...document.querySelectorAll("#colList input[type=checkbox]:checked")].map((el) => el.value);
+      if (!fields.length) return toast("至少保留一列");
+      await api("/query/prefs", { method: "PUT", body: JSON.stringify({ fields }) });
+      closeCols();
+      await runQuery();
+    }
+
+    function renderJobs(jobs) {
+      const box = document.getElementById("monitorJobs");
+      if (!jobs || !jobs.length) {
+        box.innerHTML = `<div class="meta">还没有监控项</div>`;
+        return;
+      }
+      box.innerHTML = jobs.map((j) => {
+        const status = j.reason
+          ? `<span class="off">${j.reason}</span>`
+          : (j.enabled ? `<span>已开启</span>` : `<span class="off">已关闭</span>`);
+        const canToggle = !j.reason;
+        return `<div class="job">
+          <span>${j.name}</span>
+          ${canToggle ? `<button class="btn sm ghost" type="button" data-job="${j.job_key}" data-on="${j.enabled ? 1 : 0}">${j.enabled ? "已开启" : "已关闭"}</button>` : status}
+        </div>`;
+      }).join("");
+    }
+
+    function renderAlerts(items) {
+      const box = document.getElementById("monitorAlerts");
+      if (!items || !items.length) {
+        box.innerHTML = `<div class="meta">还没有提醒。点「立刻跑一轮」会按规则扫自选。</div>`;
+        return;
+      }
+      box.innerHTML = items.map((a) =>
+        `<div class="alert"><b>${a.title}</b><div class="meta">${a.detail || ""} · ${a.created_at || ""}</div></div>`
+      ).join("");
+    }
+
+    async function loadMonitor() {
+      const [jobs, alerts] = await Promise.all([api("/monitor/jobs"), api("/alerts")]);
+      renderJobs(jobs);
+      renderAlerts(alerts);
+    }
+
+    async function runMonitor() {
+      const data = await api("/monitor/run", { method: "POST", body: "{}" });
+      toast(data.count ? `本轮 ${data.count} 条提醒` : "本轮没有新提醒");
+      await loadMonitor();
     }
 
     async function afterLogin(username, token) {
@@ -552,6 +671,23 @@
     document.getElementById("queryBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
     document.getElementById("refreshBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
     document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));
+    document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
+    document.getElementById("closeCols").addEventListener("click", closeCols);
+    document.getElementById("saveCols").addEventListener("click", () => saveCols().catch((e) => toast(e.message)));
+    document.getElementById("monitorRun").addEventListener("click", () => runMonitor().catch((e) => toast(e.message)));
+    document.getElementById("monitorJobs").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-job]");
+      if (!btn) return;
+      try {
+        await api("/monitor/jobs/" + btn.dataset.job + "/toggle", {
+          method: "POST",
+          body: JSON.stringify({ enabled: btn.dataset.on !== "1" }),
+        });
+        await loadMonitor();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
     document.getElementById("watchFilter").addEventListener("input", () => renderWatch(state.watch));
     document.getElementById("quoteFilter").addEventListener("input", () => renderQuoteList(state.quoteItems));
     document.getElementById("sideWatch").addEventListener("click", () => {
@@ -644,19 +780,130 @@
       ).join("");
     }
 
+    function looksLikeTable(text) {
+      const blob = (text || "").trim();
+      if (!blob) return false;
+      if (/<table/i.test(blob)) return true;
+      const lines = blob.split(/\r?\n/).filter((ln) => ln.trim());
+      if (lines.length < 2) return false;
+      return lines.slice(0, 4).some((ln) => ln.includes("\t")) || lines.filter((ln) => /\d{6}/.test(ln)).length >= 2;
+    }
+
+    function setAttachHint() {
+      const el = document.getElementById("chatAttachHint");
+      if (state.attachFile) {
+        el.textContent = "已选 " + state.attachFile.name;
+      } else {
+        el.textContent = "未附文件。从 Excel 复制后粘贴到上方即可。";
+      }
+    }
+
+    function fileToAttachment(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = String(reader.result || "");
+          const comma = result.indexOf(",");
+          resolve({
+            kind: "file",
+            name: file.name,
+            content_base64: comma >= 0 ? result.slice(comma + 1) : result,
+            media_type: file.type || "application/octet-stream",
+          });
+        };
+        reader.onerror = () => reject(new Error("读文件失败"));
+        reader.readAsDataURL(file);
+      });
+    }
+
     async function sendChat() {
       const input = document.getElementById("chatInput");
-      const question = (input.value || "").trim();
-      if (!question) return;
+      const raw = input.value || "";
+      const question = raw.trim();
+      const attachments = [];
+      if (state.attachFile) attachments.push(state.attachFile);
+      else if (looksLikeTable(raw)) {
+        attachments.push({ kind: "text", name: "pasted.tsv", text: raw });
+      }
+      if (!question && !attachments.length) return;
       input.value = "";
-      appendBubble("me", question.replace(/</g, "&lt;"));
+      state.attachFile = null;
+      setAttachHint();
+      const preview = (question || "（已附表格）").replace(/</g, "&lt;").replace(/\n/g, "<br>");
+      appendBubble("me", preview);
       const bot = appendBubble("bot", "正在调 Tool…");
       try {
-        const data = await api("/agent/chat", { method: "POST", body: JSON.stringify({ question }) });
-        const cites = (data.cites || []).map((c) => `<span class="cite">${c.cite || c.source}</span>`).join("");
-        bot.innerHTML = (data.answer || "没有回答").replace(/\n/g, "<br>") + (cites ? `<div class="cites">${cites}</div>` : "");
-        state.lastChat = { question, answer: data.answer, cites: data.cites || [], tools: data.tools || [] };
-        renderAgentMeta(data.cites, data.tools);
+        const headers = { "Content-Type": "application/json" };
+        if (state.token) headers.Authorization = "Bearer " + state.token;
+        const res = await fetch("/api/agent/chat", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            question,
+            stream: true,
+            attachments,
+            session_id: state.sessionId || undefined,
+            agent: state.nextAgent || "auto",
+          }),
+        });
+        if (res.status === 401) {
+          state.token = "";
+          sessionStorage.removeItem("sa_token");
+          document.getElementById("loginMask").style.display = "flex";
+          throw new Error("未登录");
+        }
+        const ctype = res.headers.get("content-type") || "";
+        let answer = "";
+        let cites = [];
+        let tools = [];
+        if (ctype.includes("text/event-stream") && res.body) {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          bot.innerHTML = "";
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            buf += decoder.decode(chunk.value, { stream: true });
+            const parts = buf.split("\n\n");
+            buf = parts.pop();
+            for (const part of parts) {
+              const line = part.split("\n").find((l) => l.startsWith("data: "));
+              if (!line) continue;
+              const ev = JSON.parse(line.slice(6));
+              if (ev.type === "tool") {
+                tools.push(ev);
+                renderAgentMeta(cites, tools);
+              } else if (ev.type === "token") {
+                answer += ev.text || "";
+                bot.innerHTML = answer.replace(/\n/g, "<br>");
+              } else if (ev.type === "done") {
+                answer = ev.answer || answer;
+                cites = ev.cites || cites;
+                tools = ev.tools || tools;
+                if (ev.session_id) {
+                  state.sessionId = ev.session_id;
+                  sessionStorage.setItem("sa_session", String(ev.session_id));
+                }
+              }
+            }
+          }
+        } else {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || "请求失败");
+          answer = data.answer || "";
+          cites = data.cites || [];
+          tools = data.tools || [];
+          if (data.session_id) {
+            state.sessionId = data.session_id;
+            sessionStorage.setItem("sa_session", String(data.session_id));
+          }
+        }
+        const citeHtml = (cites || []).map((c) => `<span class="cite">${c.cite || c.source}</span>`).join("");
+        bot.innerHTML = (answer || "没有回答").replace(/\n/g, "<br>") + (citeHtml ? `<div class="cites">${citeHtml}</div>` : "");
+        state.lastChat = { question, answer, cites, tools };
+        state.nextAgent = "auto";
+        renderAgentMeta(cites, tools);
       } catch (err) {
         bot.textContent = err.message;
       }
@@ -665,13 +912,38 @@
     async function exportChat() {
       if (!state.lastChat) return toast("先问一轮再导出");
       const data = await api("/agent/export", { method: "POST", body: JSON.stringify(state.lastChat) });
-      toast("已导出 " + data.filename);
+      await downloadArtifact(data.id, data.filename);
+      toast("已写入档案库，并下载 " + data.filename);
     }
 
+    document.getElementById("chatNew").addEventListener("click", () => {
+      state.sessionId = null;
+      sessionStorage.removeItem("sa_session");
+      state.nextAgent = "auto";
+      document.getElementById("chatLog").innerHTML = "";
+      appendBubble("bot", "已开新对话。");
+    });
+    document.getElementById("chatResearch").addEventListener("click", () => {
+      state.nextAgent = "researcher";
+      document.getElementById("chatInput").value = "看市场：当前和自选相关的市场在发生什么？";
+      sendChat().catch((e) => toast(e.message));
+    });
     document.getElementById("chatSend").addEventListener("click", () => sendChat().catch((e) => toast(e.message)));
     document.getElementById("chatExport").addEventListener("click", () => exportChat().catch((e) => toast(e.message)));
+    document.getElementById("chatAttach").addEventListener("click", () => document.getElementById("chatFile").click());
+    document.getElementById("chatFile").addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      try {
+        state.attachFile = await fileToAttachment(file);
+        setAttachHint();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
     document.getElementById("chatInput").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         sendChat().catch((err) => toast(err.message));
       }

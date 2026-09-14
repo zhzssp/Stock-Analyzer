@@ -1,0 +1,14 @@
+id: policy_news
+name: 产业政策
+version: 0.1.0
+enabled: false
+reason: 等待资讯 Tool
+kind: web
+description: 检索与自选行业相关的产业政策。数据源未接时保持关闭。
+input_schema:
+  type: object
+  properties:
+    industry:
+      type: string
+    query:
+      type: string

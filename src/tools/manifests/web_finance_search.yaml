@@ -1,0 +1,14 @@
+id: web_finance_search
+name: 资讯检索
+version: 0.1.0
+enabled: false
+reason: 等待检索数据源
+kind: web
+description: 按公司名检索微博/财经快讯。数据源未接时保持关闭。
+input_schema:
+  type: object
+  properties:
+    query:
+      type: string
+    code:
+      type: string

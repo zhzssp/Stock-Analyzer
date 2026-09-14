@@ -2,19 +2,34 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from src.agents.graph import run_analyst
+from src.agents.graph import ANALYST_TOOLS, run_analyst
+from src.agents.llm import llm_status
 from src.agents.planner import llm_available
+from src.agents.researcher import run_researcher, stream_researcher
+from src.agents.runner import RESEARCHER_TOOLS, iter_agent, pick_agent
+from src.agents.sessions import (
+    append_turns,
+    create_session,
+    get_session,
+    history_for_ctx,
+    list_sessions,
+    session_payload,
+)
+from src.platform.bus import bus
+from src.platform.channels import catalog as channel_catalog
+from src.tools.loader import load_manifests
+from src.agents.watcher import ensure_jobs, run_watcher
 from src.api.deps import current_user
 from src.db import get_db
 from src.config import settings
 from src.db import SessionLocal
 from src.market.client import MarketClient, resolve_instruments
 from src.market.normalize import infer_market
-from src.models import Artifact, User, WatchItem
+from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, User, WatchItem
 from src.platform.export_xlsx import write_query_xlsx
 from src.platform.jobs import job_payload, jobs
 from src.platform.pools import catalog, pool_label, resolve_pool
@@ -47,9 +62,20 @@ class QueryIn(BaseModel):
     async_mode: bool = False
 
 
+class ChatAttachment(BaseModel):
+    kind: str = "text"
+    name: str = "pasted"
+    text: str | None = None
+    content_base64: str | None = None
+    media_type: str | None = None
+
+
 class ChatIn(BaseModel):
-    question: str
+    question: str = ""
     stream: bool = False
+    session_id: int | None = None
+    agent: str = "auto"
+    attachments: list[ChatAttachment] = []
 
 
 class AgentExportIn(BaseModel):
@@ -57,6 +83,14 @@ class AgentExportIn(BaseModel):
     answer: str
     cites: list = []
     tools: list = []
+
+
+class PrefsIn(BaseModel):
+    fields: list[str]
+
+
+class JobToggleIn(BaseModel):
+    enabled: bool
 
 
 @router.post("/auth/login")
@@ -78,8 +112,13 @@ def health():
         "market": market.health(),
         "agent": {
             "id": "analyst",
+            "agents": ["analyst", "watcher", "researcher"],
             "llm": llm_available(),
+            "llm_status": llm_status(),
             "tools": [s.id for s in tool_registry.enabled()],
+            "analyst_tools": ANALYST_TOOLS,
+            "researcher_tools": RESEARCHER_TOOLS,
+            "channels": channel_catalog(),
         },
     }
 
@@ -124,6 +163,7 @@ def put_watchlist(body: WatchIn, user: User = Depends(current_user), db: Session
         db.add(item)
         saved.append(_watch_payload(item))
     db.commit()
+    bus.publish("universe.changed", {"user_id": user.id, "count": len(saved)}, "platform")
     return saved
 
 
@@ -147,7 +187,9 @@ def add_watch_items(body: WatchIn, user: User = Depends(current_user), db: Sessi
         existing[inst.code6] = item
         added.append(_watch_payload(item))
     db.commit()
-    return {"added": added, "items": [_watch_payload(i) for i in existing.values()]}
+    items = [_watch_payload(i) for i in existing.values()]
+    bus.publish("universe.changed", {"user_id": user.id, "count": len(items)}, "platform")
+    return {"added": added, "items": items}
 
 
 @router.delete("/watchlist/{code6}")
@@ -158,6 +200,7 @@ def delete_watch_item(code6: str, user: User = Depends(current_user), db: Sessio
     db.delete(item)
     db.commit()
     remain = db.query(WatchItem).filter_by(user_id=user.id).all()
+    bus.publish("universe.changed", {"user_id": user.id, "count": len(remain)}, "platform")
     return {"removed": code6, "items": [_watch_payload(i) for i in remain]}
 
 
@@ -203,8 +246,17 @@ def _field_view(keys: list[str]) -> list[dict]:
     ]
 
 
+def _user_fields(user: User, db: Session) -> list[str]:
+    pref = db.query(FieldPref).filter_by(user_id=user.id).first()
+    if pref and pref.field_keys:
+        keys = [k for k in json.loads(pref.field_keys) if k in {s.key for s in registry.all()}]
+        if keys:
+            return keys
+    return registry.default_keys()
+
+
 def _prepare_query(body: QueryIn, user: User, db: Session):
-    fields = body.fields or registry.default_keys()
+    fields = body.fields or _user_fields(user, db)
     if body.codes:
         insts = resolve_instruments(body.codes, market)
         meta = {"id": "codes", "label": body.pool_name or "筛选一次", "sample": False, "note": ""}
@@ -243,6 +295,7 @@ def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, us
             out["id"] = rec.id
             out["filename"] = rec.filename
             out["path"] = rec.path
+            out["download_url"] = f"/api/artifacts/{rec.id}/download"
         finally:
             db.close()
     return out
@@ -302,33 +355,122 @@ def list_artifacts(user: User = Depends(current_user), db: Session = Depends(get
             "pool_name": i.pool_name,
             "created_at": i.created_at.isoformat() if i.created_at else None,
             "exists": Path(i.path).exists(),
+            "download_url": f"/api/artifacts/{i.id}/download",
         }
         for i in items
     ]
 
 
+@router.get("/artifacts/{art_id}/download")
+def download_artifact(art_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rec = db.query(Artifact).filter_by(id=art_id, user_id=user.id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="没有这份档案")
+    path = Path(rec.path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="档案文件已丢失")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=rec.filename,
+        content_disposition_type="attachment",
+    )
+
+
 @router.get("/agent/tools")
 def agent_tools():
     return [
-        {"id": s.id, "name": s.name, "kind": s.kind, "enabled": s.enabled}
+        {
+            "id": s.id,
+            "name": s.name,
+            "kind": s.kind,
+            "enabled": s.enabled,
+            "reason": s.reason,
+        }
         for s in tool_registry.all()
     ]
+
+
+@router.post("/agent/tools/reload")
+def reload_tools():
+    return {"loaded": load_manifests()}
+
+
+@router.get("/agent/sessions")
+def agent_sessions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return [session_payload(s) for s in list_sessions(db, user)]
+
+
+@router.get("/agent/sessions/{session_id}")
+def agent_session(session_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    row = get_session(db, user, session_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="没有这轮对话")
+    return session_payload(row)
+
+
+@router.get("/agent/bus")
+def agent_bus(topic: str = ""):
+    return bus.recent(topic or None, limit=30)
 
 
 @router.post("/agent/chat")
 def agent_chat(body: ChatIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     question = (body.question or "").strip()
+    attachments = [a.model_dump() for a in body.attachments if a.text or a.content_base64]
+    if not question and not attachments:
+        raise HTTPException(status_code=400, detail="请输入问题，或粘贴 / 上传一张表")
     if not question:
-        raise HTTPException(status_code=400, detail="请输入问题")
-    result = run_analyst(question, _tool_ctx(user, db))
+        question = "请解析我粘贴的表格，并用接口补全这些股票的行情。"
+    agent = pick_agent(question, body.agent)
+    row = get_session(db, user, body.session_id) or create_session(db, user, agent, question)
+    history = history_for_ctx(row)
+    ctx = _tool_ctx(user, db)
+
+    def persist(final: dict) -> dict:
+        store = SessionLocal()
+        try:
+            current = store.get(AgentSession, row.id) or create_session(store, user, agent, question)
+            append_turns(
+                store,
+                current,
+                [
+                    {"role": "user", "content": question},
+                    {
+                        "role": "assistant",
+                        "content": final.get("answer") or "",
+                        "cites": final.get("cites") or [],
+                        "tools": final.get("tools") or [],
+                        "agent": final.get("agent") or agent,
+                    },
+                ],
+                agent=final.get("agent") or agent,
+            )
+            sid = current.id
+        finally:
+            store.close()
+        out = {**final, "session_id": sid}
+        bus.publish("ask.answer", {"session_id": sid, "agent": out["agent"]}, out["agent"])
+        return out
+
     if not body.stream:
-        return result
+        result = run_researcher(question, ctx, attachments, history) if agent == "researcher" else run_analyst(question, ctx, attachments, history)
+        return persist(result)
 
     def events():
-        for tool in result["tools"]:
-            yield f"data: {json.dumps({'type': 'tool', **tool}, ensure_ascii=False)}\n\n"
-        yield f"data: {json.dumps({'type': 'token', 'text': result['answer']}, ensure_ascii=False)}\n\n"
-        yield f"data: {json.dumps({'type': 'done', **result}, ensure_ascii=False)}\n\n"
+        final = {"answer": "", "cites": [], "tools": [], "agent": agent}
+        stream = (
+            stream_researcher(question, ctx, attachments, history)
+            if agent == "researcher"
+            else iter_agent(question, ctx, agent=agent, attachments=attachments, history=history, stream_tokens=True)
+        )
+        for ev in stream:
+            if ev.get("type") == "done":
+                final = ev
+                continue
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        done = persist(final)
+        yield f"data: {json.dumps({'type': 'done', **done}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -346,4 +488,83 @@ def agent_export(body: AgentExportIn, user: User = Depends(current_user), db: Se
     )
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.error or "导出失败")
-    return result.data
+    data = result.data or {}
+    if data.get("id"):
+        data["download_url"] = f"/api/artifacts/{data['id']}/download"
+    return data
+
+
+@router.get("/query/prefs")
+def get_prefs(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return {"fields": _user_fields(user, db), "all": engine.fields()}
+
+
+@router.put("/query/prefs")
+def put_prefs(body: PrefsIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    allowed = {s.key for s in registry.all()}
+    keys = [k for k in body.fields if k in allowed]
+    if not keys:
+        raise HTTPException(status_code=400, detail="至少保留一列")
+    pref = db.query(FieldPref).filter_by(user_id=user.id).first()
+    payload = json.dumps(keys, ensure_ascii=False)
+    if pref:
+        pref.field_keys = payload
+    else:
+        db.add(FieldPref(user_id=user.id, field_keys=payload))
+    db.commit()
+    return {"fields": keys}
+
+
+@router.get("/monitor/jobs")
+def list_jobs(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    jobs_list = ensure_jobs(db, user)
+    return [
+        {
+            "id": j.id,
+            "job_key": j.job_key,
+            "name": j.name,
+            "enabled": bool(j.enabled),
+            "reason": j.reason,
+        }
+        for j in jobs_list
+    ]
+
+
+@router.post("/monitor/jobs/{job_key}/toggle")
+def toggle_job(job_key: str, body: JobToggleIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    ensure_jobs(db, user)
+    job = db.query(MonitorJob).filter_by(user_id=user.id, job_key=job_key).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="没有这个监控项")
+    if job.reason and body.enabled:
+        raise HTTPException(status_code=409, detail=job.reason)
+    job.enabled = 1 if body.enabled else 0
+    db.commit()
+    return {"job_key": job.job_key, "enabled": bool(job.enabled)}
+
+
+@router.post("/monitor/jobs/{job_key}/run")
+def run_one_job(job_key: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    ensure_jobs(db, user)
+    return run_watcher(db, user, market, job_key)
+
+
+@router.post("/monitor/run")
+def run_all_jobs(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return run_watcher(db, user, market)
+
+
+@router.get("/alerts")
+def list_alerts(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    items = db.query(Alert).filter_by(user_id=user.id).order_by(Alert.id.desc()).limit(50).all()
+    return [
+        {
+            "id": i.id,
+            "job_key": i.job_key,
+            "code6": i.code6,
+            "title": i.title,
+            "detail": i.detail,
+            "created_at": i.created_at.isoformat() if i.created_at else None,
+        }
+        for i in items
+    ]

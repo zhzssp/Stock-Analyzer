@@ -84,11 +84,14 @@ def resolve_pool(
 
     if pid.startswith("index:"):
         code = pid.split(":", 1)[1]
-        st = index_status(code)
-        if not st["enabled"]:
+        insts = market.list_index(code)
+        if not insts:
+            st = index_status(code)
             raise HTTPException(status_code=409, detail=f"{pool_label(pid)} 未启用：{st['reason']}")
-        insts = resolve_instruments(st["codes"], market)
-        meta["note"] = st.get("source") or "index_probe"
+        meta["note"] = "指数成份"
+        if market.offline:
+            meta["sample"] = True
+            meta["note"] = "离线成份切片"
         return insts, meta
 
     raise HTTPException(status_code=400, detail=f"未知股票池: {pid}")

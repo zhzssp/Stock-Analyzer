@@ -3,6 +3,8 @@
 These rows are marked source=offline and must never be written as live cache.
 """
 
+from datetime import date, timedelta
+
 from src.market.normalize import Instrument, normalize_instrument
 
 WATCH_SEED = [
@@ -62,8 +64,8 @@ def _row(inst: Instrument, **extra) -> dict:
 
 
 QUOTE = {
-    "600038": _row(WATCH_SEED[0], p=26.86, pc=1.21, pe=31.4),
-    "600893": _row(WATCH_SEED[1], p=37.08, pc=-0.84, pe=62.7),
+    "600038": _row(WATCH_SEED[0], p=26.86, pc=1.21, pe=31.4, sjl=1.25),
+    "600893": _row(WATCH_SEED[1], p=37.08, pc=-0.84, pe=62.7, sjl=2.46),
     "000725": _row(WATCH_SEED[2], p=5.78, pc=2.12, pe=22.1),
     "002230": _row(WATCH_SEED[3], p=41.25, pc=-1.06, pe=48.6),
     "600129": _row(WATCH_SEED[4], p=16.72, pc=0.54, pe=18.9),
@@ -126,17 +128,15 @@ PROFILE = {
 }
 
 HOLDERS = {
-    code: _row(
+    inst.code6: _row(
         inst,
-        holders="中国航空工业集团等",
+        holders=f"{inst.name}控股股东、香港中央结算",
         holders_detail=[
-            {"Pm": 1, "Gdmc": "控股股东", "Cgbl": 48.2},
+            {"Pm": 1, "Gdmc": f"{inst.name}控股股东", "Cgbl": 48.2},
             {"Pm": 2, "Gdmc": "香港中央结算", "Cgbl": 3.1},
         ],
     )
-    for code, inst in (
-        (i.code6, i) for i in WATCH_SEED
-    )
+    for inst in WATCH_SEED
 }
 
 FINANCE = {
@@ -151,4 +151,69 @@ FINANCE = {
     "300750": _row(_INST["300750"], mgwfplr=18.6, yffy=86.2, mgjzc=32.4, jbmgsy=8.76, xsmlv=22.4, jlv=12.8, zgb=440.0, ysltag=380.0),
     "688001": _row(_INST["688001"], mgwfplr=1.88, yffy=2.4, mgjzc=8.12, jbmgsy=0.71, xsmlv=38.5, jlv=9.2, zgb=44.1, ysltag=18.6),
     "000768": _row(_INST["000768"], mgwfplr=2.44, yffy=21.8, mgjzc=9.76, jbmgsy=0.72, xsmlv=14.6, jlv=4.8, zgb=277.0, ysltag=277.0),
+}
+
+
+def _make_bars(close: float, low: float, high: float, days: int = 320) -> list[dict]:
+    end = date(2026, 9, 14)
+    rows = []
+    injected_low = False
+    injected_high = False
+    for i in range(days):
+        d = end - timedelta(days=days - 1 - i)
+        if d.weekday() >= 5:
+            continue
+        px = close
+        lo, hi = round(px * 0.985, 2), round(px * 1.015, 2)
+        if not injected_low and len(rows) > 40:
+            lo, px = low, round(low * 1.01, 2)
+            injected_low = True
+        elif not injected_high and len(rows) > 90:
+            hi, px = high, round(high * 0.99, 2)
+            injected_high = True
+        rows.append({"d": d.isoformat(), "o": px, "h": max(hi, px), "l": min(lo, px), "c": px, "v": 120000 + i})
+    return rows
+
+
+_BAR_SPEC = {
+    "600038": (26.86, 24.6, 36.9),
+    "600893": (37.08, 28.4, 48.2),
+    "000725": (5.78, 3.42, 6.8),
+    "002230": (41.25, 32.1, 55.0),
+    "600129": (16.72, 12.8, 22.4),
+    "601166": (18.02, 14.2, 21.5),
+    "000001": (11.52, 9.8, 14.2),
+    "600519": (1482.0, 1180.0, 1890.0),
+    "300750": (198.4, 140.0, 260.0),
+    "688001": (32.18, 22.5, 41.0),
+    "000768": (27.65, 18.6, 34.0),
+    "430017": (8.46, 6.2, 11.3),
+    "830799": (12.08, 8.8, 15.4),
+    "833533": (15.33, 11.0, 19.2),
+}
+BARS = {code: _make_bars(c, lo, hi) for code, (c, lo, hi) in _BAR_SPEC.items()}
+
+FLOW = {}
+for code, (close, _lo, _hi) in _BAR_SPEC.items():
+    series = []
+    base = abs(close) * 80000
+    for i in range(25):
+        d = date(2026, 9, 14) - timedelta(days=24 - i)
+        if d.weekday() >= 5:
+            continue
+        net = base * (0.2 if i < 23 else 2.4)
+        series.append({"d": d.isoformat(), "net_in": round(net, 2), "main_in": round(net * 0.7, 2)})
+    FLOW[code] = series
+
+EVENTS = {
+    "600038": {
+        "dividends": [{"date": "2026-09-10", "s": 0, "z": 0, "x": 3.2, "name": "每10股派3.2元"}],
+        "seo": [],
+        "unlock": [],
+    },
+    "000725": {
+        "dividends": [],
+        "seo": [{"date": "2026-09-08", "name": "定向增发"}],
+        "unlock": [],
+    },
 }

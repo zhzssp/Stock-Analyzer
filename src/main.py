@@ -7,7 +7,8 @@ from fastapi.staticfiles import StaticFiles
 from src.api.routes import router
 from src.config import ROOT, settings
 from src.db import Base, SessionLocal, engine
-from src.models import Artifact, User, WatchItem  # noqa: F401
+from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, Snapshot, User, WatchItem  # noqa: F401
+from src.platform.channels import attach as attach_channels
 from src.platform.seed import bootstrap
 
 
@@ -23,7 +24,15 @@ def init_db() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    attach_channels()
+    sched = None
+    if "pytest" not in __import__("sys").modules:
+        from src.platform.scheduler import start_scheduler
+
+        sched = start_scheduler()
     yield
+    if sched:
+        sched.shutdown(wait=False)
 
 
 app = FastAPI(title="Stock-Analyzer", version="0.1.0", lifespan=lifespan)

@@ -2,7 +2,7 @@
 
 基于麦蕊（mairuiapi.com）股票数据 API 复刻并扩展一套自选股分析表——包含现价、市值、财务指标，以及围绕**历史底部**展开的一系列派生指标（底/顶、离底%、顶底倍数、目标卖价等）。
 
-当前已落地 **S1–S5**：本机登录、自选池、图 1 查询与导出、市场筛选、analyst 问答、行情工作台（自选 / 沪深北交全市场，导出绑定当前池）。指数成份芯片在 S0 证实前显示「未启用」，不用全市场冒充。默认 `MAIRUI_OFFLINE=1`。S0 正式 licence、S6 指数成份、S7 盯盘尚未用实盘跑通。
+当前已落地 **S1–S5 + S7–S8.4（离线）**：本机登录、自选池、图 1 查询与导出、analyst 多轮问答（DeepSeek / 粘贴表 / 仓库 / 带参接口）、researcher「看市场」、监控中心 + 本机总线/通知通道。期货/资讯/政策 Tool 已登记但未启用。S9 Electron 未做。默认 `MAIRUI_OFFLINE=1`。S0 正式 licence 与 S6 指数成份尚未用实盘跑通。
 
 ---
 
@@ -116,6 +116,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-server.ps1
 
 首次会按 `.env.example` 生成 `.env`。把 `MAIRUI_OFFLINE` 改为 `0` 并填写 `MAIRUI_LICENCE` 后，查询走正式接口；演示 licence 仍会被门禁拒绝写入缓存。
 
+问答默认走 **DeepSeek**：在 `.env` 填 `LLM_API_KEY`，`LLM_BASE_URL=https://api.deepseek.com/v1`，`LLM_MODEL=deepseek-chat`。不填 key 时仍用确定性 Tool 编排，不编数字。
+
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 ```
@@ -133,7 +135,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-server.ps1
 
 - ⛔ **S0** 正式 licence 实测日线深度 **与** 指数成份接口（`scripts/Verify-Index.ps1`）
 - **S6** 仅打开已证实的指数成份芯片
-- **S7** 盯盘规则与提醒
+- **S7 实盘调度**：离线规则已接；正式 licence 下需用真实行情/资金流/事件接口复核阈值
 
 ## 数据源
 

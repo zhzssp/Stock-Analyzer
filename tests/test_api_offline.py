@@ -27,10 +27,17 @@ def test_login_query_export():
         exported = client.post("/api/query/export", json={"pool_name": "自选"}, headers=headers)
         assert exported.status_code == 200
         assert exported.json()["filename"].endswith(".xlsx")
+        assert exported.json()["id"]
+        assert exported.json()["download_url"].endswith(f"/artifacts/{exported.json()['id']}/download")
 
         arts = client.get("/api/artifacts", headers=headers)
         assert arts.status_code == 200
         assert arts.json()[0]["filename"] == exported.json()["filename"]
+
+        downloaded = client.get(exported.json()["download_url"], headers=headers)
+        assert downloaded.status_code == 200
+        assert downloaded.content[:2] == b"PK"
+        assert "attachment" in downloaded.headers.get("content-disposition", "")
 
 
 def test_s3_filter_append_and_once_query():

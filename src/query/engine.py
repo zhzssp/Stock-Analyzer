@@ -4,6 +4,7 @@ from typing import Any
 
 from src.market.client import MarketClient
 from src.market.normalize import Instrument
+from src.query.bottom import compute_bottom
 from src.query.registry import registry
 
 
@@ -23,22 +24,25 @@ class QueryEngine:
         keys = field_keys or registry.default_keys()
         specs = [registry.get(k) for k in keys]
         need = {dep for spec in specs for dep in spec.requires}
+        quotes = self.market.quotes_many(instruments) if "quote" in need else {}
         rows = []
         for inst in instruments:
             bag: dict[str, Any] = {
-                "quote": {},
+                "quote": quotes.get(inst.code6) or {},
                 "profile": {},
                 "holders": {},
                 "finance": {},
+                "bottom": {},
             }
-            if "quote" in need:
-                bag["quote"] = self.market.quote(inst)
             if "profile" in need:
                 bag["profile"] = self.market.profile(inst)
             if "holders" in need:
                 bag["holders"] = self.market.holders(inst)
             if "finance" in need:
                 bag["finance"] = self.market.finance(inst)
+            if "bars" in need:
+                bars = self.market.history(inst)
+                bag["bottom"] = compute_bottom(bars, (bag["quote"] or {}).get("p"))
             row = {
                 "code6": inst.code6,
                 "code_full": inst.code_full,
@@ -51,13 +55,14 @@ class QueryEngine:
         return rows
 
     def _value(self, key: str, inst: Instrument, bag: dict) -> Any:
-        q, p, h, f = bag["quote"], bag["profile"], bag["holders"], bag["finance"]
+        q, p, h, f, b = bag["quote"], bag["profile"], bag["holders"], bag["finance"], bag["bottom"]
         mapping = {
             "name": inst.name,
             "code": inst.code_full,
             "price": q.get("p"),
             "pct": q.get("pc"),
             "pe": q.get("pe"),
+            "pb": q.get("sjl"),
             "industry": p.get("industry"),
             "concept": p.get("concept"),
             "business": p.get("business"),
@@ -70,5 +75,12 @@ class QueryEngine:
             "eps": f.get("jbmgsy"),
             "gross": f.get("xsmlv"),
             "net": f.get("jlv"),
+            "low1y": b.get("low1y"),
+            "low_long": b.get("low_long"),
+            "high": b.get("high"),
+            "off_low": b.get("off_low"),
+            "multiple": b.get("multiple"),
+            "target": b.get("target"),
+            "low_note": b.get("note"),
         }
         return mapping.get(key)

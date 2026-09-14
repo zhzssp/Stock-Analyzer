@@ -8,6 +8,4 @@
 | `workbench-agent.png` | Agent 问答 + 当日监控效果图 |
 | `index.html` | 可切换「查询 / 问答 / 监控」的本地原型 |
 
-工作台已接到本机 FastAPI（登录、自选、查询、导出）。请用 `.\scripts\run-server.cmd` 启动后访问 http://127.0.0.1:8765 ，不要直接双击 HTML（否则 `/api` 不存在）。
-
-Agent / 监控页签仍是设计占位，S4/S5 再接。
+工作台已接到本机 FastAPI（登录、自选、查询、列设置、导出、问答、监控）。请用 `.\scripts\run-server.cmd` 启动后访问 http://127.0.0.1:8765 ，不要直接双击 HTML（否则 `/api` 不存在）。

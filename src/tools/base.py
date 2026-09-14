@@ -16,6 +16,9 @@ class ToolContext:
     db: Session
     market: MarketClient
     engine: QueryEngine
+    attachments: list[dict] = field(default_factory=list)
+    allowed_tools: list[str] | None = None
+    history: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -46,6 +49,7 @@ class ToolSpec:
     description: str
     input_schema: dict
     enabled: bool = True
+    reason: str = ""
 
 
 ToolFn = Callable[[dict, ToolContext], ToolResult]

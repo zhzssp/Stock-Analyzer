@@ -6,6 +6,14 @@ from pathlib import Path
 from src.config import settings
 
 # Official names only. enabled=false until S0 writes data/index_probe.json.
+CANDIDATE_PATHS = (
+    "/hsindex/constituent/{code}",
+    "/hsindex/chengfen/{code}",
+    "/hsindex/component/{code}",
+    "/hsindex/weight/{code}",
+    "/hslt/zs/{code}",
+)
+
 INDEX_SPECS = [
     {"code": "000001.SH", "label": "上证指数", "market": "sh"},
     {"code": "399001.SZ", "label": "深证成指", "market": "sz"},
