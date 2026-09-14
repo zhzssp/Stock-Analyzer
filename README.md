@@ -72,13 +72,13 @@ Stock-Analyzer/
 
 ## 本机运行
 
-新机器（没有 Python 3.11+ / 没有 `.venv`）先一键配置：
+新机器（没有 `E:\python-stock` 下的 Python 3.11/3.12，或没有 `.venv`）先一键配置：
 
 ```bat
 .\scripts\setup.cmd
 ```
 
-会查找本机 Python 3.11+；找不到则用 winget 安装 3.12，再建虚拟环境、装依赖、复制 `.env`。装完 Python 后若仍提示找不到，关掉终端再跑一次 `setup.cmd`。
+解释器**必须**装在运行脚本那台机器的 `E:\python-stock`（例如 `E:\python-stock\python.exe`）。脚本只认这里的 3.11/3.12，不用系统 PATH 上的 3.9 或其他目录。找不到则下载官方 3.12.10 安装到该路径（需要有 `E:` 盘；权限不足时用管理员再跑一次）。然后建虚拟环境、装依赖、复制 `.env`。
 
 然后启动：
 

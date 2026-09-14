@@ -1,19 +1,33 @@
-# One-click machine setup: find or install Python 3.11+, create .venv, install deps, copy .env.
+# One-click setup. Runtime Python 3.11/3.12 must live at E:\python-stock on this machine.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-function Test-RealPython([string]$exe) {
+$PythonHome = "E:\python-stock"
+$InstallerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+
+function Test-PythonHomeDrive {
+    if (-not (Test-Path -LiteralPath "E:\")) {
+        Write-Host "This machine has no E: drive."
+        Write-Host "Python 3.11/3.12 must be installed at $PythonHome."
+        exit 1
+    }
+}
+
+function Test-ManagedPython([string]$exe) {
     if (-not $exe) { return $false }
     if ($exe -match "WindowsApps\\python") { return $false }
     if (-not (Test-Path -LiteralPath $exe)) { return $false }
     try {
+        $full = [IO.Path]::GetFullPath($exe)
+        $home = [IO.Path]::GetFullPath($PythonHome)
+        if (-not $full.StartsWith($home, [StringComparison]::OrdinalIgnoreCase)) { return $false }
         $ver = & $exe -c "import sys; print('%d.%d' % (sys.version_info.major, sys.version_info.minor))" 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $ver) { return $false }
         $parts = $ver.Trim().Split(".")
         $maj = [int]$parts[0]
         $min = [int]$parts[1]
-        return ($maj -gt 3) -or ($maj -eq 3 -and $min -ge 11)
+        return ($maj -eq 3 -and ($min -eq 11 -or $min -eq 12))
     } catch {
         return $false
     }
@@ -21,71 +35,73 @@ function Test-RealPython([string]$exe) {
 
 function Find-Python {
     $candidates = @(
-        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
-        "$env:ProgramFiles\Python313\python.exe",
-        "$env:ProgramFiles\Python312\python.exe",
-        "$env:ProgramFiles\Python311\python.exe",
-        "${env:ProgramFiles(x86)}\Python313\python.exe",
-        "${env:ProgramFiles(x86)}\Python312\python.exe",
-        "${env:ProgramFiles(x86)}\Python311\python.exe"
+        (Join-Path $PythonHome "python.exe"),
+        (Join-Path $PythonHome "Python312\python.exe"),
+        (Join-Path $PythonHome "Python311\python.exe")
     )
     foreach ($p in $candidates) {
-        if (Test-RealPython $p) { return $p }
-    }
-
-    $launcher = Get-Command py -ErrorAction SilentlyContinue
-    if ($launcher) {
-        foreach ($arg in @("-3.13", "-3.12", "-3.11", "-3")) {
-            try {
-                $exe = & py $arg -c "import sys; print(sys.executable)" 2>$null
-                if ($exe) {
-                    $exe = $exe.Trim()
-                    if (Test-RealPython $exe) { return $exe }
-                }
-            } catch {}
-        }
-    }
-
-    foreach ($name in @("python", "python3")) {
-        $cmd = Get-Command $name -ErrorAction SilentlyContinue
-        if ($cmd -and (Test-RealPython $cmd.Source)) { return $cmd.Source }
+        if (Test-ManagedPython $p) { return $p }
     }
     return $null
 }
 
-function Refresh-Path {
-    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $user = [Environment]::GetEnvironmentVariable("Path", "User")
-    $env:Path = "$machine;$user"
-}
-
 function Install-Python {
-    $winget = Get-Command winget -ErrorAction SilentlyContinue
-    if (-not $winget) {
-        Write-Host "Need Python 3.11+ (3.12 preferred). winget was not found."
-        Write-Host "Install from https://www.python.org/downloads/windows/"
-        Write-Host "During setup, enable 'Add python.exe to PATH' and the py launcher."
-        Write-Host "Then run scripts\setup.cmd again."
+    Test-PythonHomeDrive
+    if (-not (Test-Path -LiteralPath $PythonHome)) {
+        New-Item -ItemType Directory -Path $PythonHome -Force | Out-Null
+    }
+
+    $installer = Join-Path $env:TEMP "python-3.12.10-amd64.exe"
+    Write-Host "Downloading Python 3.12.10 to $installer ..."
+    & curl.exe -fsSL -o $installer $InstallerUrl
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $installer)) {
+        Write-Host "Download failed. Check the network, or install Python 3.11/3.12 yourself to $PythonHome"
+        Write-Host "Official installer: $InstallerUrl"
+        Write-Host "Silent example: installer /quiet InstallAllUsers=0 PrependPath=0 Include_launcher=0 TargetDir=$PythonHome"
         exit 1
     }
-    Write-Host "Installing Python 3.12 with winget (may ask for elevation)..."
-    & winget install -e --id Python.Python.3.12 --scope user --accept-package-agreements --accept-source-agreements --disable-interactivity
-    Refresh-Path
+
+    Write-Host "Installing Python 3.12.10 to $PythonHome ..."
+    $args = @(
+        "/quiet",
+        "InstallAllUsers=0",
+        "PrependPath=0",
+        "Include_launcher=0",
+        "Include_test=0",
+        "Include_doc=0",
+        "Include_pip=1",
+        "SimpleInstall=1",
+        "TargetDir=$PythonHome",
+        "DefaultJustForMeTargetDir=$PythonHome",
+        "DefaultCustomTargetDir=$PythonHome"
+    )
+    $proc = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
+    if ($proc.ExitCode -ne 0) {
+        Write-Host "Installer exited $($proc.ExitCode). If this is a permission error, run scripts\setup.cmd as Administrator."
+        Write-Host "Python 3.11/3.12 must end up at $PythonHome\python.exe"
+        exit $proc.ExitCode
+    }
 }
 
 Write-Host "Stock-Analyzer setup"
 Write-Host "Working directory: $root"
+Write-Host "Required Python home: $PythonHome (3.11 or 3.12 only)"
+Test-PythonHomeDrive
 
 $py = Find-Python
 if (-not $py) {
+    $existing = Join-Path $PythonHome "python.exe"
+    if (Test-Path -LiteralPath $existing) {
+        Write-Host "Found $existing but it is not Python 3.11 or 3.12."
+        Write-Host "Move that install aside, then run scripts\setup.cmd again."
+        exit 1
+    }
     Install-Python
     $py = Find-Python
 }
 if (-not $py) {
-    Write-Host "Python may have been installed, but this terminal cannot see it yet."
-    Write-Host "Close the window and run: .\scripts\setup.cmd"
+    Write-Host "Python 3.11/3.12 was not found at $PythonHome after install."
+    Write-Host "Confirm E:\python-stock\python.exe exists, then run scripts\setup.cmd again."
     exit 1
 }
 
