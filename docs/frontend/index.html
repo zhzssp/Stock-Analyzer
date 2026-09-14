@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Stock-Analyzer · 前端设计稿</title>
+  <style>
+    :root {
+      --bg: #f6f5f2;
+      --paper: #fffcf8;
+      --sidebar: #efeee9;
+      --line: #e4e1d8;
+      --ink: #1c1b18;
+      --muted: #6f6b62;
+      --teal: #2a6b63;
+      --teal-soft: #e4f0ee;
+      --up: #1f7a4d;
+      --down: #b42318;
+      --warn: #9a6700;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font: 13px/1.45 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: 48px 1fr;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--paper);
+    }
+    .brand { font-weight: 650; letter-spacing: 0.02em; }
+    .brand span { color: var(--teal); font-weight: 500; margin-left: 8px; font-size: 12px; }
+    .user { color: var(--muted); }
+    .shell {
+      display: grid;
+      grid-template-columns: 228px 1fr;
+      min-height: 0;
+    }
+    .sidebar {
+      background: var(--sidebar);
+      border-right: 1px solid var(--line);
+      padding: 16px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .side-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 600;
+    }
+    .btn {
+      border: 1px solid var(--line);
+      background: var(--paper);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      color: var(--ink);
+    }
+    .btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
+    .btn.ghost { background: transparent; }
+    .btn.sm { padding: 3px 8px; font-size: 12px; }
+    input, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      border-radius: 8px;
+      padding: 7px 10px;
+      font: inherit;
+    }
+    .watch li {
+      list-style: none;
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 8px;
+      border-radius: 8px;
+    }
+    .watch { margin: 0; padding: 0; }
+    .watch li:hover, .watch li.active { background: var(--paper); }
+    .watch .code { color: var(--muted); font-size: 11px; }
+    .main { min-width: 0; display: flex; flex-direction: column; }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 10px 16px 0;
+      border-bottom: 1px solid var(--line);
+      background: var(--paper);
+    }
+    .tab {
+      border: 0;
+      background: none;
+      padding: 8px 12px 10px;
+      color: var(--muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+    .tab.on { color: var(--ink); border-bottom-color: var(--teal); font-weight: 600; }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 12px 16px;
+    }
+    .toolbar .hint { margin-left: auto; color: var(--muted); }
+    .view { display: none; flex: 1; min-height: 0; }
+    .view.on { display: flex; flex-direction: column; }
+    .table-wrap { overflow: auto; padding: 0 16px 16px; }
+    table { width: 100%; border-collapse: collapse; background: var(--paper); }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      white-space: nowrap;
+    }
+    th { color: var(--muted); font-weight: 550; background: #faf8f4; position: sticky; top: 0; }
+    .up { color: var(--up); }
+    .down { color: var(--down); }
+    .chip { display: inline-block; padding: 1px 6px; border-radius: 999px; background: var(--teal-soft); color: var(--teal); font-size: 11px; }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px; }
+    .chip-btn.on { background: var(--teal); color: #fff; border-color: var(--teal); }
+    .watch li { align-items: center; gap: 8px; }
+    .watch .meta { display: flex; flex-direction: column; min-width: 0; }
+    .watch .rm {
+      border: 0; background: transparent; color: var(--muted); cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 0 4px;
+    }
+    .watch .rm:hover { color: var(--down); }
+    .pick-card { width: 460px; max-width: calc(100vw - 32px); }
+    .pick-list { max-height: 280px; overflow: auto; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+    .pick-list label {
+      display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px;
+      border-bottom: 1px solid var(--line); cursor: pointer;
+    }
+    .pick-list label:last-child { border-bottom: 0; }
+    .pick-list .sub { color: var(--muted); font-size: 11px; }
+    .pick-actions { display: flex; gap: 8px; }
+    .pick-empty { color: var(--muted); padding: 16px; text-align: center; }
+    .split { display: grid; grid-template-columns: 1.3fr 0.9fr; flex: 1; min-height: 0; }
+    .chat, .panel { padding: 16px; overflow: auto; }
+    .panel { border-left: 1px solid var(--line); background: #faf9f6; }
+    .bubble { max-width: 86%; padding: 10px 12px; border-radius: 12px; margin-bottom: 10px; }
+    .me { margin-left: auto; background: var(--teal-soft); }
+    .bot { background: var(--paper); border: 1px solid var(--line); }
+    .cites { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .cite { font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted); }
+    .composer { display: flex; gap: 8px; margin-top: 12px; }
+    .alert {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+    }
+    .alert b { display: block; margin-bottom: 2px; }
+    .alert .meta { color: var(--muted); font-size: 11px; }
+    .job { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .off { color: var(--warn); font-size: 12px; }
+    .toast {
+      position: fixed; right: 20px; bottom: 20px;
+      background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 8px;
+      display: none;
+    }
+    .login-mask {
+      position: fixed; inset: 0; background: rgba(28,27,24,.28);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .login-card {
+      width: 320px; background: var(--paper); border: 1px solid var(--line);
+      border-radius: 12px; padding: 20px;
+    }
+    .login-card h2 { margin: 0 0 8px; font-size: 18px; }
+    .login-card p { color: var(--muted); margin: 0 0 14px; }
+    .login-card label { display: block; margin: 8px 0 4px; color: var(--muted); }
+    .login-error { color: var(--down); min-height: 18px; font-size: 12px; }
+    .side-modes { display: flex; gap: 6px; }
+    .chip-btn.off { opacity: 0.55; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">Stock-Analyzer <span>本机工作台 · S5</span></div>
+      <div class="user" id="userLabel">未登录</div>
+    </header>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="side-modes">
+          <button class="btn sm chip-btn on" id="sideWatch" type="button">自选</button>
+          <button class="btn sm chip-btn" id="sideQuote" type="button">行情</button>
+        </div>
+        <div id="watchPane">
+          <div class="side-title">自选池 <button class="btn sm ghost" id="openPicker" type="button">+ 添加 / 筛选</button></div>
+          <input id="watchFilter" placeholder="搜索当前自选" />
+          <ul class="watch" id="watchList"></ul>
+        </div>
+        <div id="quotePane" style="display:none;">
+          <div class="side-title">交易所 / 板块</div>
+          <div class="chips" id="exchangeChips"></div>
+          <div class="side-title" style="margin-top:6px;">指数成份</div>
+          <div class="chips" id="indexChips"></div>
+          <input id="quoteFilter" placeholder="搜索当前池" />
+          <ul class="watch" id="quoteList"></ul>
+        </div>
+        <div class="hint" id="poolHint" style="color:var(--muted);font-size:12px;margin-top:auto;">导出 Excel 跟随当前池。深市全部不是深证成指；北交所全部不是北证50。</div>
+      </aside>
+      <section class="main">
+        <nav class="tabs">
+          <button class="tab on" data-view="query" type="button">传统查询</button>
+          <button class="tab" data-view="agent" type="button">Agent 问答</button>
+          <button class="tab" data-view="monitor" type="button">监控中心</button>
+        </nav>
+
+        <div id="query" class="view on">
+          <div class="toolbar">
+            <button class="btn primary" id="queryBtn" type="button">查询</button>
+            <button class="btn" id="refreshBtn" type="button">刷新</button>
+            <button class="btn" id="exportBtn" type="button">导出 Excel</button>
+            <button class="btn ghost" type="button">列设置</button>
+            <span class="hint" id="queryHint">尚未查询</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead id="tableHead"></thead>
+              <tbody id="tableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="agent" class="view">
+          <div class="split">
+            <div class="chat" style="display:flex;flex-direction:column;">
+              <div id="chatLog" style="flex:1;overflow:auto;">
+                <div class="bubble bot">
+                  可以问现价、股东、财务，或「最近导出的表里有什么」。没有日线深度时不会编造离底数字。未配置模型 key 时走确定性 Tool 编排。
+                  <div class="cites">
+                    <span class="cite">quote</span>
+                    <span class="cite">holders_flow</span>
+                    <span class="cite">finance_snapshot</span>
+                    <span class="cite">excel_read</span>
+                  </div>
+                </div>
+              </div>
+              <div class="composer">
+                <input id="chatInput" placeholder="例如：中直股份现价和十大股东？" />
+                <button class="btn primary" id="chatSend" type="button">发送</button>
+                <button class="btn" id="chatExport" type="button">导出本轮</button>
+              </div>
+            </div>
+            <aside class="panel">
+              <div class="side-title" style="margin-bottom:10px;">本轮引用</div>
+              <div id="chatCites" class="alert"><span class="meta">尚无。问答后这里列出 Tool 来源。</span></div>
+              <div class="side-title" style="margin:14px 0 10px;">Tool 轨迹</div>
+              <div id="chatTools" class="meta">监控规则是 S5，当前只跑 analyst。</div>
+            </aside>
+          </div>
+        </div>
+
+        <div id="monitor" class="view">
+          <div class="toolbar">
+            <button class="btn primary" type="button">立刻跑一轮</button>
+            <span class="hint">日程：盘中每 5 分钟行情 · 交易日 20:20 日终</span>
+          </div>
+          <div class="panel" style="border:0; flex:1;">
+            <div class="job"><span>股东变动</span><span>已开启</span></div>
+            <div class="job"><span>资金异常</span><span>已开启</span></div>
+            <div class="job"><span>分红 / 增发 / 解禁</span><span>已开启</span></div>
+            <div class="job"><span>期货联动</span><span class="off">未启用 · 等待期货 Tool</span></div>
+            <div class="job"><span>资讯冲击</span><span class="off">未启用 · 等待检索 Tool</span></div>
+            <div class="job"><span>产业政策 / 基金调仓</span><span class="off">未启用 · 等待资讯 Tool</span></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <div class="login-mask" id="pickerMask" style="display:none;">
+    <div class="login-card pick-card">
+      <h2>沪深 / 北交所筛选</h2>
+      <p>按市场与关键词筛选，勾选后并入自选，或只查这一次。北交所财务列允许为空。</p>
+      <div class="chips" id="marketChips">
+        <button class="btn sm chip-btn on" type="button" data-market="all">全部</button>
+        <button class="btn sm chip-btn" type="button" data-market="hs">沪深</button>
+        <button class="btn sm chip-btn" type="button" data-market="kc">科创</button>
+        <button class="btn sm chip-btn" type="button" data-market="bj">北交所</button>
+      </div>
+      <input id="pickQ" placeholder="名称、代码或行业，如 茅台 / 430017 / 军工" />
+      <div class="pick-list" id="pickList"><div class="pick-empty">输入关键词或切换市场</div></div>
+      <div class="pick-actions">
+        <button class="btn primary" id="addPicked" type="button">加入自选</button>
+        <button class="btn" id="queryPicked" type="button">仅查询一次</button>
+        <button class="btn ghost" id="closePicker" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+  <div class="login-mask" id="loginMask">
+    <form class="login-card" id="loginForm">
+      <h2>登录本机工作台</h2>
+      <p>默认账号 hanish / change-me，仅绑定 127.0.0.1。</p>
+      <label>用户名</label>
+      <input name="username" value="hanish" />
+      <label>密码</label>
+      <input name="password" type="password" value="change-me" />
+      <div class="login-error" id="loginError"></div>
+      <button class="btn primary" type="submit" style="width:100%;margin-top:8px;">进入</button>
+    </form>
+  </div>
+  <script>
+    const tabs = document.querySelectorAll(".tab");
+    const views = document.querySelectorAll(".view");
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        tabs.forEach((t) => t.classList.remove("on"));
+        views.forEach((v) => v.classList.remove("on"));
+        tab.classList.add("on");
+        document.getElementById(tab.dataset.view).classList.add("on");
+      });
+    });
+
+    const marketLabel = { hs: "沪深", kc: "科创", bj: "北交" };
+    const state = {
+      token: sessionStorage.getItem("sa_token") || "",
+      fields: [],
+      watch: [],
+      quoteItems: [],
+      pickMarket: "all",
+      lastChat: null,
+      side: "watch",
+      pool: "watch",
+      pools: [],
+    };
+
+    function toast(text) {
+      const el = document.getElementById("toast");
+      el.textContent = text;
+      el.style.display = "block";
+      setTimeout(() => { el.style.display = "none"; }, 2200);
+    }
+
+    async function api(path, options = {}) {
+      const headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
+      if (state.token) headers.Authorization = "Bearer " + state.token;
+      const res = await fetch("/api" + path, Object.assign({}, options, { headers }));
+      if (res.status === 401) {
+        state.token = "";
+        sessionStorage.removeItem("sa_token");
+        document.getElementById("loginMask").style.display = "flex";
+        throw new Error("未登录");
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "请求失败");
+      return data;
+    }
+
+    function fmt(key, value) {
+      if (value === null || value === undefined || value === "") return "—";
+      if (key === "pct" && typeof value === "number") {
+        const sign = value > 0 ? "+" : "";
+        return sign + value.toFixed(2) + "%";
+      }
+      return value;
+    }
+
+    function renderWatch(items) {
+      state.watch = items;
+      const needle = (document.getElementById("watchFilter").value || "").trim().toLowerCase();
+      const shown = items.filter((it) => {
+        if (!needle) return true;
+        return `${it.name} ${it.code6} ${it.code_full}`.toLowerCase().includes(needle);
+      });
+      const ul = document.getElementById("watchList");
+      if (!shown.length) {
+        ul.innerHTML = `<li class="code" style="display:block;">无匹配自选</li>`;
+        return;
+      }
+      ul.innerHTML = shown.map((it, i) =>
+        `<li class="${i === 0 ? "active" : ""}" data-code="${it.code6}">
+          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${marketLabel[it.market] || it.market || ""}</span></span>
+          <button class="rm" type="button" data-rm="${it.code6}" title="移出自选">×</button>
+        </li>`
+      ).join("");
+    }
+
+    function renderQuoteList(items) {
+      state.quoteItems = items;
+      const needle = (document.getElementById("quoteFilter").value || "").trim().toLowerCase();
+      const shown = items.filter((it) => {
+        if (!needle) return true;
+        return `${it.name} ${it.code6} ${it.code_full}`.toLowerCase().includes(needle);
+      });
+      const ul = document.getElementById("quoteList");
+      if (!shown.length) {
+        ul.innerHTML = `<li class="code" style="display:block;">当前池无匹配</li>`;
+        return;
+      }
+      ul.innerHTML = shown.map((it, i) =>
+        `<li class="${i === 0 ? "active" : ""}">
+          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${marketLabel[it.market] || it.exchange || ""}</span></span>
+        </li>`
+      ).join("");
+    }
+
+    function renderPoolChips(pools) {
+      state.pools = pools;
+      const exch = document.getElementById("exchangeChips");
+      const idx = document.getElementById("indexChips");
+      exch.innerHTML = pools.filter((p) => p.kind === "exchange" || p.kind === "board").map((p) =>
+        `<button class="btn sm chip-btn ${state.pool === p.id ? "on" : ""}" type="button" data-pool="${p.id}">${p.label}</button>`
+      ).join("");
+      idx.innerHTML = pools.filter((p) => p.kind === "index").map((p) =>
+        `<button class="btn sm chip-btn ${p.enabled ? "" : "off"}" type="button" data-pool="${p.id}" ${p.enabled ? "" : "disabled"} title="${p.reason || "未启用"}">${p.label}${p.enabled ? "" : " · 未启用"}</button>`
+      ).join("");
+    }
+
+    async function loadPools() {
+      const data = await api("/markets/pools");
+      renderPoolChips(data.pools || []);
+    }
+
+    async function selectPool(poolId) {
+      state.pool = poolId;
+      renderPoolChips(state.pools);
+      const data = await api("/markets/pools/" + encodeURIComponent(poolId) + "/instruments");
+      renderQuoteList(data.items || []);
+      document.getElementById("poolHint").textContent = data.note || "导出 Excel 跟随当前池。";
+      await runQuery();
+    }
+
+    function setSide(side) {
+      state.side = side;
+      document.getElementById("sideWatch").classList.toggle("on", side === "watch");
+      document.getElementById("sideQuote").classList.toggle("on", side === "quote");
+      document.getElementById("watchPane").style.display = side === "watch" ? "block" : "none";
+      document.getElementById("quotePane").style.display = side === "quote" ? "block" : "none";
+      if (side === "watch") state.pool = "watch";
+    }
+
+    function selectedPickCodes() {
+      return [...document.querySelectorAll("#pickList input[type=checkbox]:checked")].map((el) => el.value);
+    }
+
+    function renderPick(items) {
+      const box = document.getElementById("pickList");
+      if (!items.length) {
+        box.innerHTML = `<div class="pick-empty">没有匹配标的</div>`;
+        return;
+      }
+      box.innerHTML = items.map((it) =>
+        `<label>
+          <input type="checkbox" value="${it.code_full}" />
+          <span><b>${it.name}</b><div class="sub">${it.code_full} · ${marketLabel[it.market] || it.market} · ${it.industry || "行业待补"}</div></span>
+        </label>`
+      ).join("");
+    }
+
+    async function searchInstruments() {
+      const q = document.getElementById("pickQ").value.trim();
+      const items = await api(`/markets/instruments?q=${encodeURIComponent(q)}&market=${state.pickMarket}&limit=40`);
+      renderPick(items);
+    }
+
+    function closePicker() {
+      document.getElementById("pickerMask").style.display = "none";
+    }
+
+    function renderTable(fields, rows) {
+      state.fields = fields;
+      document.getElementById("tableHead").innerHTML =
+        "<tr>" + fields.map((f) => `<th>${f.label}</th>`).join("") + "</tr>";
+      document.getElementById("tableBody").innerHTML = rows.map((row) => {
+        const tds = fields.map((f) => {
+          const raw = row[f.key];
+          let cls = "";
+          if (f.key === "pct" && typeof raw === "number") cls = raw >= 0 ? "up" : "down";
+          return `<td class="${cls}">${fmt(f.key, raw)}</td>`;
+        }).join("");
+        return `<tr>${tds}</tr>`;
+      }).join("");
+    }
+
+    async function loadWatch() {
+      const items = await api("/watchlist");
+      renderWatch(items);
+      document.getElementById("queryHint").textContent = `自选 ${items.length} 只`;
+    }
+
+    async function waitJob(jobId) {
+      for (;;) {
+        const data = await api("/query/jobs/" + jobId);
+        if (data.status === "done") return data;
+        if (data.status === "error") throw new Error(data.error || "任务失败");
+        document.getElementById("queryHint").textContent = `任务进行中 · ${data.progress || 0}/${data.total || "?"}`;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    }
+
+    async function runQuery(codes) {
+      const payload = codes && codes.length ? { codes } : { pool: state.pool };
+      let data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
+      if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+      renderTable(data.fields, data.rows);
+      const mode = data.sample || (data.market && data.market.offline) ? "离线切片" : (data.market && data.market.status);
+      const scope = codes && codes.length ? "筛选一次" : (data.pool || state.pool);
+      const note = data.note ? ` · ${data.note}` : "";
+      document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}`;
+    }
+
+    async function exportXlsx() {
+      const pool = document.getElementById("sideQuote").classList.contains("on") ? state.pool : "watch";
+      let data = await api("/query/export", { method: "POST", body: JSON.stringify({ pool }) });
+      if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+      toast("已导出 " + data.filename + "，并写入档案库");
+    }
+
+    async function afterLogin(username, token) {
+      state.token = token;
+      sessionStorage.setItem("sa_token", token);
+      document.getElementById("userLabel").textContent = username + " · 已登录";
+      document.getElementById("loginMask").style.display = "none";
+      await loadWatch();
+      await loadPools();
+      await runQuery();
+    }
+
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      document.getElementById("loginError").textContent = "";
+      try {
+        const data = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: fd.get("username"), password: fd.get("password") }),
+        }).then((r) => r.json().then((j) => ({ ok: r.ok, j })));
+        if (!data.ok) throw new Error(data.j.detail || "登录失败");
+        await afterLogin(data.j.username, data.j.token);
+      } catch (err) {
+        document.getElementById("loginError").textContent = err.message;
+      }
+    });
+
+    document.getElementById("queryBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
+    document.getElementById("refreshBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
+    document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));
+    document.getElementById("watchFilter").addEventListener("input", () => renderWatch(state.watch));
+    document.getElementById("quoteFilter").addEventListener("input", () => renderQuoteList(state.quoteItems));
+    document.getElementById("sideWatch").addEventListener("click", () => {
+      setSide("watch");
+      runQuery().catch((e) => toast(e.message));
+    });
+    document.getElementById("sideQuote").addEventListener("click", () => {
+      setSide("quote");
+      const first = (state.pools || []).find((p) => p.kind === "exchange" && p.enabled);
+      if (first) selectPool(first.id).catch((e) => toast(e.message));
+    });
+    document.getElementById("exchangeChips").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-pool]");
+      if (!btn || btn.disabled) return;
+      selectPool(btn.dataset.pool).catch((err) => toast(err.message));
+    });
+    document.getElementById("indexChips").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-pool]");
+      if (!btn || btn.disabled) return toast(btn.title || "指数未启用");
+      selectPool(btn.dataset.pool).catch((err) => toast(err.message));
+    });
+    document.getElementById("watchList").addEventListener("click", async (e) => {
+      const rm = e.target.closest("[data-rm]");
+      if (!rm) return;
+      try {
+        const data = await api("/watchlist/" + rm.dataset.rm, { method: "DELETE" });
+        renderWatch(data.items);
+        toast("已移出 " + rm.dataset.rm);
+        await runQuery();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("openPicker").addEventListener("click", () => {
+      document.getElementById("pickerMask").style.display = "flex";
+      searchInstruments().catch((e) => toast(e.message));
+    });
+    document.getElementById("closePicker").addEventListener("click", closePicker);
+    document.getElementById("pickQ").addEventListener("input", () => {
+      clearTimeout(state.pickTimer);
+      state.pickTimer = setTimeout(() => searchInstruments().catch((e) => toast(e.message)), 180);
+    });
+    document.querySelectorAll("#marketChips [data-market]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.pickMarket = btn.dataset.market;
+        document.querySelectorAll("#marketChips [data-market]").forEach((b) => b.classList.toggle("on", b === btn));
+        searchInstruments().catch((e) => toast(e.message));
+      });
+    });
+    document.getElementById("addPicked").addEventListener("click", async () => {
+      const codes = selectedPickCodes();
+      if (!codes.length) return toast("先勾选股票");
+      try {
+        const data = await api("/watchlist/items", {
+          method: "POST",
+          body: JSON.stringify({ items: codes.map((code) => ({ code })) }),
+        });
+        renderWatch(data.items);
+        closePicker();
+        toast(`已加入 ${data.added.length} 只`);
+        await runQuery();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    function appendBubble(role, html) {
+      const log = document.getElementById("chatLog");
+      const el = document.createElement("div");
+      el.className = "bubble " + role;
+      el.innerHTML = html;
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+      return el;
+    }
+
+    function renderAgentMeta(cites, tools) {
+      const citeBox = document.getElementById("chatCites");
+      if (!cites || !cites.length) {
+        citeBox.innerHTML = `<span class="meta">本轮没有引用</span>`;
+      } else {
+        citeBox.innerHTML = cites.map((c) => `<span class="cite">${c.cite || c.source}</span>`).join(" ");
+      }
+      const toolBox = document.getElementById("chatTools");
+      if (!tools || !tools.length) {
+        toolBox.textContent = "没有调用 Tool";
+        return;
+      }
+      toolBox.innerHTML = tools.map((t) =>
+        `<div class="job"><span>${t.id}</span><span>${t.ok ? (t.cite || "ok") : (t.error || "失败")}</span></div>`
+      ).join("");
+    }
+
+    async function sendChat() {
+      const input = document.getElementById("chatInput");
+      const question = (input.value || "").trim();
+      if (!question) return;
+      input.value = "";
+      appendBubble("me", question.replace(/</g, "&lt;"));
+      const bot = appendBubble("bot", "正在调 Tool…");
+      try {
+        const data = await api("/agent/chat", { method: "POST", body: JSON.stringify({ question }) });
+        const cites = (data.cites || []).map((c) => `<span class="cite">${c.cite || c.source}</span>`).join("");
+        bot.innerHTML = (data.answer || "没有回答").replace(/\n/g, "<br>") + (cites ? `<div class="cites">${cites}</div>` : "");
+        state.lastChat = { question, answer: data.answer, cites: data.cites || [], tools: data.tools || [] };
+        renderAgentMeta(data.cites, data.tools);
+      } catch (err) {
+        bot.textContent = err.message;
+      }
+    }
+
+    async function exportChat() {
+      if (!state.lastChat) return toast("先问一轮再导出");
+      const data = await api("/agent/export", { method: "POST", body: JSON.stringify(state.lastChat) });
+      toast("已导出 " + data.filename);
+    }
+
+    document.getElementById("chatSend").addEventListener("click", () => sendChat().catch((e) => toast(e.message)));
+    document.getElementById("chatExport").addEventListener("click", () => exportChat().catch((e) => toast(e.message)));
+    document.getElementById("chatInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        sendChat().catch((err) => toast(err.message));
+      }
+    });
+
+    document.getElementById("queryPicked").addEventListener("click", async () => {
+      const codes = selectedPickCodes();
+      if (!codes.length) return toast("先勾选股票");
+      try {
+        await runQuery(codes);
+        closePicker();
+        toast("已按筛选结果查询，未改自选");
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+
+    if (state.token) {
+      afterLogin("已登录", state.token).catch(() => {
+        document.getElementById("loginMask").style.display = "flex";
+      });
+    }
+  </script>
+</body>
+</html>
