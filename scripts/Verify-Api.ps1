@@ -69,17 +69,20 @@ function Invoke-Api {
     param([string]$Url, [int]$TimeoutSec = 60)
 
     $script:ReqCount++
+    Write-Host ("  请求 #{0} ..." -f $script:ReqCount) -ForegroundColor DarkGray
     $sw = [Diagnostics.Stopwatch]::StartNew()
     try {
         $data = Invoke-RestMethod -Uri $Url -TimeoutSec $TimeoutSec
         $sw.Stop()
         $count = if ($null -eq $data) { 0 } elseif ($data -is [Array]) { $data.Count } else { 1 }
+        Write-Host ("    成功  {0} 条 / {1} ms" -f $count, $sw.ElapsedMilliseconds) -ForegroundColor DarkGray
         [pscustomobject]@{ ok = $true; data = $data; count = $count; ms = $sw.ElapsedMilliseconds; err = $null }
     }
     catch {
         $sw.Stop()
         $msg = $_.Exception.Message
         if ($_.Exception.Response) { $msg = "HTTP $([int]$_.Exception.Response.StatusCode) - $msg" }
+        Write-Host ("    失败  {0} ms  {1}" -f $sw.ElapsedMilliseconds, $msg) -ForegroundColor DarkYellow
         [pscustomobject]@{ ok = $false; data = $null; count = 0; ms = $sw.ElapsedMilliseconds; err = $msg }
     }
 }
@@ -126,6 +129,8 @@ Write-Host ""
 Write-Host "麦蕊 API 现状验证" -ForegroundColor White
 Write-Host "licence : $Licence"
 Write-Host "开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Write-Host "请保持网络畅通，不要关闭窗口。全部完成后会写入: $OutFile" -ForegroundColor Yellow
+Write-Host "每发起一次接口请求都会在下面打一行进度。"
 
 Add-Line "# API 验证报告"
 Add-Line ""
