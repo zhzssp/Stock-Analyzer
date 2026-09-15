@@ -52,14 +52,17 @@ function Install-Python {
     }
 
     $installer = Join-Path $env:TEMP "python-3.12.10-amd64.exe"
-    Write-Host "Downloading Python 3.12.10 to $installer ..."
-    & curl.exe -fsSL -o $installer $InstallerUrl
+    Write-Host "Downloading Python 3.12.10 (~27 MB) to $installer ..."
+    Write-Host "Source: $InstallerUrl"
+    & curl.exe -fL --progress-bar --stderr - -o $installer $InstallerUrl
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $installer)) {
         Write-Host "Download failed. Check the network, or install Python 3.11/3.12 yourself to $PythonHome"
         Write-Host "Official installer: $InstallerUrl"
         Write-Host "Silent example: installer /quiet InstallAllUsers=0 PrependPath=0 Include_launcher=0 TargetDir=$PythonHome"
         exit 1
     }
+    $mb = [math]::Round((Get-Item -LiteralPath $installer).Length / 1MB, 1)
+    Write-Host "Download complete: $mb MB"
 
     Write-Host "Installing Python 3.12.10 to $PythonHome ..."
     $args = @(
