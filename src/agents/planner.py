@@ -13,7 +13,10 @@ BOTTOM_HINTS = ("离底", "底部", "目标卖价", "顶底", "17年")
 QUOTE_HINTS = ("现价", "最新价", "涨跌", "行情", "多少钱", "市盈", "pe", "PE")
 HOLDER_HINTS = ("股东", "十大")
 FINANCE_HINTS = ("财务", "研发", "净利率", "毛利率", "每股", "净资产", "未分配", "股本", "收益")
-COMPANY_HINTS = ("主营", "行业", "概念", "做什么", "经营")
+COMPANY_HINTS = ("主营", "行业", "概念", "做什么", "经营", "申万", "板块")
+FUND_HINTS = ("基金", "汇金", "持仓", "ETF", "投行")
+FUTURES_HINTS = ("期货", "原油", "铜价", "生猪", "大宗")
+EXPORT_HINTS = ("出口", "海外占比", "外市场")
 EXCEL_HINTS = ("excel", "Excel", "导出", "档案", "上周", "上次", "历史表", "对照", "那张表")
 DIFF_HINTS = ("变化", "变动", "对比", "差异", "diff")
 TABLE_HINTS = ("自选表", "整表", "查表", "自选现在")
@@ -82,6 +85,9 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
     wants_warehouse = _has(question, WAREHOUSE_HINTS)
     wants_api = _has(question, API_HINTS)
     wants_research = _has(question, RESEARCH_HINTS)
+    wants_funds = _has(question, FUND_HINTS)
+    wants_futures = _has(question, FUTURES_HINTS)
+    wants_export = _has(question, EXPORT_HINTS)
 
     if not any(
         (
@@ -99,6 +105,9 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
             wants_warehouse,
             wants_api,
             wants_research,
+            wants_funds,
+            wants_futures,
+            wants_export,
         )
     ):
         if insts:
@@ -152,6 +161,13 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
         add("finance_snapshot")
     if wants_company:
         add("company_profile")
+        add("taxonomy_lookup")
+    if wants_funds:
+        add("fund_holding")
+    if wants_futures:
+        add("futures_map")
+    if wants_export:
+        add("export_share")
     if wants_bottom:
         add("bottom")
     if wants_flow:
@@ -333,7 +349,22 @@ def _draft_lines(observations: list[dict]) -> list[str]:
             for row in data:
                 lines.append(
                     f"{row.get('name')} 所属行业 {row.get('industry') or '无数据'}；"
+                    f"七大板块 {row.get('sector') or '无数据'}；申万一级 {row.get('sw_l1') or '无数据'}；"
+                    f"2026概念 {row.get('hot_concepts') or '无'}；"
                     f"概念 {row.get('concept') or '无数据'}；主营 {row.get('business') or '无数据'}。"
+                )
+        elif tool == "fund_holding" and isinstance(data, list):
+            for row in data:
+                hits = row.get("watch_hits") or []
+                names = "、".join(h.get("name") for h in hits if h.get("name")) or "未命中白名单"
+                lines.append(f"{row.get('name')} 活跃资金：{names}。")
+        elif tool == "futures_map":
+            lines.append("关联期货仅有品种映射，尚未接入行情，不编价格。")
+        elif tool == "export_share" and isinstance(data, list):
+            for row in data:
+                lines.append(
+                    f"{row.get('name')} 出口占比 {row.get('export_pct') or '无数据'}，"
+                    f"外市场占比 {row.get('overseas_pct') or '无数据'}。"
                 )
         elif tool == "excel_list" and isinstance(data, list):
             if not data:

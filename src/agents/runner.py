@@ -22,6 +22,10 @@ ANALYST_TOOLS = [
     "capital_flow",
     "corp_events",
     "bottom",
+    "taxonomy_lookup",
+    "fund_holding",
+    "futures_map",
+    "export_share",
 ]
 
 RESEARCHER_TOOLS = [
@@ -36,7 +40,10 @@ RESEARCHER_TOOLS = [
     "warehouse_get",
     "web_finance_search",
     "futures_quote",
+    "futures_map",
     "policy_news",
+    "fund_holding",
+    "taxonomy_lookup",
 ]
 
 

@@ -12,10 +12,12 @@ def _auth(client: TestClient) -> dict:
 
 
 def test_reserved_tools_stay_disabled():
-    for tool_id in ("futures_quote", "web_finance_search", "policy_news", "fund_holding", "export_share"):
+    for tool_id in ("futures_quote", "web_finance_search", "policy_news"):
         spec = registry.get(tool_id)
         assert spec.enabled is False
         assert spec.reason
+    assert registry.get("fund_holding").enabled is True
+    assert registry.get("export_share").enabled is True
 
 
 def test_session_followup_uses_history():

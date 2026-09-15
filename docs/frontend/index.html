@@ -281,7 +281,7 @@
         <div id="monitor" class="view">
           <div class="toolbar">
             <button class="btn primary" id="monitorRun" type="button">立刻跑一轮</button>
-            <span class="hint">交易日 09:00–15:00 每 5 分钟扫接近底部；20:20 跑全部已开启规则。期货/资讯仍未接数据源。</span>
+            <span class="hint">交易日 09:00–15:00 每 5 分钟扫接近底部；20:20 跑已开启规则。期货行情、彭博检索未接则保持未启用。</span>
           </div>
           <div class="panel" style="border:0; flex:1;">
             <div id="monitorJobs"></div>
@@ -296,14 +296,16 @@
   <div class="login-mask" id="pickerMask" style="display:none;">
     <div class="login-card pick-card">
       <h2>沪深 / 北交所筛选</h2>
-      <p>按市场与关键词筛选，勾选后并入自选，或只查这一次。北交所财务列允许为空。</p>
+      <p>按市场、七大板块或 2026 概念筛选。北交所财务列允许为空。</p>
       <div class="chips" id="marketChips">
         <button class="btn sm chip-btn on" type="button" data-market="all">全部</button>
         <button class="btn sm chip-btn" type="button" data-market="hs">沪深</button>
         <button class="btn sm chip-btn" type="button" data-market="kc">科创</button>
         <button class="btn sm chip-btn" type="button" data-market="bj">北交所</button>
       </div>
-      <input id="pickQ" placeholder="名称、代码或行业，如 茅台 / 430017 / 军工" />
+      <div class="chips" id="sectorChips"></div>
+      <div class="chips" id="conceptChips"></div>
+      <input id="pickQ" placeholder="名称、代码、申万一级或概念，如 茅台 / 国防军工 / 人工智能" />
       <div class="pick-list" id="pickList"><div class="pick-empty">输入关键词或切换市场</div></div>
       <div class="pick-actions">
         <button class="btn primary" id="addPicked" type="button">加入自选</button>
@@ -482,7 +484,7 @@
       box.innerHTML = items.map((it) =>
         `<label>
           <input type="checkbox" value="${it.code_full}" />
-          <span><b>${it.name}</b><div class="sub">${it.code_full} · ${marketLabel[it.market] || it.market} · ${it.industry || "行业待补"}</div></span>
+          <span><b>${it.name}</b><div class="sub">${it.code_full} · ${marketLabel[it.market] || it.market} · ${it.sector || it.sw_l1 || it.industry || "行业待补"}${it.hot_concepts ? " · " + it.hot_concepts : ""}</div></span>
         </label>`
       ).join("");
     }
@@ -570,7 +572,7 @@
       toast("已写入档案库，并下载 " + data.filename);
     }
 
-    const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", bottom: "底/顶" };
+    const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", flow: "资金", bottom: "底/顶" };
 
     async function openCols() {
       const data = await api("/query/prefs");
@@ -721,9 +723,36 @@
         toast(err.message);
       }
     });
+    async function loadTaxonomyChips() {
+      if (state.taxonomy) return;
+      const data = await api("/markets/taxonomy");
+      state.taxonomy = data.taxonomy || {};
+      const sectors = document.getElementById("sectorChips");
+      const concepts = document.getElementById("conceptChips");
+      sectors.innerHTML = (state.taxonomy.sectors || []).map((s) =>
+        `<button class="btn sm chip-btn" type="button" data-tax="${s.label}">${s.label}</button>`
+      ).join("");
+      concepts.innerHTML = (state.taxonomy.concepts_2026 || []).map((s) =>
+        `<button class="btn sm chip-btn" type="button" data-tax="${s.label}">${s.label}</button>`
+      ).join("");
+    }
+
+    function applyTaxChip(label) {
+      document.getElementById("pickQ").value = label;
+      searchInstruments().catch((e) => toast(e.message));
+    }
+
     document.getElementById("openPicker").addEventListener("click", () => {
       document.getElementById("pickerMask").style.display = "flex";
-      searchInstruments().catch((e) => toast(e.message));
+      loadTaxonomyChips().then(() => searchInstruments()).catch((e) => toast(e.message));
+    });
+    document.getElementById("sectorChips").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-tax]");
+      if (btn) applyTaxChip(btn.dataset.tax);
+    });
+    document.getElementById("conceptChips").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-tax]");
+      if (btn) applyTaxChip(btn.dataset.tax);
     });
     document.getElementById("closePicker").addEventListener("click", closePicker);
     document.getElementById("pickQ").addEventListener("input", () => {

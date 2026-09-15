@@ -209,6 +209,20 @@ def instruments(q: str = "", board: str = Query("all", alias="market"), limit: i
     return market.search(q, board, max(1, min(limit, 200)))
 
 
+@router.get("/markets/taxonomy")
+def market_taxonomy():
+    from src.market.futures_map import catalog as futures_catalog
+    from src.market.institutions import catalog as institution_catalog
+    from src.market.taxonomy import catalog as taxonomy_catalog
+
+    return {
+        "taxonomy": taxonomy_catalog(),
+        "institutions": institution_catalog(),
+        "futures": futures_catalog(),
+        "northbound": "未接入",
+    }
+
+
 @router.get("/markets/pools")
 def list_pools():
     return {"pools": catalog(), "market": market.health()}

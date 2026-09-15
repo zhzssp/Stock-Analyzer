@@ -13,6 +13,8 @@ def catalog(market: MarketClient, extras: list[Instrument] | None = None) -> lis
 
 
 def watch_instruments(ctx) -> list[Instrument]:
+    if ctx.db is None:
+        return []
     items = ctx.db.query(WatchItem).filter_by(user_id=ctx.user_id).all()
     out = []
     for item in items:

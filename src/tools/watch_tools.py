@@ -24,7 +24,18 @@ def capital_flow(args: dict, ctx: ToolContext) -> ToolResult:
         nums = [float(x["net_in"]) for x in series if x.get("net_in") not in (None, "")]
         latest = nums[-1] if nums else None
         mean = sum(nums[:-1]) / max(len(nums) - 1, 1) if len(nums) > 1 else None
-        rows.append({"name": inst.name, "code": inst.code_full, "latest_net": latest, "mean_net": mean, "days": len(nums)})
+        last = series[-1] if series else {}
+        rows.append(
+            {
+                "name": inst.name,
+                "code": inst.code_full,
+                "latest_net": latest,
+                "mean_net": mean,
+                "inflow": last.get("inflow"),
+                "outflow": last.get("outflow"),
+                "days": len(nums),
+            }
+        )
     return ToolResult(ok=True, data=rows, source="capital_flow", cite="资金流 · transaction")
 
 
@@ -35,7 +46,7 @@ def corp_events(args: dict, ctx: ToolContext) -> ToolResult:
     rows = []
     for inst in insts:
         ev = ctx.market.events(inst)
-        rows.append({"name": inst.name, "code": inst.code_full, **ev})
+        rows.append({"name": inst.name, "code": inst.code_full, "cninfo_url": ev.get("cninfo_url"), **ev})
     return ToolResult(ok=True, data=rows, source="corp_events", cite="事件 · 分红/增发/解禁")
 
 

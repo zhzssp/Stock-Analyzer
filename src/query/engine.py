@@ -32,6 +32,7 @@ class QueryEngine:
                 "profile": {},
                 "holders": {},
                 "finance": {},
+                "flow": {},
                 "bottom": {},
             }
             if "profile" in need:
@@ -40,6 +41,10 @@ class QueryEngine:
                 bag["holders"] = self.market.holders(inst)
             if "finance" in need:
                 bag["finance"] = self.market.finance(inst)
+            if "flow" in need:
+                series = self.market.capital_flow(inst)
+                latest = series[-1] if series else {}
+                bag["flow"] = latest
             if "bars" in need:
                 bars = self.market.history(inst)
                 bag["bottom"] = compute_bottom(bars, (bag["quote"] or {}).get("p"))
@@ -55,7 +60,7 @@ class QueryEngine:
         return rows
 
     def _value(self, key: str, inst: Instrument, bag: dict) -> Any:
-        q, p, h, f, b = bag["quote"], bag["profile"], bag["holders"], bag["finance"], bag["bottom"]
+        q, p, h, f, fl, b = bag["quote"], bag["profile"], bag["holders"], bag["finance"], bag["flow"], bag["bottom"]
         mapping = {
             "name": inst.name,
             "code": inst.code_full,
@@ -64,9 +69,17 @@ class QueryEngine:
             "pe": q.get("pe"),
             "pb": q.get("sjl"),
             "industry": p.get("industry"),
+            "sector": p.get("sector"),
+            "sw_l1": p.get("sw_l1"),
+            "hot_concepts": p.get("hot_concepts"),
             "concept": p.get("concept"),
             "business": p.get("business"),
             "holders": h.get("holders"),
+            "top_holders": h.get("top_holders"),
+            "flow_in": fl.get("inflow"),
+            "flow_out": fl.get("outflow"),
+            "flow_net": fl.get("net_in"),
+            "northbound": None,
             "zgb": f.get("zgb"),
             "ltgb": f.get("ysltag"),
             "mgwfplr": f.get("mgwfplr"),

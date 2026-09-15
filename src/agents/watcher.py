@@ -8,18 +8,20 @@ from sqlalchemy.orm import Session
 from src.market.client import MarketClient, resolve_instruments
 from src.models import Alert, MonitorJob, Snapshot, User, WatchItem
 from src.query.engine import QueryEngine
+from src.market.holders_diff import diff_holders, format_diff, normalize_holders, watch_hits
 from src.tools import registry
 from src.tools.base import ToolContext
 
 
 JOB_DEFS = [
     {"job_key": "holders-change", "name": "股东变动", "enabled": 1, "reason": ""},
+    {"job_key": "fund-holding", "name": "活跃资金持股", "enabled": 1, "reason": ""},
     {"job_key": "capital-flow", "name": "资金异常", "enabled": 1, "reason": ""},
     {"job_key": "corp-events", "name": "分红 / 增发 / 解禁", "enabled": 1, "reason": ""},
     {"job_key": "near-bottom", "name": "接近底部", "enabled": 1, "reason": ""},
-    {"job_key": "futures", "name": "期货联动", "enabled": 0, "reason": "等待期货 Tool"},
-    {"job_key": "news", "name": "资讯冲击", "enabled": 0, "reason": "等待检索 Tool"},
-    {"job_key": "policy", "name": "产业政策 / 基金调仓", "enabled": 0, "reason": "等待资讯 Tool"},
+    {"job_key": "futures", "name": "期货联动", "enabled": 0, "reason": "仅有品种映射，等待期货行情"},
+    {"job_key": "news", "name": "资讯冲击", "enabled": 0, "reason": "等待授权检索源"},
+    {"job_key": "policy", "name": "产业政策", "enabled": 0, "reason": "等待资讯 Tool"},
 ]
 
 
@@ -106,6 +108,8 @@ def run_watcher(db: Session, user: User, market: MarketClient, job_key: str | No
             hit = None
             if job.job_key == "holders-change":
                 hit = _rule_holders(db, user, ctx, inst)
+            elif job.job_key == "fund-holding":
+                hit = _rule_funds(db, user, ctx, inst)
             elif job.job_key == "capital-flow":
                 hit = _rule_flow(db, user, ctx, inst)
             elif job.job_key == "corp-events":
@@ -133,18 +137,54 @@ def run_watcher(db: Session, user: User, market: MarketClient, job_key: str | No
     return {"ran": [j.job_key for j in jobs if j.enabled], "hits": hits, "count": len(hits)}
 
 
+def _holder_items(row: dict | None) -> list[dict]:
+    if not row:
+        return []
+    detail = row.get("top_holders_detail") or row.get("holders_detail") or []
+    if detail:
+        return normalize_holders(detail)
+    names = [p.strip() for p in str(row.get("holders") or "").split("、") if p.strip()]
+    return [{"name": n, "shares": None, "pct": None} for n in names]
+
+
 def _rule_holders(db: Session, user: User, ctx: ToolContext, inst) -> dict | None:
     row = _row(ctx, "holders_flow", inst)
-    cur = (row or {}).get("holders") or ""
+    cur_items = _holder_items(row)
     prev = _snap(db, user.id, inst.code6, "holders")
-    old = json.loads(prev.payload or "{}").get("holders") if prev else None
-    _write_snap(db, user.id, inst.code6, "holders", {"holders": cur})
-    if old is None:
+    old_payload = json.loads(prev.payload) if prev and prev.payload else {}
+    old_items = old_payload.get("items")
+    if old_items is None and old_payload.get("holders"):
+        old_items = [{"name": p, "shares": None, "pct": None} for p in str(old_payload["holders"]).split("、") if p]
+    _write_snap(db, user.id, inst.code6, "holders", {"items": cur_items, "holders": (row or {}).get("holders") or ""})
+    if old_items is None:
         return None
-    if old == cur or not cur:
+    diff = diff_holders(old_items, cur_items)
+    if not diff["changed"]:
         return None
-    rec = _alert(db, user.id, "holders-change", inst.code6, f"{inst.name} · 十大流通股东变动", f"{old} → {cur}")
-    return {"job_key": "holders-change", "code6": inst.code6, "title": rec.title} if rec else None
+    detail = format_diff(diff)
+    watched = watch_hits(diff)
+    if watched:
+        detail = "重点机构 " + "、".join(x.get("institution") or x.get("name") for x in watched) + "。 " + detail
+    rec = _alert(db, user.id, "holders-change", inst.code6, f"{inst.name} · 十大股东变动", detail)
+    return {"job_key": "holders-change", "code6": inst.code6, "title": rec.title, "detail": detail} if rec else None
+
+
+def _rule_funds(db: Session, user: User, ctx: ToolContext, inst) -> dict | None:
+    result = registry.run("fund_holding", {"code": inst.code_full}, ctx)
+    if not result.ok:
+        return None
+    rows = result.data if isinstance(result.data, list) else []
+    row = rows[0] if rows else {}
+    hits = row.get("watch_hits") or []
+    names = [h.get("name") for h in hits if h.get("name")]
+    fingerprint = "、".join(names)
+    prev = _snap(db, user.id, inst.code6, "funds")
+    old = json.loads(prev.payload or "{}").get("text") if prev else None
+    _write_snap(db, user.id, inst.code6, "funds", {"text": fingerprint})
+    if not names or old == fingerprint:
+        return None
+    rec = _alert(db, user.id, "fund-holding", inst.code6, f"{inst.name} · 活跃资金持股", fingerprint)
+    return {"job_key": "fund-holding", "code6": inst.code6, "title": rec.title} if rec else None
 
 
 def _rule_flow(db: Session, user: User, ctx: ToolContext, inst) -> dict | None:
@@ -160,7 +200,7 @@ def _rule_flow(db: Session, user: User, ctx: ToolContext, inst) -> dict | None:
         "capital-flow",
         inst.code6,
         f"{inst.name} · 资金净流入偏离",
-        f"最新 {latest:.0f}，近窗均值 {mean:.0f}",
+        f"流入 {row.get('inflow')} 流出 {row.get('outflow')} 净流入 {latest:.0f}，近窗均值 {mean:.0f}",
     )
     return {"job_key": "capital-flow", "code6": inst.code6, "title": rec.title} if rec else None
 
@@ -184,6 +224,9 @@ def _rule_events(db: Session, user: User, ctx: ToolContext, inst) -> dict | None
     _write_snap(db, user.id, inst.code6, "events", {"text": fingerprint})
     if old == fingerprint:
         return None
+    link = row.get("cninfo_url") or ""
+    if link:
+        fingerprint = f"{fingerprint}；公告 {link}"
     rec = _alert(db, user.id, "corp-events", inst.code6, f"{inst.name} · 公司事件", fingerprint)
     return {"job_key": "corp-events", "code6": inst.code6, "title": rec.title} if rec else None
 

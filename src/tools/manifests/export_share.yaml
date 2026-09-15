@@ -1,8 +1,8 @@
 id: export_share
 name: 出口占比
 version: 0.1.0
-enabled: false
-reason: 当前 API 无此字段
+enabled: true
+reason: 仅手工表 data/export_share.csv，无文件则空
 kind: web
 description: 公司产品出口及外市场占比。无数据源时保持关闭。
 input_schema:

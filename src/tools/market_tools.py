@@ -53,6 +53,9 @@ def company_profile(args: dict, ctx: ToolContext) -> ToolResult:
                 "name": inst.name,
                 "code": inst.code_full,
                 "industry": _blank(p.get("industry")),
+                "sector": _blank(p.get("sector")),
+                "sw_l1": _blank(p.get("sw_l1")),
+                "hot_concepts": _blank(p.get("hot_concepts")),
                 "concept": _blank(p.get("concept")),
                 "business": _blank(p.get("business")),
             }
@@ -73,6 +76,8 @@ def holders_flow(args: dict, ctx: ToolContext) -> ToolResult:
                 "code": inst.code_full,
                 "holders": _blank(h.get("holders")),
                 "holders_detail": h.get("holders_detail") or [],
+                "top_holders": _blank(h.get("top_holders")),
+                "top_holders_detail": h.get("top_holders_detail") or [],
             }
         )
     return ToolResult(ok=True, data=rows, source="holders_flow", cite="股东 · holders")

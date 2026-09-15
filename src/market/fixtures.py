@@ -132,11 +132,27 @@ HOLDERS = {
         inst,
         holders=f"{inst.name}控股股东、香港中央结算",
         holders_detail=[
-            {"Pm": 1, "Gdmc": f"{inst.name}控股股东", "Cgbl": 48.2},
-            {"Pm": 2, "Gdmc": "香港中央结算", "Cgbl": 3.1},
+            {"Pm": 1, "Gdmc": f"{inst.name}控股股东", "Cgsl": 48000000, "Cgbl": 48.2},
+            {"Pm": 2, "Gdmc": "香港中央结算", "Cgsl": 3100000, "Cgbl": 3.1},
+        ],
+        top_holders_detail=[
+            {"Pm": 1, "Gdmc": f"{inst.name}控股股东", "Cgsl": 48000000, "Cgbl": 48.2},
+            {"Pm": 2, "Gdmc": "香港中央结算", "Cgsl": 3100000, "Cgbl": 3.1},
         ],
     )
     for inst in WATCH_SEED
+}
+HOLDERS["600038"]["holders_detail"] = [
+    {"Pm": 1, "Gdmc": "中直股份控股股东", "Cgsl": 48000000, "Cgbl": 48.2},
+    {"Pm": 2, "Gdmc": "挪威政府全球养老基金", "Cgsl": 2100000, "Cgbl": 2.1},
+    {"Pm": 3, "Gdmc": "香港中央结算", "Cgsl": 3100000, "Cgbl": 3.1},
+]
+HOLDERS["600038"]["holders"] = "中直股份控股股东、挪威政府全球养老基金"
+
+FUNDS = {
+    "600038": [{"name": "易方达瑞享", "shares": 1200000, "pct": 1.2, "value": 3200}],
+    "002230": [{"name": "信澳新能源产业股票", "shares": 800000, "pct": 0.6, "value": 2100}],
+    "300750": [{"name": "永赢景气精选主动管理ETF", "shares": 500000, "pct": 0.4, "value": 9800}],
 }
 
 FINANCE = {

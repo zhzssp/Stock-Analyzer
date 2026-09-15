@@ -1,8 +1,8 @@
 id: fund_holding
 name: 基金持仓
 version: 0.1.0
-enabled: false
-reason: 等待基金持仓接口
+enabled: true
+reason: ""
 kind: market
 description: 主动基金调仓弱版。数据源未接时保持关闭。
 input_schema:

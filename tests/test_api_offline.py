@@ -16,7 +16,13 @@ def test_login_query_export():
         assert len(watch.json()) >= 1
 
         fields = client.get("/api/query/fields", headers=headers)
-        assert {x["key"] for x in fields.json()} >= {"name", "price", "holders", "yffy", "net"}
+        assert {x["key"] for x in fields.json()} >= {"name", "price", "holders", "yffy", "net", "sector", "flow_net", "northbound"}
+
+        tax = client.get("/api/markets/taxonomy")
+        assert tax.status_code == 200
+        labels = {s["label"] for s in tax.json()["taxonomy"]["sectors"]}
+        assert "大金融" in labels
+        assert tax.json()["northbound"] == "未接入"
 
         query = client.post("/api/query/run", json={}, headers=headers)
         assert query.status_code == 200

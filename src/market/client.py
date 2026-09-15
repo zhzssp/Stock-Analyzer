@@ -7,7 +7,9 @@ import httpx
 
 from src.config import settings
 from src.market import fixtures
+from src.market.holders_diff import normalize_holders, summarize
 from src.market.normalize import Instrument, code6_of, normalize_instrument
+from src.market.taxonomy import classify, search_needles
 
 
 class MarketError(RuntimeError):
@@ -40,6 +42,12 @@ class MarketClient:
             return resp.json()
         except Exception as exc:
             raise MarketError(str(exc)) from exc
+
+    def _try_get(self, path: str) -> Any | None:
+        try:
+            return self._get(path)
+        except MarketError:
+            return None
 
     def _probe(self) -> None:
         if self.licence == settings.demo_licence:
@@ -109,13 +117,32 @@ class MarketClient:
             items = [i for i in items if i.exchange == "SZ"]
         elif market == "cy":
             items = [i for i in items if i.code6.startswith("300")]
-        needle = (q or "").strip().lower()
+        needle = (q or "").strip()
+        extra = search_needles(needle)
         out = []
         for inst in items:
             industry = fixtures.INDUSTRY.get(inst.code6, "")
-            hay = f"{inst.name} {inst.code6} {inst.code_full} {industry}".lower()
-            if needle and needle not in hay:
-                continue
+            profile = fixtures.PROFILE.get(inst.code6) or {}
+            concept = profile.get("concept") or ""
+            tax = classify(industry, concept)
+            hay = " ".join(
+                [
+                    inst.name,
+                    inst.code6,
+                    inst.code_full,
+                    industry,
+                    concept,
+                    tax.get("sector") or "",
+                    tax.get("sw_l1") or "",
+                    tax.get("hot_concepts") or "",
+                ]
+            ).lower()
+            if needle:
+                hit = needle.lower() in hay
+                if not hit and extra:
+                    hit = any(token.lower() in hay for token in extra)
+                if not hit:
+                    continue
             out.append(
                 {
                     "code6": inst.code6,
@@ -123,6 +150,9 @@ class MarketClient:
                     "name": inst.name,
                     "market": inst.market,
                     "industry": industry,
+                    "sector": tax.get("sector") or "",
+                    "sw_l1": tax.get("sw_l1") or "",
+                    "hot_concepts": tax.get("hot_concepts") or "",
                 }
             )
             if len(out) >= limit:
@@ -172,7 +202,7 @@ class MarketClient:
 
     def profile(self, inst: Instrument) -> dict:
         if self.offline:
-            return fixtures.PROFILE.get(inst.code6, {"source": "offline"})
+            return _with_taxonomy(dict(fixtures.PROFILE.get(inst.code6, {"source": "offline"})))
         out = {"industry": "", "concept": "", "business": "", "source": "live"}
         try:
             zg = self._get(f"/hszg/zg/{inst.code6}")
@@ -191,28 +221,17 @@ class MarketClient:
                 out["concept"] = row["idea"]
         except MarketError:
             pass
-        return out
+        return _with_taxonomy(out)
 
     def holders(self, inst: Instrument) -> dict:
         if self.offline:
-            return fixtures.HOLDERS.get(inst.code6, {"source": "offline"})
-        try:
-            data = self._get(f"/hsstock/financial/flowholder/{inst.code_full}")
-        except MarketError:
-            try:
-                data = self._get(f"/hscp/ltgd/{inst.code6}")
-            except MarketError:
-                return {"holders": "", "holders_detail": [], "source": "live"}
-        if not data:
-            return {"holders": "", "holders_detail": [], "source": "live"}
-        latest = data[0] if isinstance(data, list) else data
-        detail = latest.get("sdgd") if isinstance(latest, dict) and "sdgd" in latest else data[:10]
-        if not isinstance(detail, list):
-            detail = []
-        names = []
-        for item in detail[:3]:
-            names.append(str(item.get("Gdmc") or item.get("gdmc") or item.get("name") or ""))
-        return {"holders": "、".join([n for n in names if n]) or "详见明细", "holders_detail": detail[:10], "source": "live"}
+            raw = fixtures.HOLDERS.get(inst.code6)
+            if not raw:
+                return {"holders": None, "holders_detail": [], "top_holders": None, "top_holders_detail": [], "source": "offline"}
+            return _pack_holders(raw.get("holders_detail") or [], raw.get("top_holders_detail") or [], "offline")
+        flow = _holder_rows(self._try_get(f"/hsstock/financial/flowholder/{inst.code_full}") or self._try_get(f"/hscp/ltgd/{inst.code6}"))
+        top = _holder_rows(self._try_get(f"/hsstock/financial/topholder/{inst.code_full}") or self._try_get(f"/hscp/sdgd/{inst.code6}"))
+        return _pack_holders(flow, top, "live")
 
     def finance(self, inst: Instrument) -> dict:
         if self.offline:
@@ -321,7 +340,7 @@ class MarketClient:
 
     def capital_flow(self, inst: Instrument) -> list[dict]:
         if self.offline:
-            return list(fixtures.FLOW.get(inst.code6) or [])
+            return [_flow_point(x) for x in fixtures.FLOW.get(inst.code6) or []]
         try:
             data = self._get(f"/hsstock/history/transaction/{inst.code_full}")
         except MarketError:
@@ -331,14 +350,34 @@ class MarketClient:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            net = row.get("zljme") or row.get("net_in") or row.get("jlje")
-            out.append({"d": row.get("t") or row.get("d"), "net_in": net, "raw": {k: row.get(k) for k in list(row)[:8]}})
+            out.append(_flow_point(row))
+        return out
+
+    def fund_holdings(self, inst: Instrument) -> list[dict]:
+        if self.offline:
+            return list(fixtures.FUNDS.get(inst.code6) or [])
+        data = self._try_get(f"/hscp/jjcg/{inst.code6}")
+        rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            out.append(
+                {
+                    "name": row.get("name") or row.get("jjmc") or row.get("fund") or "",
+                    "shares": row.get("cgs") or row.get("shares"),
+                    "pct": row.get("zltg") or row.get("pct"),
+                    "value": row.get("sz") or row.get("value"),
+                }
+            )
         return out
 
     def events(self, inst: Instrument) -> dict:
         if self.offline:
-            return fixtures.EVENTS.get(inst.code6, {"dividends": [], "seo": [], "unlock": []})
-        out = {"dividends": [], "seo": [], "unlock": []}
+            ev = dict(fixtures.EVENTS.get(inst.code6, {"dividends": [], "seo": [], "unlock": []}))
+            ev["cninfo_url"] = cninfo_url(inst.code6)
+            return ev
+        out = {"dividends": [], "seo": [], "unlock": [], "cninfo_url": cninfo_url(inst.code6)}
         try:
             data = self._get(f"/hscp/jnfh/{inst.code6}")
             rows = data if isinstance(data, list) else [data]
@@ -386,6 +425,56 @@ class MarketClient:
                     self._cache_put(f"index_{code}", data)
                 return [normalize_instrument(x.get("dm") or x.get("code") or "", x.get("mc") or x.get("name") or "", x.get("jys", "")) for x in data if isinstance(x, dict)]
         return []
+
+
+def cninfo_url(code6: str) -> str:
+    return f"https://www.cninfo.com.cn/new/disclosure/stock?orgId=&stockCode={code6}"
+
+
+def _with_taxonomy(row: dict) -> dict:
+    tax = classify(row.get("industry") or "", row.get("concept") or "")
+    out = dict(row)
+    out["sector"] = tax["sector"]
+    out["sw_l1"] = tax["sw_l1"]
+    out["hot_concepts"] = tax["hot_concepts"]
+    return out
+
+
+def _holder_rows(data) -> list[dict]:
+    if not data:
+        return []
+    latest = data[0] if isinstance(data, list) else data
+    detail = latest.get("sdgd") if isinstance(latest, dict) and "sdgd" in latest else data
+    if not isinstance(detail, list):
+        return []
+    return [x for x in detail[:10] if isinstance(x, dict)]
+
+
+def _pack_holders(flow_raw: list, top_raw: list, source: str) -> dict:
+    flow = normalize_holders(flow_raw)
+    top = normalize_holders(top_raw)
+    return {
+        "holders": summarize(flow) or summarize(top),
+        "holders_detail": flow,
+        "top_holders": summarize(top),
+        "top_holders_detail": top,
+        "source": source,
+    }
+
+
+def _flow_point(row: dict) -> dict:
+    net = row.get("zljme") or row.get("net_in") or row.get("jlje")
+    inflow = row.get("zljmr") or row.get("inflow") or row.get("lrje") or row.get("main_in")
+    outflow = row.get("zljmc") or row.get("outflow") or row.get("lcje")
+    if inflow is None and outflow is None and net not in (None, ""):
+        try:
+            n = float(net)
+        except (TypeError, ValueError):
+            n = None
+        if n is not None:
+            inflow = n if n > 0 else 0
+            outflow = -n if n < 0 else 0
+    return {"d": row.get("t") or row.get("d"), "net_in": net, "inflow": inflow, "outflow": outflow}
 
 
 def _bar_day(row: dict) -> str:
