@@ -210,14 +210,12 @@
           <ul class="watch" id="watchList"></ul>
         </div>
         <div id="quotePane" style="display:none;">
-          <div class="side-title">交易所 / 板块</div>
-          <div class="chips" id="exchangeChips"></div>
-          <div class="side-title" style="margin-top:6px;">指数成份</div>
+          <div class="side-title">指数成份</div>
           <div class="chips" id="indexChips"></div>
-          <input id="quoteFilter" placeholder="搜索当前池" />
+          <input id="quoteFilter" placeholder="搜索当前成份" />
           <ul class="watch" id="quoteList"></ul>
         </div>
-        <div class="hint" id="poolHint" style="color:var(--muted);font-size:12px;margin-top:auto;">导出 Excel 跟随当前池。深市全部不是深证成指；北交所全部不是北证50。</div>
+        <div class="hint" id="poolHint" style="color:var(--muted);font-size:12px;margin-top:auto;">行情只导出当前指数的成份股，不是沪/深/北交易所全部股票。</div>
       </aside>
       <section class="main">
         <nav class="tabs">
@@ -438,13 +436,9 @@
 
     function renderPoolChips(pools) {
       state.pools = pools;
-      const exch = document.getElementById("exchangeChips");
       const idx = document.getElementById("indexChips");
-      exch.innerHTML = pools.filter((p) => p.kind === "exchange" || p.kind === "board").map((p) =>
-        `<button class="btn sm chip-btn ${state.pool === p.id ? "on" : ""}" type="button" data-pool="${p.id}">${p.label}</button>`
-      ).join("");
       idx.innerHTML = pools.filter((p) => p.kind === "index").map((p) =>
-        `<button class="btn sm chip-btn ${p.enabled ? "" : "off"}" type="button" data-pool="${p.id}" ${p.enabled ? "" : "disabled"} title="${p.reason || "未启用"}">${p.label}${p.enabled ? "" : " · 未启用"}</button>`
+        `<button class="btn sm chip-btn ${state.pool === p.id ? "on" : ""} ${p.enabled ? "" : "off"}" type="button" data-pool="${p.id}" ${p.enabled ? "" : "disabled"} title="${p.reason || (p.enabled ? "成份股" : "未启用")}">${p.label}${p.enabled ? (p.count ? " · " + p.count : "") : " · 未启用"}</button>`
       ).join("");
     }
 
@@ -458,7 +452,7 @@
       renderPoolChips(state.pools);
       const data = await api("/markets/pools/" + encodeURIComponent(poolId) + "/instruments");
       renderQuoteList(data.items || []);
-      document.getElementById("poolHint").textContent = data.note || "导出 Excel 跟随当前池。";
+      document.getElementById("poolHint").textContent = data.note || "行情只导出当前指数的成份股。";
       await runQuery();
     }
 
@@ -698,13 +692,9 @@
     });
     document.getElementById("sideQuote").addEventListener("click", () => {
       setSide("quote");
-      const first = (state.pools || []).find((p) => p.kind === "exchange" && p.enabled);
+      const first = (state.pools || []).find((p) => p.kind === "index" && p.enabled);
       if (first) selectPool(first.id).catch((e) => toast(e.message));
-    });
-    document.getElementById("exchangeChips").addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-pool]");
-      if (!btn || btn.disabled) return;
-      selectPool(btn.dataset.pool).catch((err) => toast(err.message));
+      else toast("还没有可用的指数成份");
     });
     document.getElementById("indexChips").addEventListener("click", (e) => {
       const btn = e.target.closest("[data-pool]");

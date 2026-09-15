@@ -23,8 +23,11 @@ def test_pools_catalog_and_exchange_query_export():
         assert ids["exchange:sz"]["label"] == "深市全部"
         assert ids["exchange:bj"]["label"] == "北交所全部"
         assert ids["board:cy"]["label"] == "创业板全部"
-        assert ids["index:399001.SZ"]["enabled"] is False
-        assert ids["index:899050.BJ"]["enabled"] is False
+        assert ids["index:000001.SH"]["enabled"] is True
+        assert ids["index:399001.SZ"]["enabled"] is True
+        assert ids["index:899050.BJ"]["enabled"] is True
+        assert ids["index:399001.SZ"]["label"] == "深证成指"
+        assert ids["index:899050.BJ"]["label"] == "北证50"
 
         sh = client.get("/api/markets/pools/exchange:sh/instruments", headers=headers)
         assert sh.status_code == 200
@@ -59,14 +62,29 @@ def test_pools_catalog_and_exchange_query_export():
         assert exported.status_code == 200
         assert "北交所全部" in exported.json()["filename"] or exported.json()["pool"] == "北交所全部"
 
-        idx = ids["index:000001.SH"]
-        listed = client.get("/api/markets/pools/index:000001.SH/instruments", headers=headers)
-        if idx["enabled"]:
-            assert listed.status_code == 200
-            assert listed.json()["items"]
-        else:
-            assert listed.status_code == 409
-            assert client.post("/api/query/run", json={"pool": "index:399001.SZ"}, headers=headers).status_code == 409
+        sse = client.get("/api/markets/pools/index:000001.SH/instruments", headers=headers)
+        assert sse.status_code == 200
+        assert sse.json()["label"] == "上证指数"
+        sse_codes = {x["code6"] for x in sse.json()["items"]}
+        assert sse_codes == {"600038", "600893", "600129", "601166", "600519"}
+        assert "688001" not in sse_codes
+        assert all(x["exchange"] == "SH" for x in sse.json()["items"])
+
+        sz_idx = client.post("/api/query/run", json={"pool": "index:399001.SZ"}, headers=headers)
+        assert sz_idx.status_code == 200
+        sz_codes = {row["code6"] for row in sz_idx.json()["rows"]}
+        assert sz_codes == {"000725", "000001", "002230", "000768"}
+        assert "300750" not in sz_codes
+        assert sz_idx.json()["pool"] == "深证成指"
+
+        bj_idx = client.post("/api/query/export", json={"pool": "index:899050.BJ"}, headers=headers)
+        assert bj_idx.status_code == 200
+        assert bj_idx.json()["pool"] == "北证50"
+        assert "北证50" in bj_idx.json()["filename"]
+        assert "北交所全部" not in bj_idx.json()["filename"]
+        bj_codes = {row["code6"] for row in client.post("/api/query/run", json={"pool": "index:899050.BJ"}, headers=headers).json()["rows"]}
+        assert bj_codes == {"430017", "830799"}
+        assert "833533" not in bj_codes
 
 
 def test_large_pool_uses_job():

@@ -88,10 +88,10 @@ def resolve_pool(
         if not insts:
             st = index_status(code)
             raise HTTPException(status_code=409, detail=f"{pool_label(pid)} 未启用：{st['reason']}")
-        meta["note"] = "指数成份"
+        meta["note"] = "指数成份股；不是该交易所全部挂牌"
         if market.offline:
             meta["sample"] = True
-            meta["note"] = "离线成份切片"
+            meta["note"] = "离线成份切片，不是完整官方成份，也不是该交易所全部挂牌"
         return insts, meta
 
     raise HTTPException(status_code=400, detail=f"未知股票池: {pid}")

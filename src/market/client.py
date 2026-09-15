@@ -409,7 +409,7 @@ class MarketClient:
 
         st = index_status(code)
         if st["enabled"] and st["codes"]:
-            return [normalize_instrument(c) for c in st["codes"]]
+            return resolve_instruments(st["codes"], self)
         if self.offline or self.sample_only:
             return []
         cached = self._cache_get(f"index_{code}")
@@ -423,7 +423,15 @@ class MarketClient:
             if isinstance(data, list) and len(data) >= 10:
                 if not self.sample_only:
                     self._cache_put(f"index_{code}", data)
-                return [normalize_instrument(x.get("dm") or x.get("code") or "", x.get("mc") or x.get("name") or "", x.get("jys", "")) for x in data if isinstance(x, dict)]
+                return [
+                    normalize_instrument(
+                        x.get("dm") or x.get("code") or "",
+                        x.get("mc") or x.get("name") or "",
+                        x.get("jys", ""),
+                    )
+                    for x in data
+                    if isinstance(x, dict)
+                ]
         return []
 
 

@@ -32,6 +32,18 @@ UNIVERSE_BJ = [
 UNIVERSE = UNIVERSE_HS + UNIVERSE_BJ
 _INST = {i.code6: i for i in UNIVERSE}
 
+# Offline constituent slices. Intentionally smaller than the matching exchange
+# universe so 行情 cannot be mistaken for 沪市全部 / 深市全部 / 北交所全部.
+INDEX_CONSTITUENTS = {
+    "000001.SH": ["600038.SH", "600893.SH", "600129.SH", "601166.SH", "600519.SH"],
+    "399001.SZ": ["000725.SZ", "000001.SZ", "002230.SZ", "000768.SZ"],
+    "899050.BJ": ["430017.BJ", "830799.BJ"],
+    "000680.SH": ["688001.SH"],
+    "399006.SZ": ["300750.SZ"],
+    "000905.SH": ["000725.SZ", "600038.SH"],
+    "000016.SH": ["600519.SH", "601166.SH"],
+}
+
 INDUSTRY = {
     "600038": "国防军工",
     "600893": "国防军工",

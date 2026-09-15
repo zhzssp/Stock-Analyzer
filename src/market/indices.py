@@ -5,7 +5,7 @@ from pathlib import Path
 
 from src.config import settings
 
-# Official names only. enabled=false until S0 writes data/index_probe.json.
+# Official names. Offline uses fixture slices; live probe may replace codes.
 CANDIDATE_PATHS = (
     "/hsindex/constituent/{code}",
     "/hsindex/chengfen/{code}",
@@ -41,13 +41,37 @@ def load_probe() -> dict:
 
 def index_status(code: str) -> dict:
     rec = (load_probe().get("indices") or {}).get(code) or {}
-    enabled = bool(rec.get("enabled")) and bool(rec.get("codes"))
+    if bool(rec.get("enabled")) and rec.get("codes"):
+        codes = [str(x) for x in rec["codes"]]
+        return {
+            "code": code,
+            "enabled": True,
+            "reason": "",
+            "count": len(codes),
+            "codes": codes,
+            "source": rec.get("source") or "probe",
+        }
+
+    offline = settings.mairui_offline or not str(settings.mairui_licence or "").strip()
+    if offline:
+        from src.market.fixtures import INDEX_CONSTITUENTS
+
+        codes = list(INDEX_CONSTITUENTS.get(code) or [])
+        return {
+            "code": code,
+            "enabled": bool(codes),
+            "reason": "" if codes else "离线切片未覆盖该指数",
+            "count": len(codes),
+            "codes": codes,
+            "source": "offline-fixture" if codes else "",
+        }
+
     return {
         "code": code,
-        "enabled": enabled,
-        "reason": rec.get("reason") or ("等待正式 licence 实测成份接口" if not enabled else ""),
-        "count": len(rec.get("codes") or []),
-        "codes": list(rec.get("codes") or []),
+        "enabled": False,
+        "reason": rec.get("reason") or "等待正式 licence 实测成份接口",
+        "count": 0,
+        "codes": [],
         "source": rec.get("source") or "",
     }
 

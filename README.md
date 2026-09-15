@@ -2,7 +2,7 @@
 
 基于麦蕊（mairuiapi.com）股票数据 API 复刻并扩展一套自选股分析表——包含现价、市值、财务指标，以及围绕**历史底部**展开的一系列派生指标（底/顶、离底%、顶底倍数、目标卖价等）。
 
-当前已落地 **S1–S5 + S7–S8.4（离线）**：本机登录、自选池、图 1 查询与导出、analyst 多轮问答（DeepSeek / 粘贴表 / 仓库 / 带参接口）、researcher「看市场」、监控中心 + 本机总线/通知通道。期货/资讯/政策 Tool 已登记但未启用。S9 Electron 未做。默认 `MAIRUI_OFFLINE=1`。S0 正式 licence 与 S6 指数成份尚未用实盘跑通。
+当前已落地 **S1–S5 + S6 离线成份切片 + S7–S8.4（离线）**：本机登录、自选池、图 1 查询与导出、行情按指数成份查/导、analyst 多轮问答（DeepSeek / 粘贴表 / 仓库 / 带参接口）、researcher「看市场」、监控中心 + 本机总线/通知通道。期货/资讯/政策 Tool 已登记但未启用。S9 Electron 未做。默认 `MAIRUI_OFFLINE=1`。S0 正式 licence 与完整官方成份接口尚未用实盘跑通。
 
 ---
 
@@ -114,7 +114,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-server.ps1
 **待办**
 
 - ⛔ **S0** 正式 licence 实测日线深度 **与** 指数成份接口（`scripts/Verify-Index.ps1`）
-- **S6** 仅打开已证实的指数成份芯片
+- **S6** 离线成份切片已可查/导；正式 licence 下用探针结果替换切片，不得用全市场冒充成份
 - **S7 实盘调度**：离线规则已接；正式 licence 下需用真实行情/资金流/事件接口复核阈值
 
 ## 数据源
