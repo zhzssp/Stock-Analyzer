@@ -72,6 +72,8 @@ Stock-Analyzer/
 
 ## 本机运行
 
+完全不会用命令的，请按 [`docs/本地部署教程.md`](docs/本地部署教程.md) 做（从安装 Git、`git clone` 到浏览器打开）。下面是给已经会开终端的人看的精简步骤。
+
 新机器（没有 `E:\python-stock` 下的 Python 3.11/3.12，或没有 `.venv`）先一键配置：
 
 ```bat
