@@ -11,6 +11,7 @@ Set-Location $root
 
 $PythonHome = "E:\python-stock"
 $InstallerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+$InstallerLog = Join-Path $env:TEMP "stock-analyzer-python-install.log"
 
 function Write-Step([string]$Title) {
     Write-Host ""
@@ -43,14 +44,11 @@ function Test-PythonHomeDrive {
     }
 }
 
-function Test-ManagedPython([string]$exe) {
+function Test-CPythonVersion([string]$exe) {
     if (-not $exe) { return $false }
     if ($exe -match "WindowsApps\\python") { return $false }
     if (-not (Test-Path -LiteralPath $exe)) { return $false }
     try {
-        $full = [IO.Path]::GetFullPath($exe)
-        $home = [IO.Path]::GetFullPath($PythonHome)
-        if (-not $full.StartsWith($home, [StringComparison]::OrdinalIgnoreCase)) { return $false }
         $ver = & $exe -c "import sys; print('%d.%d' % (sys.version_info.major, sys.version_info.minor))" 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $ver) { return $false }
         $parts = $ver.Trim().Split(".")
@@ -60,6 +58,20 @@ function Test-ManagedPython([string]$exe) {
     } catch {
         return $false
     }
+}
+
+function Test-UnderPythonHome([string]$exe) {
+    try {
+        $full = [IO.Path]::GetFullPath($exe)
+        $home = [IO.Path]::GetFullPath($PythonHome)
+        return $full.StartsWith($home, [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
+function Test-ManagedPython([string]$exe) {
+    return ((Test-CPythonVersion $exe) -and (Test-UnderPythonHome $exe))
 }
 
 function Find-Python {
@@ -72,6 +84,102 @@ function Find-Python {
         if (Test-ManagedPython $p) { return $p }
     }
     return $null
+}
+
+function Get-MisplacedPythonCandidates {
+    $list = @()
+    $roots = @(
+        (Join-Path $env:LocalAppData "Programs\Python"),
+        (Join-Path ${env:ProgramFiles} "Python"),
+        ${env:ProgramFiles},
+        ${env:ProgramFiles(x86)}
+    )
+    foreach ($rootDir in $roots) {
+        if (-not $rootDir) { continue }
+        foreach ($name in @("Python312", "Python311", "Python3.12", "Python3.11")) {
+            $list += (Join-Path $rootDir "$name\python.exe")
+        }
+    }
+    $list += (Join-Path ${env:ProgramFiles} "Python312\python.exe")
+    $list += (Join-Path ${env:ProgramFiles} "Python311\python.exe")
+    return $list
+}
+
+function Find-MisplacedPython {
+    foreach ($p in Get-MisplacedPythonCandidates) {
+        if (-not (Test-CPythonVersion $p)) { continue }
+        if (Test-UnderPythonHome $p) { continue }
+        return $p
+    }
+    return $null
+}
+
+function Write-PythonHomeStatus {
+    if (-not (Test-Path -LiteralPath $PythonHome)) {
+        Write-Info "目录还不存在：$PythonHome"
+        return
+    }
+    $exe = Join-Path $PythonHome "python.exe"
+    if (Test-Path -LiteralPath $exe) {
+        Write-Info "已看到：$exe"
+        return
+    }
+    $names = @(Get-ChildItem -LiteralPath $PythonHome -ErrorAction SilentlyContinue | Select-Object -First 20 -ExpandProperty Name)
+    if ($names.Count -eq 0) {
+        Write-Info "$PythonHome 目前是空文件夹。安装器没有往这里写文件。"
+    } else {
+        Write-Info "$PythonHome 里没有 python.exe。目前能看到：$($names -join ', ')"
+    }
+}
+
+function Copy-PythonToHome([string]$sourceExe) {
+    $srcDir = Split-Path -Parent $sourceExe
+    $srcVer = Get-PythonVersion $sourceExe
+    Write-Warn "官方安装器没有把 Python 放到 $PythonHome（这是常见情况，不是下载失败）。"
+    Write-Info "实际找到的一份：$sourceExe （版本 $srcVer）"
+    Write-Info "原因：同一台电脑若已经有 Python 3.12，安装器会去修复旧位置，忽略我们指定的 E:\ 目录。"
+    Write-Info "本软件仍然只认 $PythonHome。正在把这一份复制过去，然后继续后面的配置。"
+    Write-Info "复制期间请不要关闭窗口。"
+    if (-not (Test-Path -LiteralPath $PythonHome)) {
+        New-Item -ItemType Directory -Path $PythonHome -Force | Out-Null
+    }
+    try {
+        Copy-Item -Path (Join-Path $srcDir "*") -Destination $PythonHome -Recurse -Force
+    } catch {
+        Write-Warn "复制失败：$($_.Exception.Message)"
+        return $false
+    }
+    $dest = Join-Path $PythonHome "python.exe"
+    if (Test-ManagedPython $dest) {
+        Write-Ok "已放到 $dest ，后面会用这一份创建运行环境"
+        return $true
+    }
+    Write-Warn "复制结束后，仍无法用 $dest 启动 Python 3.11/3.12。"
+    return $false
+}
+
+function Write-PythonNotReadyHelp {
+    Write-Host "这不等于软件已经能打开网页。创建运行环境、安装依赖都还没做，现在启动服务会失败。"
+    Write-Host ""
+    Write-PythonHomeStatus
+    $misplaced = Find-MisplacedPython
+    if ($misplaced) {
+        Write-Host "在默认位置找到了另一份 Python："
+        Write-Host "    $misplaced"
+        Write-Host "请不要用这一份直接开服务；本软件不认这个路径。"
+    } else {
+        Write-Host "默认位置也没有找到 Python 3.11/3.12："
+        Write-Host "    $env:LocalAppData\Programs\Python\Python312\python.exe"
+    }
+    Write-Host ""
+    Write-Host "请按顺序试："
+    Write-Host "  1. 打开 Windows「设置 → 应用」，若已有 Python 3.11 或 3.12，先卸载。"
+    Write-Host "  2. 关掉本窗口，右键 scripts\setup.cmd → 以管理员身份运行。"
+    Write-Host "  3. 打开文件资源管理器，确认出现 $PythonHome\python.exe 后再双击 scripts\run-server.cmd。"
+    if (Test-Path -LiteralPath $InstallerLog) {
+        Write-Host "  4. 仍失败时，把本窗口全文和这个日志发给工作人员："
+        Write-Host "     $InstallerLog"
+    }
 }
 
 function Get-PythonVersion([string]$exe) {
@@ -121,15 +229,17 @@ function Install-Python {
 
     Write-Info "正在安装到 $PythonHome"
     Write-Warn "安装窗口可能几乎没有进度，静默等待 1～3 分钟是正常的，请不要关闭"
+    Write-Info "安装器日志：$InstallerLog"
     $installerArgs = @(
         "/quiet",
+        "/install",
+        "/log", $InstallerLog,
         "InstallAllUsers=0",
         "PrependPath=0",
         "Include_launcher=0",
         "Include_test=0",
         "Include_doc=0",
         "Include_pip=1",
-        "SimpleInstall=1",
         "TargetDir=$PythonHome",
         "DefaultJustForMeTargetDir=$PythonHome",
         "DefaultCustomTargetDir=$PythonHome"
@@ -137,13 +247,18 @@ function Install-Python {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $proc = Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -PassThru
     $sw.Stop()
+    $seconds = [int]$sw.Elapsed.TotalSeconds
     if ($proc.ExitCode -ne 0) {
-        Write-Fail "Python 安装程序退出码 $($proc.ExitCode)"
+        Write-Fail "Python 安装程序退出码 $($proc.ExitCode)，用时 $seconds 秒。这才是安装失败。"
         Write-Host "如果是权限问题：右键 scripts\setup.cmd → 以管理员身份运行"
         Write-Host "安装成功后，这里必须出现文件：$PythonHome\python.exe"
+        if (Test-Path -LiteralPath $InstallerLog) {
+            Write-Host "安装器日志：$InstallerLog"
+        }
         exit $proc.ExitCode
     }
-    Write-Ok ("Python 安装完成，用时 {0} 秒" -f [int]$sw.Elapsed.TotalSeconds)
+    Write-Info ("安装程序已退出（退出码 0，用时 {0} 秒）。退出码 0 只表示安装器跑完了，还要检查文件是否真的在 $PythonHome。" -f $seconds)
+    Write-PythonHomeStatus
 }
 
 Write-Host ""
@@ -160,7 +275,7 @@ Test-PythonHomeDrive
 Write-Ok "已找到 E: 盘。Python 将安装/使用 $PythonHome"
 
 Write-Step "[2/6] 查找 Python 3.11 或 3.12"
-Write-Info "只认 $PythonHome 下的 3.11 / 3.12，系统里其它 Python 一律不用"
+Write-Info "运行时只认 $PythonHome 下的 3.11 / 3.12。若安装器把它装到了用户目录，会尝试复制过来，不会用系统 PATH 上的其它 Python 直接启动服务。"
 $py = Find-Python
 if (-not $py) {
     $existing = Join-Path $PythonHome "python.exe"
@@ -169,14 +284,31 @@ if (-not $py) {
         Write-Host "请先把这个安装移走或卸载，再重新运行 scripts\setup.cmd"
         exit 1
     }
-    Write-Warn "还没有可用的 Python，将自动下载并安装 3.12.10（需要联网）"
-    Install-Python
-    Write-Info "正在确认安装结果..."
-    $py = Find-Python
+    $misplaced = Find-MisplacedPython
+    if ($misplaced) {
+        Write-Warn "还没有 $PythonHome\python.exe，但已经检测到另一份可用的 Python。"
+        if (Copy-PythonToHome $misplaced) {
+            $py = Find-Python
+        }
+    }
 }
 if (-not $py) {
-    Write-Fail "安装结束后，仍未在 $PythonHome 找到 Python 3.11/3.12。"
-    Write-Host "请打开文件资源管理器，看是否存在 $PythonHome\python.exe，然后重试 scripts\setup.cmd"
+    Write-Warn "还没有可用的 Python，将自动下载并安装 3.12.10（需要联网）"
+    Install-Python
+    Write-Info "正在确认 $PythonHome 里有没有 python.exe ..."
+    $py = Find-Python
+    if (-not $py) {
+        $misplaced = Find-MisplacedPython
+        if ($misplaced) {
+            if (Copy-PythonToHome $misplaced) {
+                $py = Find-Python
+            }
+        }
+    }
+}
+if (-not $py) {
+    Write-Fail "还不能继续配置：未在 $PythonHome 找到可用的 Python 3.11/3.12。"
+    Write-PythonNotReadyHelp
     exit 1
 }
 $pyVer = Get-PythonVersion $py

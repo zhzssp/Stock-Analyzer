@@ -60,7 +60,9 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
     $env:STOCK_ANALYZER_NESTED_SETUP = "1"
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "setup.ps1")
     if ($LASTEXITCODE -ne 0) {
-        Write-Fail "自动配置没有成功。请先双击 scripts\setup.cmd，看完报错后再试。"
+        Write-Fail "自动配置没有成功，服务现在还不能打开。"
+        Write-Host "    配置在创建运行环境之前就停了（常见：Python 被装到了用户目录，而本软件只认 E:\python-stock）。"
+        Write-Host "    请把上面的配置日志看完；或再双击 scripts\setup.cmd。"
         exit $LASTEXITCODE
     }
 }
