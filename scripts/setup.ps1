@@ -81,18 +81,69 @@ function Start-SetupLog {
     }
 }
 
-function Invoke-Native([string]$File, [string[]]$Args) {
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
+function Format-ProcessArgs([string[]]$Parts) {
+    ($Parts | ForEach-Object {
+        $p = [string]$_
+        if ($p -notmatch '[ \t"]') { return $p }
+        '"' + ($p -replace '"', '\"') + '"'
+    }) -join " "
+}
+
+function Invoke-Native([string]$File, [string[]]$NativeArgs, [int]$TimeoutSec = 15) {
+    $exe = $File
+    if (-not (Test-Path -LiteralPath $File)) {
+        $cmd = Get-Command $File -ErrorAction SilentlyContinue -CommandType Application
+        if ($cmd -and $cmd.Source) { $exe = [string]$cmd.Source }
+    }
+    $outFile = Join-Path $env:TEMP ("stock-analyzer-out-{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    $errFile = Join-Path $env:TEMP ("stock-analyzer-err-{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    $proc = $null
     try {
-        $raw = & $File @Args 2>&1
-        $code = $LASTEXITCODE
-        $text = (($raw | ForEach-Object { "$_" }) -join "`n").Trim()
-        return @{ Code = $code; Text = $text }
+        $start = @{
+            FilePath = $exe
+            PassThru = $true
+            RedirectStandardOutput = $outFile
+            RedirectStandardError = $errFile
+        }
+        if ($NativeArgs -and $NativeArgs.Count -gt 0) {
+            $start.ArgumentList = Format-ProcessArgs $NativeArgs
+        }
+        $parent = Split-Path -Parent $exe
+        if ($parent -and (Test-Path -LiteralPath $parent)) {
+            $start.WorkingDirectory = $parent
+        }
+        try {
+            $start.WindowStyle = "Hidden"
+            $proc = Start-Process @start
+        } catch {
+            $start.Remove("WindowStyle")
+            $proc = Start-Process @start
+        }
+        if (-not $proc) {
+            return @{ Code = 1; Text = "无法启动 $exe" }
+        }
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            Write-Warn "试跑 $exe 超过 ${TimeoutSec} 秒仍无响应，正在结束该进程..."
+            $prev = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
+            $ErrorActionPreference = $prev
+            return @{ Code = -1; Text = "试跑超时（${TimeoutSec} 秒）。常见原因：安装不完整、缺少运行库、或弹出了被挡住的错误窗口。" }
+        }
+        $text = ""
+        if (Test-Path -LiteralPath $outFile) {
+            $text = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)
+        }
+        if (Test-Path -LiteralPath $errFile) {
+            $err = [string](Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
+            if ($err.Trim()) { $text = ($text.Trim() + "`n" + $err.Trim()).Trim() }
+        }
+        if ($null -eq $text) { $text = "" }
+        return @{ Code = [int]$proc.ExitCode; Text = $text.Trim() }
     } catch {
         return @{ Code = 1; Text = $_.Exception.Message }
     } finally {
-        $ErrorActionPreference = $prev
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -174,11 +225,18 @@ function Get-PythonProbe([string]$exe) {
         $probe.Error = "同目录缺少 python312.dll / python311.dll，不是完整安装。"
         return $probe
     }
-    $run = Invoke-Native $exe @("-c", "import sys; sys.stdout.write('%d.%d' % (sys.version_info.major, sys.version_info.minor))")
+    Write-Detail "正在试跑 $exe --version （最多 15 秒，卡住会自动跳过）..."
+    $run = Invoke-Native $exe @("--version") 15
+    if ($run.Code -eq -1) {
+        $probe.Error = $run.Text
+        return $probe
+    }
     if ($run.Code -ne 0 -or -not $run.Text) {
-        $run2 = Invoke-Native $exe @("--version")
+        Write-Detail "改用 -c 再试一次..."
+        $run = Invoke-Native $exe @("-c", "import sys; sys.stdout.write('%d.%d' % (sys.version_info.major, sys.version_info.minor))") 15
+    }
+    if ($run.Code -ne 0 -or -not $run.Text) {
         $detail = $run.Text
-        if ($run2.Text) { $detail = @($run.Text, $run2.Text | Where-Object { $_ }) -join " / " }
         if (-not $detail) { $detail = "退出码 $($run.Code)，没有输出。常见原因：安装不完整或被安全软件拦截。" }
         $probe.Error = $detail
         return $probe
@@ -224,7 +282,13 @@ function Find-Python {
         (Join-Path $PythonHome "Python311\python.exe")
     )
     foreach ($p in $candidates) {
-        if (Test-ManagedPython $p) { return $p }
+        if (-not (Test-Path -LiteralPath $p)) {
+            Write-Detail "没有 $p"
+            continue
+        }
+        $probe = Get-PythonProbe $p
+        if ($probe.Ok) { return $p }
+        Write-Detail "不能用：$($probe.Error)"
     }
     return $null
 }
@@ -260,7 +324,7 @@ function Get-PyLauncherPython {
     if ($cmd.Source -match "WindowsApps") { return @() }
     $found = @()
     foreach ($tag in @("-3.12", "-3.11")) {
-        $run = Invoke-Native "py" @($tag, "-c", "import sys; sys.stdout.write(sys.executable)")
+        $run = Invoke-Native $cmd.Source @($tag, "-c", "import sys; sys.stdout.write(sys.executable)")
         if ($run.Code -ne 0 -or -not $run.Text) { continue }
         $exe = $run.Text.Trim().Trim('"')
         if (Test-Path -LiteralPath $exe) { $found += $exe }
@@ -553,6 +617,151 @@ function Resolve-ManagedPython {
     return $null
 }
 
+function Test-VenvWorks([string]$exe) {
+    $result = @{ Ok = $false; Version = $null; Error = $null }
+    if (-not $exe -or -not (Test-Path -LiteralPath $exe)) {
+        $result.Error = "文件不存在"
+        return $result
+    }
+    Write-Detail "正在试跑 $exe --version （最多 15 秒）..."
+    $run = Invoke-Native $exe @("--version") 15
+    if ($run.Code -ne 0 -or -not $run.Text) {
+        $result.Error = $(if ($run.Text) { $run.Text } else { "退出码 $($run.Code)" })
+        return $result
+    }
+    if ($run.Text -match "(\d+)\.(\d+)") {
+        $maj = [int]$Matches[1]
+        $min = [int]$Matches[2]
+        $result.Version = "$maj.$min"
+        if ($maj -eq 3 -and ($min -eq 11 -or $min -eq 12)) {
+            $result.Ok = $true
+            return $result
+        }
+        $result.Error = "版本是 $($result.Version)，本软件只要 3.11 或 3.12"
+        return $result
+    }
+    $result.Error = "无法解析版本：$($run.Text)"
+    return $result
+}
+
+function Test-VenvDependencies([string]$venvPy) {
+    $line = "import fastapi,uvicorn,sqlalchemy,pydantic_settings,httpx,openpyxl,multipart,langgraph,langchain_core,apscheduler,yaml; print('ok')"
+    Write-Detail "正在导入运行所需的依赖包（最多 45 秒）..."
+    $run = Invoke-Native $venvPy @("-c", $line) 45
+    if ($run.Code -eq 0 -and $run.Text -match "ok") {
+        return @{ Ok = $true; Error = $null }
+    }
+    $err = $run.Text
+    if (-not $err) { $err = "退出码 $($run.Code)" }
+    return @{ Ok = $false; Error = $err }
+}
+
+function Test-ReadyEnvironment {
+    $state = @{
+        Ready = $false
+        PythonExe = $null
+        PythonVersion = $null
+        VenvExe = (Join-Path $root ".venv\Scripts\python.exe")
+        VenvVersion = $null
+        HasPython = $false
+        HasVenv = $false
+        HasPip = $false
+        HasDeps = $false
+        HasEnv = $false
+        Failures = New-Object System.Collections.Generic.List[string]
+    }
+    Write-Info "先做一遍环境检查。若上次已经配置成功，这里会很快结束，不会重新下载或重装。"
+
+    Write-Info "检查 $PythonHome ..."
+    $py = Find-Python
+    if ($py) {
+        $probe = Get-PythonProbe $py
+        $state.HasPython = $true
+        $state.PythonExe = $py
+        $state.PythonVersion = $probe.Version
+        Write-Ok "$py 可用（版本 $($probe.Version)）"
+    } else {
+        $state.Failures.Add("E:\python-stock 没有可用的 Python 3.11/3.12")
+        Write-Warn "基础 Python 还不能用。"
+    }
+
+    $venv = Test-VenvWorks $state.VenvExe
+    if ($venv.Ok) {
+        $state.HasVenv = $true
+        $state.VenvVersion = $venv.Version
+        Write-Ok ".venv 可用（版本 $($venv.Version)）"
+    } else {
+        $state.Failures.Add(".venv 不能用（$($venv.Error)）")
+        Write-Warn ".venv 还不能用：$($venv.Error)"
+    }
+
+    if ($state.HasVenv) {
+        $pip = Invoke-Native $state.VenvExe @("-m", "pip", "--version") 20
+        if ($pip.Code -eq 0 -and $pip.Text) {
+            $state.HasPip = $true
+            Write-Ok $pip.Text
+        } else {
+            $state.Failures.Add("pip 不能用")
+            Write-Warn "pip 还不能用：$($pip.Text)"
+        }
+        if ($state.HasPip) {
+            $deps = Test-VenvDependencies $state.VenvExe
+            if ($deps.Ok) {
+                $state.HasDeps = $true
+                Write-Ok "运行依赖可以导入（FastAPI / SQLAlchemy / LangGraph 等）"
+            } else {
+                $state.Failures.Add("依赖包不完整")
+                Write-Warn "依赖检查未通过：$($deps.Error)"
+            }
+        }
+    }
+
+    $req = Join-Path $root "requirements.txt"
+    if (-not (Test-Path -LiteralPath $req)) {
+        $state.Failures.Add("缺少 requirements.txt")
+        Write-Warn "找不到 requirements.txt，软件文件不完整。"
+    }
+    $envFile = Join-Path $root ".env"
+    if (Test-Path -LiteralPath $envFile) {
+        $state.HasEnv = $true
+        Write-Ok ".env 存在"
+    } else {
+        $state.Failures.Add("缺少 .env")
+        Write-Warn ".env 还不存在。"
+    }
+
+    $state.Ready = ($state.Failures.Count -eq 0)
+    return $state
+}
+
+function Write-SetupSuccess([bool]$CheckOnly) {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    if ($CheckOnly) {
+        Write-Host "  环境检查通过" -ForegroundColor Green
+    } else {
+        Write-Host "  配置成功" -ForegroundColor Green
+    }
+    Write-Host "========================================" -ForegroundColor Green
+    if ($CheckOnly) {
+        Write-Host "上次已经配置好，本次没有重新下载 Python，也没有重装依赖。"
+    }
+    if ($env:STOCK_ANALYZER_NESTED_SETUP -eq "1" -or $env:STOCK_ANALYZER_FROM_RUN -eq "1") {
+        Write-Host "接下来会自动启动服务，请继续等待。"
+    } else {
+        Write-Host "下一步（请按顺序做）："
+        Write-Host "  1. 读完后关掉本窗口"
+        Write-Host "  2. 双击  scripts\run.cmd  启动软件（会先检查环境再开服务）"
+        Write-Host "  3. 打开浏览器，在地址栏输入（不要去搜索）："
+        Write-Host "       http://127.0.0.1:8765" -ForegroundColor Yellow
+        Write-Host "  4. 登录账号: hanish"
+        Write-Host "     登录密码: change-me"
+    }
+    Write-Host ""
+    Write-Host "结束时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Write-LogHint
+}
+
 function Invoke-Pip([string[]]$PipArgs, [int]$Tries = 3) {
     $venvPy = Join-Path $root ".venv\Scripts\python.exe"
     $prev = $ErrorActionPreference
@@ -581,14 +790,14 @@ $script:ExitCode = 0
 try {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "  Stock-Analyzer 一键配置" -ForegroundColor Cyan
+    Write-Host "  Stock-Analyzer 环境检查 / 配置" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "请不要关闭本窗口。全部完成后会告诉你下一步怎么做。"
     Write-Host "工作目录: $root"
     Write-Host "开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     Write-Host "系统: $([Environment]::OSVersion.VersionString)　用户: $env:USERNAME　PowerShell: $($PSVersionTable.PSVersion)"
     if ($script:RunLog) { Write-Host "本轮日志: $script:RunLog" }
-    Write-Host "将依次检查：E: 盘 → Python → 运行环境 → 依赖包 → 配置文件"
+    Write-Host "将先检查现有环境；缺什么再补什么。"
 
     Write-Step "[1/6] 检查是否有 E: 盘"
     Test-PythonHomeDrive
@@ -614,134 +823,152 @@ try {
     }
     Write-StepDone "E: 盘可用，Python 将安装/使用 $PythonHome"
 
-    Write-Step "[2/6] 查找 Python 3.11 或 3.12"
-    Write-Info "运行时只认 $PythonHome 下的 3.11 / 3.12。"
-    Write-Info "若安装器把它装到了用户目录，或 E:\ 里是一份不能用的残留，会尝试用系统里已有的 3.12 覆盖过去。"
-    $py = Resolve-ManagedPython
-    if (-not $py) {
-        Write-Warn "还没有可用的 Python，将自动下载并安装 3.12.10（需要联网）"
-        Install-Python
-        Write-Info "正在确认 $PythonHome 里有没有能用的 python.exe ..."
-        $py = Resolve-ManagedPython
+    Write-Step "[2/6] 环境检查"
+    $state = Test-ReadyEnvironment
+    $force = ($env:STOCK_ANALYZER_FORCE_SETUP -eq "1")
+    if ($state.Ready -and -not $force) {
+        Write-StepDone "环境已就绪"
+        Write-SetupSuccess $true
+        return
     }
-    if (-not $py) {
-        Write-Fail "还不能继续配置：未在 $PythonHome 找到可用的 Python 3.11/3.12。"
-        Write-PythonNotReadyHelp
-        exit 1
+    if ($force) {
+        Write-Warn "已设置 STOCK_ANALYZER_FORCE_SETUP=1，将按首次配置再跑一遍。"
+    } elseif ($state.Failures.Count -gt 0) {
+        Write-Warn "环境未就绪，将只补缺的部分："
+        foreach ($item in $state.Failures) { Write-Info "- $item" }
     }
-    $pyVer = Get-PythonVersion $py
-    Write-StepDone "将使用 $py （版本 $pyVer）"
 
-    Write-Step "[3/6] 准备本软件运行环境（.venv）"
-    $venvPy = Join-Path $root ".venv\Scripts\python.exe"
-    if (Test-Path -LiteralPath $venvPy) {
-        $venvProbe = Get-PythonProbe $venvPy
-        if ($venvProbe.Ok) {
-            Write-Info ".venv 已存在并且能用（版本 $($venvProbe.Version)）"
-        } else {
-            Write-Warn ".venv 在，但是坏的：$($venvProbe.Error)"
-            Write-Info "将删除后重建。请不要关闭窗口。"
-            try {
-                Remove-Item -LiteralPath (Join-Path $root ".venv") -Recurse -Force
-            } catch {
-                Write-Fail "无法删除损坏的 .venv：$($_.Exception.Message)"
-                Write-Host "请关掉其它黑色窗口后再试。"
+    $py = $state.PythonExe
+    $venvPy = $state.VenvExe
+
+    Write-Step "[3/6] 准备 Python 3.11/3.12"
+    if ($state.HasPython -and -not $force) {
+        Write-Ok "已有可用的 $py （版本 $($state.PythonVersion)），跳过安装"
+    } else {
+        Write-Info "运行时只认 $PythonHome 下的 3.11 / 3.12。"
+        Write-Info "若安装器把它装到了用户目录，或 E:\ 里是一份不能用的残留，会尝试用系统里已有的 3.12 覆盖过去。"
+        $py = Resolve-ManagedPython
+        if (-not $py) {
+            Write-Warn "还没有可用的 Python，将自动下载并安装 3.12.10（需要联网）"
+            Install-Python
+            Write-Info "正在确认 $PythonHome 里有没有能用的 python.exe ..."
+            $py = Resolve-ManagedPython
+        }
+        if (-not $py) {
+            Write-Fail "还不能继续配置：未在 $PythonHome 找到可用的 Python 3.11/3.12。"
+            Write-PythonNotReadyHelp
+            exit 1
+        }
+        $state.PythonVersion = Get-PythonVersion $py
+        Write-Ok "将使用 $py （版本 $($state.PythonVersion)）"
+    }
+    Write-StepDone "Python 就绪"
+
+    Write-Step "[4/6] 准备本软件运行环境（.venv）"
+    if ($state.HasVenv -and -not $force) {
+        Write-Ok ".venv 已可用（版本 $($state.VenvVersion)），跳过创建"
+    } else {
+        if (Test-Path -LiteralPath $venvPy) {
+            $venvProbe = Test-VenvWorks $venvPy
+            if (-not $venvProbe.Ok) {
+                Write-Warn ".venv 在，但是坏的：$($venvProbe.Error)"
+                Write-Info "将删除后重建。请不要关闭窗口。"
+                try {
+                    Remove-Item -LiteralPath (Join-Path $root ".venv") -Recurse -Force
+                } catch {
+                    Write-Fail "无法删除损坏的 .venv：$($_.Exception.Message)"
+                    Write-Host "请关掉其它黑色窗口后再试。"
+                    Write-LogHint
+                    exit 1
+                }
+            }
+        }
+        if (-not (Test-Path -LiteralPath $venvPy)) {
+            Write-Info "第一次创建大约需要半分钟到一分钟，请稍候"
+            $prevVenv = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & $py -m venv .venv
+            $venvCode = $LASTEXITCODE
+            $ErrorActionPreference = $prevVenv
+            if ($venvCode -ne 0 -or -not (Test-Path -LiteralPath $venvPy)) {
+                Write-Fail "创建 .venv 失败（退出码 $venvCode）。"
+                Write-Host "请把本窗口完整内容发给工作人员。"
                 Write-LogHint
                 exit 1
             }
         }
-    }
-    if (-not (Test-Path -LiteralPath $venvPy)) {
-        Write-Info "第一次创建大约需要半分钟到一分钟，请稍候"
-        $prevVenv = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        & $py -m venv .venv
-        $venvCode = $LASTEXITCODE
-        $ErrorActionPreference = $prevVenv
-        if ($venvCode -ne 0 -or -not (Test-Path -LiteralPath $venvPy)) {
-            Write-Fail "创建 .venv 失败（退出码 $venvCode）。"
-            Write-Host "请把本窗口完整内容发给工作人员。"
-            Write-LogHint
-            exit 1
-        }
-        $venvProbe = Get-PythonProbe $venvPy
+        $venvProbe = Test-VenvWorks $venvPy
         if (-not $venvProbe.Ok) {
-            Write-Fail ".venv 建出来了，但不能运行：$($venvProbe.Error)"
+            Write-Fail ".venv 不能运行：$($venvProbe.Error)"
             Write-LogHint
             exit 1
         }
-        Write-Ok "已创建 .venv（版本 $($venvProbe.Version)）"
+        Write-Ok ".venv 就绪（版本 $($venvProbe.Version)）"
     }
     Write-StepDone "运行环境就绪"
 
-    Write-Step "[4/6] 升级 pip（安装工具本身）"
-    Write-Info "下面会刷一些英文进度，属于正常现象"
-    if (-not (Invoke-Pip @("install", "-U", "pip"))) {
-        $pipVer = Invoke-Native $venvPy @("-m", "pip", "--version")
-        if ($pipVer.Code -eq 0) {
-            Write-Warn "升级 pip 失败，但现有 pip 还能用，将继续装依赖。"
-            Write-Detail $pipVer.Text
-        } else {
-            Write-Fail "pip 不能用。请检查网络后重试。"
+    Write-Step "[5/6] 检查并安装依赖包"
+    $needPip = $force -or -not $state.HasPip -or -not $state.HasDeps
+    if (-not $needPip) {
+        Write-Ok "依赖已经可以导入，跳过 pip install"
+    } else {
+        if (-not $state.HasPip -or $force) {
+            Write-Info "下面会刷一些英文进度，属于正常现象"
+            if (-not (Invoke-Pip @("install", "-U", "pip"))) {
+                $pipVer = Invoke-Native $venvPy @("-m", "pip", "--version")
+                if ($pipVer.Code -eq 0) {
+                    Write-Warn "升级 pip 失败，但现有 pip 还能用，将继续装依赖。"
+                    Write-Detail $pipVer.Text
+                } else {
+                    Write-Fail "pip 不能用。请检查网络后重试。"
+                    Write-LogHint
+                    exit 1
+                }
+            }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $root "requirements.txt"))) {
+            Write-Fail "找不到 requirements.txt，软件文件不完整。"
             Write-LogHint
             exit 1
         }
-    } else {
-        $pipVer = Invoke-Native $venvPy @("-m", "pip", "--version")
-        if ($pipVer.Text) { Write-Detail $pipVer.Text }
-        Write-Ok "pip 已就绪"
+        Write-Info "可能需要几分钟。已装过的包会很快跳过；请不要关闭窗口"
+        if (-not (Invoke-Pip @("install", "-r", "requirements.txt"))) {
+            Write-Fail "安装依赖失败。请检查网络后，再双击 scripts\setup.cmd"
+            Write-LogHint
+            exit 1
+        }
+        $deps = Test-VenvDependencies $venvPy
+        if (-not $deps.Ok) {
+            Write-Fail "依赖装完后仍无法导入：$($deps.Error)"
+            Write-LogHint
+            exit 1
+        }
+        Write-Ok "依赖包已就绪"
     }
-    Write-StepDone "pip 检查结束"
+    Write-StepDone "依赖检查结束"
 
-    Write-Step "[5/6] 安装软件依赖包"
-    Write-Info "可能需要几分钟。已装过的包会很快跳过；请不要关闭窗口"
-    if (-not (Test-Path -LiteralPath (Join-Path $root "requirements.txt"))) {
-        Write-Fail "找不到 requirements.txt，软件文件不完整。"
-        Write-LogHint
-        exit 1
-    }
-    if (-not (Invoke-Pip @("install", "-r", "requirements.txt"))) {
-        Write-Fail "安装依赖失败。请检查网络后，再双击 scripts\setup.cmd"
-        Write-LogHint
-        exit 1
-    }
-    Write-StepDone "依赖包安装完成"
-
-    Write-Step "[6/6] 准备配置文件 .env"
+    Write-Step "[6/6] 检查配置文件 .env"
     $envFile = Join-Path $root ".env"
     $example = Join-Path $root ".env.example"
-    if (-not (Test-Path -LiteralPath $envFile)) {
-        if (-not (Test-Path -LiteralPath $example)) {
-            Write-Fail "找不到 .env.example，软件文件不完整。"
-            Write-LogHint
-            exit 1
-        }
-        Copy-Item -LiteralPath $example -Destination $envFile
-        Write-Ok "已从模板复制 .env（默认离线模式，不必填 licence 也能打开）"
-        Write-Info "以后若有正式行情授权或 AI 密钥，再请工作人员帮你改 .env"
-    } else {
+    if ($state.HasEnv -and -not $force) {
         Write-Ok ".env 已存在，未改动"
+    } else {
+        if (-not (Test-Path -LiteralPath $envFile)) {
+            if (-not (Test-Path -LiteralPath $example)) {
+                Write-Fail "找不到 .env.example，软件文件不完整。"
+                Write-LogHint
+                exit 1
+            }
+            Copy-Item -LiteralPath $example -Destination $envFile
+            Write-Ok "已从模板复制 .env（默认离线模式，不必填 licence 也能打开）"
+            Write-Info "以后若有正式行情授权或 AI 密钥，再请工作人员帮你改 .env"
+        } else {
+            Write-Ok ".env 已存在，未改动"
+        }
     }
     Write-StepDone "配置文件就绪"
 
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host "  配置成功" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Green
-    if ($env:STOCK_ANALYZER_NESTED_SETUP -eq "1") {
-        Write-Host "配置已完成，接下来会自动启动服务，请继续等待。"
-    } else {
-        Write-Host "下一步（请按顺序做）："
-        Write-Host "  1. 读完后关掉本窗口"
-        Write-Host "  2. 双击  scripts\run-server.cmd  启动软件"
-        Write-Host "  3. 打开浏览器，在地址栏输入（不要去搜索）："
-        Write-Host "       http://127.0.0.1:8765" -ForegroundColor Yellow
-        Write-Host "  4. 登录账号: hanish"
-        Write-Host "     登录密码: change-me"
-    }
-    Write-Host ""
-    Write-Host "结束时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    Write-LogHint
+    Write-SetupSuccess $false
 } catch {
     $script:ExitCode = 1
     Write-Fail "配置遇到未处理的错误。"

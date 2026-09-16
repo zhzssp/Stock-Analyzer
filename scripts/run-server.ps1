@@ -54,18 +54,69 @@ function Start-RunLog {
     }
 }
 
-function Invoke-Native([string]$File, [string[]]$Args) {
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
+function Format-ProcessArgs([string[]]$Parts) {
+    ($Parts | ForEach-Object {
+        $p = [string]$_
+        if ($p -notmatch '[ \t"]') { return $p }
+        '"' + ($p -replace '"', '\"') + '"'
+    }) -join " "
+}
+
+function Invoke-Native([string]$File, [string[]]$NativeArgs, [int]$TimeoutSec = 15) {
+    $exe = $File
+    if (-not (Test-Path -LiteralPath $File)) {
+        $cmd = Get-Command $File -ErrorAction SilentlyContinue -CommandType Application
+        if ($cmd -and $cmd.Source) { $exe = [string]$cmd.Source }
+    }
+    $outFile = Join-Path $env:TEMP ("stock-analyzer-out-{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    $errFile = Join-Path $env:TEMP ("stock-analyzer-err-{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    $proc = $null
     try {
-        $raw = & $File @Args 2>&1
-        $code = $LASTEXITCODE
-        $text = (($raw | ForEach-Object { "$_" }) -join "`n").Trim()
-        return @{ Code = $code; Text = $text }
+        $start = @{
+            FilePath = $exe
+            PassThru = $true
+            RedirectStandardOutput = $outFile
+            RedirectStandardError = $errFile
+        }
+        if ($NativeArgs -and $NativeArgs.Count -gt 0) {
+            $start.ArgumentList = Format-ProcessArgs $NativeArgs
+        }
+        $parent = Split-Path -Parent $exe
+        if ($parent -and (Test-Path -LiteralPath $parent)) {
+            $start.WorkingDirectory = $parent
+        }
+        try {
+            $start.WindowStyle = "Hidden"
+            $proc = Start-Process @start
+        } catch {
+            $start.Remove("WindowStyle")
+            $proc = Start-Process @start
+        }
+        if (-not $proc) {
+            return @{ Code = 1; Text = "无法启动 $exe" }
+        }
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            Write-Warn "试跑 $exe 超过 ${TimeoutSec} 秒仍无响应，正在结束该进程..."
+            $prev = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
+            $ErrorActionPreference = $prev
+            return @{ Code = -1; Text = "试跑超时（${TimeoutSec} 秒）。常见原因：安装不完整、缺少运行库、或弹出了被挡住的错误窗口。" }
+        }
+        $text = ""
+        if (Test-Path -LiteralPath $outFile) {
+            $text = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)
+        }
+        if (Test-Path -LiteralPath $errFile) {
+            $err = [string](Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
+            if ($err.Trim()) { $text = ($text.Trim() + "`n" + $err.Trim()).Trim() }
+        }
+        if ($null -eq $text) { $text = "" }
+        return @{ Code = [int]$proc.ExitCode; Text = $text.Trim() }
     } catch {
         return @{ Code = 1; Text = $_.Exception.Message }
     } finally {
-        $ErrorActionPreference = $prev
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -86,7 +137,8 @@ function Get-DotEnv([string]$Name, [string]$Default) {
 
 function Test-VenvPython([string]$exe) {
     if (-not (Test-Path -LiteralPath $exe)) { return $false }
-    $run = Invoke-Native $exe @("-c", "import sys; sys.stdout.write('%d.%d' % (sys.version_info.major, sys.version_info.minor))")
+    Write-Detail "正在试跑 $exe --version （最多 15 秒）..."
+    $run = Invoke-Native $exe @("--version")
     if ($run.Code -ne 0 -or -not $run.Text) { return $false }
     if ($run.Text -match "(\d+)\.(\d+)") {
         $maj = [int]$Matches[1]
@@ -114,7 +166,13 @@ $proc = $null
 
 try {
     Write-Step "[1/4] 检查运行环境"
-    if (-not (Test-VenvPython $venvPy)) {
+    $skipSetup = ($env:STOCK_ANALYZER_SKIP_SETUP -eq "1")
+    if ($skipSetup -and (Test-VenvPython $venvPy)) {
+        Write-Ok "环境已在上一步检查过，跳过重复配置"
+    } elseif (-not (Test-VenvPython $venvPy)) {
+        if ($skipSetup) {
+            Write-Warn "上一步声称环境已好，但 .venv 仍不能用，将再跑一次配置。"
+        }
         if (Test-Path -LiteralPath $venvPy) {
             Write-Warn ".venv 在，但是不能用。将重新跑一键配置。"
         } else {

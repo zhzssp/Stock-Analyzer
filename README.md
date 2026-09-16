@@ -25,8 +25,9 @@ Stock-Analyzer/
 ├── tests/
 ├── requirements.txt
 └── scripts/
-    ├── setup.cmd             # 一键装 Python 到 E:\python-stock、建 venv
-    ├── run-server.cmd        # 启动本机服务
+    ├── run.cmd               # 推荐：先检查环境再启动服务
+    ├── setup.cmd             # 只做环境检查/配置（已配好则只校验）
+    ├── run-server.cmd        # 只启动本机服务（缺环境时仍会调用 setup）
     ├── Verify-Api.ps1        # 接口实测
     └── Verify-Index.ps1      # S0：指数成份探针
 ```
@@ -78,24 +79,30 @@ Stock-Analyzer/
 
 完全不会用命令的，请按 [`docs/使用/本地部署教程.md`](docs/使用/本地部署教程.md) 做。下面是给已经会开终端的人看的精简步骤。
 
-新机器（没有 `E:\python-stock` 下的 Python 3.11/3.12，或没有 `.venv`）先一键配置：
+新机器或环境坏了，可单独跑配置（已配置成功过则只做检查，不重装）：
 
 ```bat
 .\scripts\setup.cmd
 ```
 
+日常使用（推荐）：先检查环境，通过后启动服务。
+
+```bat
+.\scripts\run.cmd
+```
+
 解释器**必须**装在运行脚本那台机器的 `E:\python-stock`（例如 `E:\python-stock\python.exe`）。脚本只认这里的 3.11/3.12，不用系统 PATH 上的 3.9 或其他目录。找不到则下载官方 3.12.10 安装到该路径（需要有 `E:` 盘；权限不足时用管理员再跑一次）。然后建虚拟环境、装依赖、复制 `.env`。
 
-然后启动：
+也可以只启动服务（没有 `.venv` 时仍会先跑 setup）：
 
 ```bat
 .\scripts\run-server.cmd
 ```
 
-没有 `.venv` 时，启动脚本会先跑 setup。若坚持用 PowerShell 且执行策略较严：
+若坚持用 PowerShell 且执行策略较严：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-server.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run.ps1
 ```
 
 浏览器打开 http://127.0.0.1:8765 ，默认账号 `hanish` / `change-me`。离线模式即可进工作台，不必先填 licence。
