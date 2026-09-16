@@ -35,20 +35,28 @@ $env:MAIRUI_OFFLINE = "0"
 
 $Py = Join-Path $RepoRoot '.venv\Scripts\python.exe'
 Write-Host ""
-Write-Host "指数成份探针" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  指数成份探针" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "licence : $Licence"
 Write-Host "演示码  : $IsDemo"
 Write-Host "开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Write-Host "请保持网络畅通，不要关闭窗口。全部完成后会写入报告。"
+Write-Host "报告将写入: $OutFile"
+Write-Host "请保持网络畅通，不要关闭窗口。"
 
 Write-Host ""
-Write-Host ">>> [1/3] 检查 Python" -ForegroundColor Cyan
-if (-not (Test-Path $Py)) {
-    Write-Host "未找到 .venv\Scripts\python.exe，改用系统 python。建议先运行 scripts\setup.cmd" -ForegroundColor Yellow
-    $Py = 'python'
-} else {
-    Write-Host "    使用 $Py" -ForegroundColor Green
+Write-Host ">>> [1/3] 检查运行环境" -ForegroundColor Cyan
+if (-not (Test-Path -LiteralPath $Py)) {
+    Write-Host "[失败] 未找到 .venv\Scripts\python.exe。" -ForegroundColor Red
+    Write-Host "请先双击 scripts\setup.cmd，配置完成后再跑本脚本。"
+    exit 1
 }
+$prev = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$ver = & $Py --version 2>&1
+$ErrorActionPreference = $prev
+Write-Host "    使用 $Py" -ForegroundColor Green
+if ($ver) { Write-Host "    $ver" -ForegroundColor DarkGray }
 
 Write-Host ""
 Write-Host ">>> [2/3] 探测指数成份接口（可能要一两分钟）" -ForegroundColor Cyan
@@ -89,8 +97,8 @@ $lines = @(
     '',
     '## 下一步',
     '',
-    '- 若 ``constituent_api`` 有值且 ``enabled=true``：工作台 S6 芯片自动打开。',
-    '- 若仍全部 ``enabled=false``：行情页继续只提供沪市/深市/北交所/创业板/科创**全部**，指数名显示未启用。'
+    '- 若 ``constituent_api`` 有值且 ``enabled=true``：正式 licence 下用探针名单替换离线切片。',
+    '- 若仍全部 ``enabled=false``：工作台继续用离线成份切片；不得用沪/深/北全市场冒充指数。'
 )
 Write-Host ""
 Write-Host ">>> [3/3] 写入报告" -ForegroundColor Cyan

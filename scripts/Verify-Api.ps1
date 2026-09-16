@@ -126,10 +126,13 @@ function Show-Blank { param($Value) if (Test-Blank $Value) { '_(空)_' } else { 
 
 # ============================================================
 Write-Host ""
-Write-Host "麦蕊 API 现状验证" -ForegroundColor White
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  麦蕊 API 现状验证" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "licence : $Licence"
 Write-Host "开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Write-Host "请保持网络畅通，不要关闭窗口。全部完成后会写入: $OutFile" -ForegroundColor Yellow
+Write-Host "请保持网络畅通，不要关闭窗口。"
+Write-Host "全部完成后会写入: $OutFile" -ForegroundColor Yellow
 Write-Host "每发起一次接口请求都会在下面打一行进度。"
 
 Add-Line "# API 验证报告"

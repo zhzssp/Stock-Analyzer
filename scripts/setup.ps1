@@ -12,10 +12,21 @@ Set-Location $root
 $PythonHome = "E:\python-stock"
 $InstallerUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
 $InstallerLog = Join-Path $env:TEMP "stock-analyzer-python-install.log"
+$LogDir = Join-Path $root "data\logs"
+$script:RunLog = $null
+$script:OwnTranscript = $false
+$script:StepWatch = $null
 
 function Write-Step([string]$Title) {
     Write-Host ""
     Write-Host ">>> $Title" -ForegroundColor Cyan
+    $script:StepWatch = [Diagnostics.Stopwatch]::StartNew()
+}
+
+function Write-StepDone([string]$Text) {
+    $sec = 0
+    if ($script:StepWatch) { $sec = [int]$script:StepWatch.Elapsed.TotalSeconds }
+    Write-Host ("    [完成] {0}（本步 {1} 秒）" -f $Text, $sec) -ForegroundColor Green
 }
 
 function Write-Ok([string]$Text) {
@@ -24,6 +35,10 @@ function Write-Ok([string]$Text) {
 
 function Write-Info([string]$Text) {
     Write-Host "    $Text"
+}
+
+function Write-Detail([string]$Text) {
+    Write-Host "      $Text" -ForegroundColor DarkGray
 }
 
 function Write-Warn([string]$Text) {
@@ -35,29 +50,157 @@ function Write-Fail([string]$Text) {
     Write-Host "[失败] $Text" -ForegroundColor Red
 }
 
+function Write-LogHint {
+    if ($script:RunLog) {
+        Write-Host "本轮完整日志：$script:RunLog"
+    }
+    if (Test-Path -LiteralPath $InstallerLog) {
+        Write-Host "Python 安装器日志：$InstallerLog"
+    }
+}
+
+function Start-SetupLog {
+    try {
+        New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+        $script:RunLog = Join-Path $LogDir ("setup-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+        Start-Transcript -Path $script:RunLog -Force | Out-Null
+        $script:OwnTranscript = $true
+    } catch {
+        if ("$($_.Exception.Message)" -match "already|已经") {
+            Write-Host "    当前窗口已经在记日志，配置过程会写进同一份文件。"
+            $script:RunLog = $null
+            return
+        }
+        $script:RunLog = Join-Path $env:TEMP ("stock-analyzer-setup-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+        try {
+            Start-Transcript -Path $script:RunLog -Force | Out-Null
+            $script:OwnTranscript = $true
+        } catch {
+            $script:RunLog = $null
+        }
+    }
+}
+
+function Invoke-Native([string]$File, [string[]]$Args) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $raw = & $File @Args 2>&1
+        $code = $LASTEXITCODE
+        $text = (($raw | ForEach-Object { "$_" }) -join "`n").Trim()
+        return @{ Code = $code; Text = $text }
+    } catch {
+        return @{ Code = 1; Text = $_.Exception.Message }
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 function Test-PythonHomeDrive {
     if (-not (Test-Path -LiteralPath "E:\")) {
         Write-Fail "这台电脑没有 E: 盘。"
         Write-Host "软件规定 Python 必须安装在 $PythonHome"
         Write-Host "请先准备好 E: 盘（第二块硬盘、U 盘改盘符，或请会电脑的人帮忙），再重新双击 scripts\setup.cmd"
+        Write-LogHint
         exit 1
     }
 }
 
-function Test-CPythonVersion([string]$exe) {
-    if (-not $exe) { return $false }
-    if ($exe -match "WindowsApps\\python") { return $false }
-    if (-not (Test-Path -LiteralPath $exe)) { return $false }
+function Get-DriveInfo {
     try {
-        $ver = & $exe -c "import sys; print('%d.%d' % (sys.version_info.major, sys.version_info.minor))" 2>$null
-        if ($LASTEXITCODE -ne 0 -or -not $ver) { return $false }
-        $parts = $ver.Trim().Split(".")
-        $maj = [int]$parts[0]
-        $min = [int]$parts[1]
-        return ($maj -eq 3 -and ($min -eq 11 -or $min -eq 12))
+        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='E:'" -ErrorAction SilentlyContinue
+        if (-not $disk) { return $null }
+        return @{
+            Free = [int64]$disk.FreeSpace
+            Size = [int64]$disk.Size
+            FileSystem = [string]$disk.FileSystem
+            Volume = [string]$disk.VolumeName
+        }
+    } catch { return $null }
+}
+
+function Test-WritableDir([string]$Dir) {
+    try {
+        if (-not (Test-Path -LiteralPath $Dir)) {
+            New-Item -ItemType Directory -Path $Dir -Force | Out-Null
+        }
+        $probe = Join-Path $Dir ".stock-analyzer-write-test"
+        [IO.File]::WriteAllText($probe, "ok")
+        Remove-Item -LiteralPath $probe -Force
+        return $true
     } catch {
+        Write-Warn "无法写入 ${Dir}：$($_.Exception.Message)"
         return $false
     }
+}
+
+function Get-PythonProbe([string]$exe) {
+    $probe = @{
+        Exe = $exe
+        Exists = $false
+        Length = 0
+        Ok = $false
+        Version = $null
+        Error = $null
+        Dll = $null
+    }
+    if (-not $exe) {
+        $probe.Error = "路径为空"
+        return $probe
+    }
+    if ($exe -match "WindowsApps\\python") {
+        $probe.Error = "这是 Microsoft Store 占位程序，不能用"
+        return $probe
+    }
+    if (-not (Test-Path -LiteralPath $exe)) {
+        $probe.Error = "文件不存在"
+        return $probe
+    }
+    $probe.Exists = $true
+    try { $probe.Length = (Get-Item -LiteralPath $exe).Length } catch { }
+    if ($probe.Length -lt 20KB) {
+        $probe.Error = "文件只有 $([math]::Round($probe.Length / 1KB, 1)) KB，不像完整的 python.exe（多半是上次没装完留下的）"
+        return $probe
+    }
+    $dir = Split-Path -Parent $exe
+    foreach ($name in @("python312.dll", "python311.dll")) {
+        $dll = Join-Path $dir $name
+        if (Test-Path -LiteralPath $dll) {
+            $probe.Dll = $name
+            break
+        }
+    }
+    if (-not $probe.Dll) {
+        $probe.Error = "同目录缺少 python312.dll / python311.dll，不是完整安装。"
+        return $probe
+    }
+    $run = Invoke-Native $exe @("-c", "import sys; sys.stdout.write('%d.%d' % (sys.version_info.major, sys.version_info.minor))")
+    if ($run.Code -ne 0 -or -not $run.Text) {
+        $run2 = Invoke-Native $exe @("--version")
+        $detail = $run.Text
+        if ($run2.Text) { $detail = @($run.Text, $run2.Text | Where-Object { $_ }) -join " / " }
+        if (-not $detail) { $detail = "退出码 $($run.Code)，没有输出。常见原因：安装不完整或被安全软件拦截。" }
+        $probe.Error = $detail
+        return $probe
+    }
+    if ($run.Text -match "(\d+)\.(\d+)") {
+        $maj = [int]$Matches[1]
+        $min = [int]$Matches[2]
+        $probe.Version = "$maj.$min"
+        if ($maj -eq 3 -and ($min -eq 11 -or $min -eq 12)) {
+            $probe.Ok = $true
+        } else {
+            $probe.Error = "版本是 $($probe.Version)，本软件只要 3.11 或 3.12"
+        }
+        return $probe
+    }
+    $probe.Error = "无法解析版本输出：$($run.Text)"
+    return $probe
+}
+
+function Test-CPythonVersion([string]$exe) {
+    $probe = Get-PythonProbe $exe
+    return [bool]$probe.Ok
 }
 
 function Test-UnderPythonHome([string]$exe) {
@@ -86,6 +229,56 @@ function Find-Python {
     return $null
 }
 
+function Get-RegisteredPythonCandidates {
+    $list = @()
+    $roots = @(
+        "HKCU:\Software\Python\PythonCore",
+        "HKLM:\Software\Python\PythonCore",
+        "HKLM:\Software\Wow6432Node\Python\PythonCore"
+    )
+    foreach ($rootKey in $roots) {
+        if (-not (Test-Path -LiteralPath $rootKey)) { continue }
+        Get-ChildItem -LiteralPath $rootKey -ErrorAction SilentlyContinue | ForEach-Object {
+            $ip = Join-Path $_.PSPath "InstallPath"
+            if (-not (Test-Path -LiteralPath $ip)) { return }
+            $prop = Get-ItemProperty -LiteralPath $ip -ErrorAction SilentlyContinue
+            if (-not $prop) { return }
+            if ($prop.ExecutablePath) { $list += $prop.ExecutablePath }
+            $dir = $prop.'(default)'
+            if ($dir) {
+                if ($dir -match "python\.exe$") { $list += $dir }
+                else { $list += (Join-Path $dir "python.exe") }
+            }
+        }
+    }
+    return $list
+}
+
+function Get-PyLauncherPython {
+    $cmd = Get-Command py -ErrorAction SilentlyContinue
+    if (-not $cmd) { return @() }
+    if ($cmd.Source -match "WindowsApps") { return @() }
+    $found = @()
+    foreach ($tag in @("-3.12", "-3.11")) {
+        $run = Invoke-Native "py" @($tag, "-c", "import sys; sys.stdout.write(sys.executable)")
+        if ($run.Code -ne 0 -or -not $run.Text) { continue }
+        $exe = $run.Text.Trim().Trim('"')
+        if (Test-Path -LiteralPath $exe) { $found += $exe }
+    }
+    return $found
+}
+
+function Get-PathPythonCandidates {
+    $found = @()
+    $where = Invoke-Native "where.exe" @("python")
+    if (-not $where.Text) { return $found }
+    foreach ($line in ($where.Text -split "`n")) {
+        $p = $line.Trim()
+        if ($p -and ($p -match "python\.exe$")) { $found += $p }
+    }
+    return $found
+}
+
 function Get-MisplacedPythonCandidates {
     $list = @()
     $roots = @(
@@ -102,16 +295,44 @@ function Get-MisplacedPythonCandidates {
     }
     $list += (Join-Path ${env:ProgramFiles} "Python312\python.exe")
     $list += (Join-Path ${env:ProgramFiles} "Python311\python.exe")
-    return $list
+    $list += Get-RegisteredPythonCandidates
+    $list += Get-PyLauncherPython
+    $list += Get-PathPythonCandidates
+    $unique = @()
+    $seen = @{}
+    foreach ($p in $list) {
+        if (-not $p) { continue }
+        try { $full = [IO.Path]::GetFullPath($p) } catch { continue }
+        $key = $full.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $unique += $full
+    }
+    return $unique
 }
 
 function Find-MisplacedPython {
-    foreach ($p in Get-MisplacedPythonCandidates) {
-        if (-not (Test-CPythonVersion $p)) { continue }
-        if (Test-UnderPythonHome $p) { continue }
-        return $p
+    $hits = New-Object System.Collections.Generic.List[object]
+    $candidates = @(Get-MisplacedPythonCandidates)
+    Write-Info ("正在搜索其它位置的 Python 3.11/3.12（共 {0} 个候选路径）..." -f $candidates.Count)
+    foreach ($p in $candidates) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        if (Test-UnderPythonHome $p) {
+            Write-Detail "跳过（已在 ${PythonHome}）：$p"
+            continue
+        }
+        $probe = Get-PythonProbe $p
+        if ($probe.Ok) {
+            Write-Detail ("可用  {0}  版本 {1}  {2}" -f $p, $probe.Version, $probe.Dll)
+            $hits.Add([pscustomobject]@{ Exe = $p; Version = $probe.Version })
+        } else {
+            Write-Detail ("不可用  {0}  {1}" -f $p, $probe.Error)
+        }
     }
-    return $null
+    if ($hits.Count -eq 0) { return $null }
+    $best = $hits | Where-Object { $_.Version -like "3.12*" } | Select-Object -First 1
+    if (-not $best) { $best = $hits[0] }
+    return $best.Exe
 }
 
 function Write-PythonHomeStatus {
@@ -119,42 +340,86 @@ function Write-PythonHomeStatus {
         Write-Info "目录还不存在：$PythonHome"
         return
     }
-    $exe = Join-Path $PythonHome "python.exe"
-    if (Test-Path -LiteralPath $exe) {
-        Write-Info "已看到：$exe"
-        return
-    }
-    $names = @(Get-ChildItem -LiteralPath $PythonHome -ErrorAction SilentlyContinue | Select-Object -First 20 -ExpandProperty Name)
+    $names = @(Get-ChildItem -LiteralPath $PythonHome -ErrorAction SilentlyContinue | Select-Object -First 12 -ExpandProperty Name)
     if ($names.Count -eq 0) {
         Write-Info "$PythonHome 目前是空文件夹。安装器没有往这里写文件。"
-    } else {
-        Write-Info "$PythonHome 里没有 python.exe。目前能看到：$($names -join ', ')"
+        return
     }
+    Write-Info ("$PythonHome 里能看到：{0}" -f ($names -join ", "))
+    foreach ($name in @("python.exe", "python312.dll", "python311.dll", "python3.dll", "vcruntime140.dll")) {
+        $f = Join-Path $PythonHome $name
+        if (Test-Path -LiteralPath $f) {
+            $len = (Get-Item -LiteralPath $f).Length
+            Write-Detail ("有 {0}  ({1} KB)" -f $name, [math]::Round($len / 1KB, 1))
+        } else {
+            Write-Detail "缺 $name"
+        }
+    }
+}
+
+function Get-PythonVersion([string]$exe) {
+    $probe = Get-PythonProbe $exe
+    if ($probe.Version) { return $probe.Version }
+    return "?"
 }
 
 function Copy-PythonToHome([string]$sourceExe) {
     $srcDir = Split-Path -Parent $sourceExe
     $srcVer = Get-PythonVersion $sourceExe
-    Write-Warn "官方安装器没有把 Python 放到 $PythonHome（这是常见情况，不是下载失败）。"
-    Write-Info "实际找到的一份：$sourceExe （版本 $srcVer）"
-    Write-Info "原因：同一台电脑若已经有 Python 3.12，安装器会去修复旧位置，忽略我们指定的 E:\ 目录。"
-    Write-Info "本软件仍然只认 $PythonHome。正在把这一份复制过去，然后继续后面的配置。"
-    Write-Info "复制期间请不要关闭窗口。"
+    Write-Warn "将把系统里已有的 Python 放到 $PythonHome，然后继续配置。"
+    Write-Info "来源：$sourceExe"
+    Write-Info "版本：$srcVer"
+    Write-Info "本软件仍然只认 $PythonHome，不会直接用上面这个路径启动服务。"
+    if (Test-UnderPythonHome $sourceExe) {
+        Write-Warn "来源已经在 $PythonHome 内，无法用自己覆盖自己。"
+        return $false
+    }
+    if (Test-Path -LiteralPath $PythonHome) {
+        $bakName = "python-stock.bak-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+        Write-Info "先把现在的 $PythonHome 改名为 E:\$bakName（避免用不完整的旧文件）"
+        try {
+            Rename-Item -LiteralPath $PythonHome -NewName $bakName
+            Write-Ok "旧目录已改名为 E:\$bakName"
+        } catch {
+            Write-Warn "改名失败：$($_.Exception.Message)。将尝试直接覆盖。"
+        }
+    }
     if (-not (Test-Path -LiteralPath $PythonHome)) {
         New-Item -ItemType Directory -Path $PythonHome -Force | Out-Null
     }
-    try {
-        Copy-Item -Path (Join-Path $srcDir "*") -Destination $PythonHome -Recurse -Force
-    } catch {
-        Write-Warn "复制失败：$($_.Exception.Message)"
+    if (-not (Test-WritableDir $PythonHome)) {
+        Write-Warn "没有权限写入 $PythonHome。请右键 scripts\setup.cmd → 以管理员身份运行。"
         return $false
     }
+    Write-Info "正在复制全部文件，请不要关闭窗口（大约半分钟）。"
+    $copied = $false
+    $robo = Get-Command robocopy.exe -ErrorAction SilentlyContinue
+    if ($robo) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & robocopy.exe $srcDir $PythonHome /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        $roboCode = $LASTEXITCODE
+        $ErrorActionPreference = $prev
+        Write-Detail "robocopy 退出码 $roboCode（0～7 都表示复制过程可用）"
+        if ($roboCode -le 7) { $copied = $true }
+    }
+    if (-not $copied) {
+        try {
+            Copy-Item -Path (Join-Path $srcDir "*") -Destination $PythonHome -Recurse -Force
+            $copied = $true
+        } catch {
+            Write-Warn "复制失败：$($_.Exception.Message)"
+            return $false
+        }
+    }
     $dest = Join-Path $PythonHome "python.exe"
-    if (Test-ManagedPython $dest) {
-        Write-Ok "已放到 $dest ，后面会用这一份创建运行环境"
+    $probe = Get-PythonProbe $dest
+    if ($probe.Ok) {
+        Write-Ok "已放到 $dest （版本 $($probe.Version)，$($probe.Dll)）"
         return $true
     }
-    Write-Warn "复制结束后，仍无法用 $dest 启动 Python 3.11/3.12。"
+    Write-Warn "复制结束后仍不能用：$($probe.Error)"
+    Write-PythonHomeStatus
     return $false
 }
 
@@ -162,48 +427,33 @@ function Write-PythonNotReadyHelp {
     Write-Host "这不等于软件已经能打开网页。创建运行环境、安装依赖都还没做，现在启动服务会失败。"
     Write-Host ""
     Write-PythonHomeStatus
-    $misplaced = Find-MisplacedPython
-    if ($misplaced) {
-        Write-Host "在默认位置找到了另一份 Python："
-        Write-Host "    $misplaced"
-        Write-Host "请不要用这一份直接开服务；本软件不认这个路径。"
-    } else {
-        Write-Host "默认位置也没有找到 Python 3.11/3.12："
-        Write-Host "    $env:LocalAppData\Programs\Python\Python312\python.exe"
-    }
     Write-Host ""
     Write-Host "请按顺序试："
-    Write-Host "  1. 打开 Windows「设置 → 应用」，若已有 Python 3.11 或 3.12，先卸载。"
-    Write-Host "  2. 关掉本窗口，右键 scripts\setup.cmd → 以管理员身份运行。"
-    Write-Host "  3. 打开文件资源管理器，确认出现 $PythonHome\python.exe 后再双击 scripts\run-server.cmd。"
-    if (Test-Path -LiteralPath $InstallerLog) {
-        Write-Host "  4. 仍失败时，把本窗口全文和这个日志发给工作人员："
-        Write-Host "     $InstallerLog"
-    }
-}
-
-function Get-PythonVersion([string]$exe) {
-    try {
-        $v = & $exe -c "import sys; print(sys.version.split()[0])" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $v) { return $v.Trim() }
-    } catch { }
-    return "?"
+    Write-Host "  1. 打开文件资源管理器，看 $PythonHome\python.exe 和 python312.dll 是否都在。"
+    Write-Host "  2. 再看这个文件在不在："
+    Write-Host "       $env:LocalAppData\Programs\Python\Python312\python.exe"
+    Write-Host "  3. 打开 Windows「设置 → 应用」，若已有 Python 3.11 或 3.12，可先卸载后再装到 E:\python-stock。"
+    Write-Host "  4. 关掉本窗口，右键 scripts\setup.cmd → 以管理员身份运行。"
+    Write-LogHint
 }
 
 function Install-Python {
     Test-PythonHomeDrive
-    if (-not (Test-Path -LiteralPath $PythonHome)) {
-        Write-Info "正在创建目录 $PythonHome"
-        New-Item -ItemType Directory -Path $PythonHome -Force | Out-Null
+    if (-not (Test-WritableDir $PythonHome)) {
+        Write-Fail "没有权限写入 $PythonHome。"
+        Write-Host "请右键 scripts\setup.cmd → 以管理员身份运行。"
+        Write-LogHint
+        exit 1
     }
 
     $installer = Join-Path $env:TEMP "python-3.12.10-amd64.exe"
     $reuse = $false
     if (Test-Path -LiteralPath $installer) {
-        $existingMb = [math]::Round((Get-Item -LiteralPath $installer).Length / 1MB, 1)
-        if ((Get-Item -LiteralPath $installer).Length -ge 20MB) {
+        $existingBytes = (Get-Item -LiteralPath $installer).Length
+        $existingMb = [math]::Round($existingBytes / 1MB, 1)
+        if ($existingBytes -ge 20MB) {
             Write-Info "发现上次已下载的安装包（$existingMb MB），跳过重复下载"
-            Write-Info $installer
+            Write-Detail $installer
             $reuse = $true
         } else {
             Write-Warn "临时目录里的安装包不完整（$existingMb MB），将重新下载"
@@ -215,12 +465,17 @@ function Install-Python {
         Write-Info "来源: $InstallerUrl"
         Write-Info "保存到: $installer"
         Write-Info "下面会出现进度条；没有动也不要关窗口"
-        & curl.exe -fL --progress-bar --stderr - -o $installer $InstallerUrl
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $installer)) {
-            Write-Fail "下载 Python 失败。"
+        $prevCurl = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & curl.exe -fL --retry 3 --retry-delay 2 --progress-bar --stderr - -o $installer $InstallerUrl
+        $curlCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevCurl
+        if ($curlCode -ne 0 -or -not (Test-Path -LiteralPath $installer)) {
+            Write-Fail "下载 Python 失败（curl 退出码 $curlCode）。"
             Write-Host "请检查网络后，再双击 scripts\setup.cmd"
             Write-Host "也可以自己安装 Python 3.11 或 3.12 到 $PythonHome"
             Write-Host "官方安装包: $InstallerUrl"
+            Write-LogHint
             exit 1
         }
         $mb = [math]::Round((Get-Item -LiteralPath $installer).Length / 1MB, 1)
@@ -228,10 +483,10 @@ function Install-Python {
     }
 
     Write-Info "正在安装到 $PythonHome"
-    Write-Warn "安装窗口可能几乎没有进度，静默等待 1～3 分钟是正常的，请不要关闭"
+    Write-Info "会弹出一个带进度条的安装窗口，大约 1～3 分钟。请不要关闭那个窗口，也不要关闭本窗口。"
     Write-Info "安装器日志：$InstallerLog"
     $installerArgs = @(
-        "/quiet",
+        "/passive",
         "/install",
         "/log", $InstallerLog,
         "InstallAllUsers=0",
@@ -248,127 +503,255 @@ function Install-Python {
     $proc = Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -PassThru
     $sw.Stop()
     $seconds = [int]$sw.Elapsed.TotalSeconds
+    if ($null -eq $proc) {
+        Write-Fail "无法启动 Python 安装程序。"
+        Write-LogHint
+        exit 1
+    }
     if ($proc.ExitCode -ne 0) {
         Write-Fail "Python 安装程序退出码 $($proc.ExitCode)，用时 $seconds 秒。这才是安装失败。"
         Write-Host "如果是权限问题：右键 scripts\setup.cmd → 以管理员身份运行"
-        Write-Host "安装成功后，这里必须出现文件：$PythonHome\python.exe"
-        if (Test-Path -LiteralPath $InstallerLog) {
-            Write-Host "安装器日志：$InstallerLog"
-        }
+        Write-Host "安装成功后，这里必须出现文件：$PythonHome\python.exe 和 python312.dll"
+        Write-LogHint
         exit $proc.ExitCode
     }
     Write-Info ("安装程序已退出（退出码 0，用时 {0} 秒）。退出码 0 只表示安装器跑完了，还要检查文件是否真的在 $PythonHome。" -f $seconds)
     Write-PythonHomeStatus
 }
 
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Stock-Analyzer 一键配置" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "请不要关闭本窗口。全部完成后会告诉你下一步怎么做。"
-Write-Host "工作目录: $root"
-Write-Host "开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Write-Host "将依次检查：E: 盘 → Python → 运行环境 → 依赖包 → 配置文件"
-
-Write-Step "[1/6] 检查是否有 E: 盘"
-Test-PythonHomeDrive
-Write-Ok "已找到 E: 盘。Python 将安装/使用 $PythonHome"
-
-Write-Step "[2/6] 查找 Python 3.11 或 3.12"
-Write-Info "运行时只认 $PythonHome 下的 3.11 / 3.12。若安装器把它装到了用户目录，会尝试复制过来，不会用系统 PATH 上的其它 Python 直接启动服务。"
-$py = Find-Python
-if (-not $py) {
-    $existing = Join-Path $PythonHome "python.exe"
-    if (Test-Path -LiteralPath $existing) {
-        Write-Fail "找到了 $existing，但不是 Python 3.11 或 3.12。"
-        Write-Host "请先把这个安装移走或卸载，再重新运行 scripts\setup.cmd"
-        exit 1
+function Resolve-ManagedPython {
+    Write-Info "先检查 $PythonHome ..."
+    $py = Find-Python
+    if ($py) {
+        $probe = Get-PythonProbe $py
+        Write-Ok "$py 可用（版本 $($probe.Version)，$($probe.Dll)）"
+        return $py
     }
+
+    $homeExe = Join-Path $PythonHome "python.exe"
+    $homeProbe = Get-PythonProbe $homeExe
+    if ($homeProbe.Exists -and -not $homeProbe.Ok) {
+        Write-Warn "看到了 $homeExe，但不能当 3.11/3.12 用。"
+        Write-Info ("文件大小 {0} MB。具体原因：{1}" -f [math]::Round($homeProbe.Length / 1MB, 1), $homeProbe.Error)
+        Write-Info "这通常是上次安装没写完整，并不代表这台电脑没有 Python 3.12。"
+        Write-PythonHomeStatus
+    } elseif (-not $homeProbe.Exists) {
+        Write-Info "$homeExe 还不存在。"
+    }
+
     $misplaced = Find-MisplacedPython
     if ($misplaced) {
-        Write-Warn "还没有 $PythonHome\python.exe，但已经检测到另一份可用的 Python。"
+        Write-Warn "在系统里找到了可用的 Python 3.11/3.12："
+        Write-Info $misplaced
         if (Copy-PythonToHome $misplaced) {
-            $py = Find-Python
+            return (Find-Python)
         }
+        Write-Warn "复制没有成功，将再试官方安装器。"
+    } else {
+        Write-Info "用户目录 / 注册表 / PATH 里没有找到另一份能跑的 3.11/3.12。"
+    }
+    return $null
+}
+
+function Invoke-Pip([string[]]$PipArgs, [int]$Tries = 3) {
+    $venvPy = Join-Path $root ".venv\Scripts\python.exe"
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        for ($i = 1; $i -le $Tries; $i++) {
+            Write-Info ("pip 第 {0}/{1} 次：{2}" -f $i, $Tries, ($PipArgs -join " "))
+            & $venvPy -m pip @PipArgs
+            $code = $LASTEXITCODE
+            if ($code -eq 0) { return $true }
+            Write-Warn "pip 失败，退出码 $code"
+            if ($i -lt $Tries) {
+                Write-Info "2 秒后重试..."
+                Start-Sleep -Seconds 2
+            }
+        }
+        return $false
+    } finally {
+        $ErrorActionPreference = $prev
     }
 }
-if (-not $py) {
-    Write-Warn "还没有可用的 Python，将自动下载并安装 3.12.10（需要联网）"
-    Install-Python
-    Write-Info "正在确认 $PythonHome 里有没有 python.exe ..."
-    $py = Find-Python
+
+Start-SetupLog
+
+$script:ExitCode = 0
+try {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  Stock-Analyzer 一键配置" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "请不要关闭本窗口。全部完成后会告诉你下一步怎么做。"
+    Write-Host "工作目录: $root"
+    Write-Host "开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Write-Host "系统: $([Environment]::OSVersion.VersionString)　用户: $env:USERNAME　PowerShell: $($PSVersionTable.PSVersion)"
+    if ($script:RunLog) { Write-Host "本轮日志: $script:RunLog" }
+    Write-Host "将依次检查：E: 盘 → Python → 运行环境 → 依赖包 → 配置文件"
+
+    Write-Step "[1/6] 检查是否有 E: 盘"
+    Test-PythonHomeDrive
+    $drive = Get-DriveInfo
+    if ($drive) {
+        $freeGb = [math]::Round($drive.Free / 1GB, 2)
+        $sizeGb = [math]::Round($drive.Size / 1GB, 2)
+        Write-Info ("E: 卷标「{0}」文件系统 {1}，总容量 {2} GB，剩余 {3} GB" -f $drive.Volume, $drive.FileSystem, $sizeGb, $freeGb)
+        if ($drive.Free -lt 500MB) {
+            Write-Fail "E: 盘剩余空间不足 500 MB，装不下 Python 和依赖。"
+            Write-Host "请先清理 E: 盘后再双击 scripts\setup.cmd"
+            Write-LogHint
+            exit 1
+        }
+    } else {
+        Write-Info "已找到 E: 盘（未能读取容量信息，将继续尝试）。"
+    }
+    if (-not (Test-WritableDir $PythonHome)) {
+        Write-Fail "没有权限在 $PythonHome 创建或写入文件。"
+        Write-Host "请右键 scripts\setup.cmd → 以管理员身份运行。"
+        Write-LogHint
+        exit 1
+    }
+    Write-StepDone "E: 盘可用，Python 将安装/使用 $PythonHome"
+
+    Write-Step "[2/6] 查找 Python 3.11 或 3.12"
+    Write-Info "运行时只认 $PythonHome 下的 3.11 / 3.12。"
+    Write-Info "若安装器把它装到了用户目录，或 E:\ 里是一份不能用的残留，会尝试用系统里已有的 3.12 覆盖过去。"
+    $py = Resolve-ManagedPython
     if (-not $py) {
-        $misplaced = Find-MisplacedPython
-        if ($misplaced) {
-            if (Copy-PythonToHome $misplaced) {
-                $py = Find-Python
+        Write-Warn "还没有可用的 Python，将自动下载并安装 3.12.10（需要联网）"
+        Install-Python
+        Write-Info "正在确认 $PythonHome 里有没有能用的 python.exe ..."
+        $py = Resolve-ManagedPython
+    }
+    if (-not $py) {
+        Write-Fail "还不能继续配置：未在 $PythonHome 找到可用的 Python 3.11/3.12。"
+        Write-PythonNotReadyHelp
+        exit 1
+    }
+    $pyVer = Get-PythonVersion $py
+    Write-StepDone "将使用 $py （版本 $pyVer）"
+
+    Write-Step "[3/6] 准备本软件运行环境（.venv）"
+    $venvPy = Join-Path $root ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPy) {
+        $venvProbe = Get-PythonProbe $venvPy
+        if ($venvProbe.Ok) {
+            Write-Info ".venv 已存在并且能用（版本 $($venvProbe.Version)）"
+        } else {
+            Write-Warn ".venv 在，但是坏的：$($venvProbe.Error)"
+            Write-Info "将删除后重建。请不要关闭窗口。"
+            try {
+                Remove-Item -LiteralPath (Join-Path $root ".venv") -Recurse -Force
+            } catch {
+                Write-Fail "无法删除损坏的 .venv：$($_.Exception.Message)"
+                Write-Host "请关掉其它黑色窗口后再试。"
+                Write-LogHint
+                exit 1
             }
         }
     }
-}
-if (-not $py) {
-    Write-Fail "还不能继续配置：未在 $PythonHome 找到可用的 Python 3.11/3.12。"
-    Write-PythonNotReadyHelp
-    exit 1
-}
-$pyVer = Get-PythonVersion $py
-Write-Ok "将使用 $py （版本 $pyVer）"
+    if (-not (Test-Path -LiteralPath $venvPy)) {
+        Write-Info "第一次创建大约需要半分钟到一分钟，请稍候"
+        $prevVenv = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & $py -m venv .venv
+        $venvCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevVenv
+        if ($venvCode -ne 0 -or -not (Test-Path -LiteralPath $venvPy)) {
+            Write-Fail "创建 .venv 失败（退出码 $venvCode）。"
+            Write-Host "请把本窗口完整内容发给工作人员。"
+            Write-LogHint
+            exit 1
+        }
+        $venvProbe = Get-PythonProbe $venvPy
+        if (-not $venvProbe.Ok) {
+            Write-Fail ".venv 建出来了，但不能运行：$($venvProbe.Error)"
+            Write-LogHint
+            exit 1
+        }
+        Write-Ok "已创建 .venv（版本 $($venvProbe.Version)）"
+    }
+    Write-StepDone "运行环境就绪"
 
-Write-Step "[3/6] 准备本软件运行环境（.venv）"
-if (-not (Test-Path ".venv\Scripts\python.exe")) {
-    Write-Info "第一次创建大约需要半分钟到一分钟，请稍候"
-    & $py -m venv .venv
-    if (-not (Test-Path ".venv\Scripts\python.exe")) {
-        Write-Fail "创建 .venv 失败。"
-        Write-Host "请把本窗口完整内容发给工作人员。"
+    Write-Step "[4/6] 升级 pip（安装工具本身）"
+    Write-Info "下面会刷一些英文进度，属于正常现象"
+    if (-not (Invoke-Pip @("install", "-U", "pip"))) {
+        $pipVer = Invoke-Native $venvPy @("-m", "pip", "--version")
+        if ($pipVer.Code -eq 0) {
+            Write-Warn "升级 pip 失败，但现有 pip 还能用，将继续装依赖。"
+            Write-Detail $pipVer.Text
+        } else {
+            Write-Fail "pip 不能用。请检查网络后重试。"
+            Write-LogHint
+            exit 1
+        }
+    } else {
+        $pipVer = Invoke-Native $venvPy @("-m", "pip", "--version")
+        if ($pipVer.Text) { Write-Detail $pipVer.Text }
+        Write-Ok "pip 已就绪"
+    }
+    Write-StepDone "pip 检查结束"
+
+    Write-Step "[5/6] 安装软件依赖包"
+    Write-Info "可能需要几分钟。已装过的包会很快跳过；请不要关闭窗口"
+    if (-not (Test-Path -LiteralPath (Join-Path $root "requirements.txt"))) {
+        Write-Fail "找不到 requirements.txt，软件文件不完整。"
+        Write-LogHint
         exit 1
     }
-    Write-Ok "已创建 .venv"
-} else {
-    Write-Ok ".venv 已存在，跳过创建"
-}
+    if (-not (Invoke-Pip @("install", "-r", "requirements.txt"))) {
+        Write-Fail "安装依赖失败。请检查网络后，再双击 scripts\setup.cmd"
+        Write-LogHint
+        exit 1
+    }
+    Write-StepDone "依赖包安装完成"
 
-Write-Step "[4/6] 升级 pip（安装工具本身）"
-Write-Info "下面会刷一些英文进度，属于正常现象"
-& .\.venv\Scripts\python.exe -m pip install -U pip
-if ($LASTEXITCODE -ne 0) {
-    Write-Fail "升级 pip 失败。请检查网络后重试。"
-    exit $LASTEXITCODE
-}
-Write-Ok "pip 已就绪"
+    Write-Step "[6/6] 准备配置文件 .env"
+    $envFile = Join-Path $root ".env"
+    $example = Join-Path $root ".env.example"
+    if (-not (Test-Path -LiteralPath $envFile)) {
+        if (-not (Test-Path -LiteralPath $example)) {
+            Write-Fail "找不到 .env.example，软件文件不完整。"
+            Write-LogHint
+            exit 1
+        }
+        Copy-Item -LiteralPath $example -Destination $envFile
+        Write-Ok "已从模板复制 .env（默认离线模式，不必填 licence 也能打开）"
+        Write-Info "以后若有正式行情授权或 AI 密钥，再请工作人员帮你改 .env"
+    } else {
+        Write-Ok ".env 已存在，未改动"
+    }
+    Write-StepDone "配置文件就绪"
 
-Write-Step "[5/6] 安装软件依赖包"
-Write-Info "可能需要几分钟。已装过的包会很快跳过；请不要关闭窗口"
-& .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-if ($LASTEXITCODE -ne 0) {
-    Write-Fail "安装依赖失败。请检查网络后，再双击 scripts\setup.cmd"
-    exit $LASTEXITCODE
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "  配置成功" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Green
+    if ($env:STOCK_ANALYZER_NESTED_SETUP -eq "1") {
+        Write-Host "配置已完成，接下来会自动启动服务，请继续等待。"
+    } else {
+        Write-Host "下一步（请按顺序做）："
+        Write-Host "  1. 读完后关掉本窗口"
+        Write-Host "  2. 双击  scripts\run-server.cmd  启动软件"
+        Write-Host "  3. 打开浏览器，在地址栏输入（不要去搜索）："
+        Write-Host "       http://127.0.0.1:8765" -ForegroundColor Yellow
+        Write-Host "  4. 登录账号: hanish"
+        Write-Host "     登录密码: change-me"
+    }
+    Write-Host ""
+    Write-Host "结束时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Write-LogHint
+} catch {
+    $script:ExitCode = 1
+    Write-Fail "配置遇到未处理的错误。"
+    Write-Host $_.Exception.Message
+    if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace }
+    Write-Host "请把本窗口全文发给工作人员。"
+    Write-LogHint
+} finally {
+    if ($script:OwnTranscript) {
+        try { Stop-Transcript | Out-Null } catch { }
+    }
 }
-Write-Ok "依赖包安装完成"
-
-Write-Step "[6/6] 准备配置文件 .env"
-if (-not (Test-Path ".env")) {
-    Copy-Item ".env.example" ".env"
-    Write-Ok "已从模板复制 .env（默认离线模式，不必填 licence 也能打开）"
-    Write-Info "以后若有正式行情授权或 AI 密钥，再请工作人员帮你改 .env"
-} else {
-    Write-Ok ".env 已存在，未改动"
-}
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "  配置成功" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Green
-if ($env:STOCK_ANALYZER_NESTED_SETUP -eq "1") {
-    Write-Host "配置已完成，接下来会自动启动服务，请继续等待。"
-} else {
-    Write-Host "下一步（请按顺序做）："
-    Write-Host "  1. 读完后关掉本窗口"
-    Write-Host "  2. 双击  scripts\run-server.cmd  启动软件"
-    Write-Host "  3. 打开浏览器，在地址栏输入（不要去搜索）："
-    Write-Host "       http://127.0.0.1:8765" -ForegroundColor Yellow
-    Write-Host "  4. 登录账号: hanish"
-    Write-Host "     登录密码: change-me"
-}
-Write-Host ""
-Write-Host "结束时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+if ($script:ExitCode -ne 0) { exit $script:ExitCode }
