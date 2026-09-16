@@ -54,12 +54,20 @@ function Start-RunLog {
     }
 }
 
+function Get-SafeText($Value) {
+    if ($null -eq $Value) { return "" }
+    try { return ([string]$Value).Trim() } catch { return "" }
+}
+
 function Format-ProcessArgs([string[]]$Parts) {
-    ($Parts | ForEach-Object {
-        $p = [string]$_
-        if ($p -notmatch '[ \t"]') { return $p }
-        '"' + ($p -replace '"', '\"') + '"'
-    }) -join " "
+    if ($null -eq $Parts) { return "" }
+    $bits = New-Object System.Collections.Generic.List[string]
+    foreach ($raw in @($Parts)) {
+        $p = [string]$raw
+        if ($p -notmatch '[ \t"]') { [void]$bits.Add($p); continue }
+        [void]$bits.Add(('"' + ($p -replace '"', '\"') + '"'))
+    }
+    return ($bits -join " ")
 }
 
 function Invoke-Native([string]$File, [string[]]$NativeArgs, [int]$TimeoutSec = 15) {
@@ -68,55 +76,69 @@ function Invoke-Native([string]$File, [string[]]$NativeArgs, [int]$TimeoutSec = 
         $cmd = Get-Command $File -ErrorAction SilentlyContinue -CommandType Application
         if ($cmd -and $cmd.Source) { $exe = [string]$cmd.Source }
     }
-    $outFile = Join-Path $env:TEMP ("stock-analyzer-out-{0}.txt" -f [guid]::NewGuid().ToString("N"))
-    $errFile = Join-Path $env:TEMP ("stock-analyzer-err-{0}.txt" -f [guid]::NewGuid().ToString("N"))
-    $proc = $null
+    if (-not (Test-Path -LiteralPath $exe)) {
+        return @{ Code = 1; Text = "找不到可执行文件: $File" }
+    }
+    if ($TimeoutSec -lt 1) { $TimeoutSec = 15 }
+
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
-        $start = @{
-            FilePath = $exe
-            PassThru = $true
-            RedirectStandardOutput = $outFile
-            RedirectStandardError = $errFile
-        }
-        if ($NativeArgs -and $NativeArgs.Count -gt 0) {
-            $start.ArgumentList = Format-ProcessArgs $NativeArgs
-        }
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = Format-ProcessArgs @($NativeArgs)
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.ErrorDialog = $false
         $parent = Split-Path -Parent $exe
         if ($parent -and (Test-Path -LiteralPath $parent)) {
-            $start.WorkingDirectory = $parent
+            $psi.WorkingDirectory = $parent
+            try {
+                $pathNow = $psi.EnvironmentVariables["PATH"]
+                if (-not $pathNow) { $pathNow = [Environment]::GetEnvironmentVariable("PATH") }
+                $psi.EnvironmentVariables["PATH"] = $parent + ";" + $pathNow
+            } catch { }
         }
+
+        $p = New-Object System.Diagnostics.Process
+        $p.StartInfo = $psi
         try {
-            $start.WindowStyle = "Hidden"
-            $proc = Start-Process @start
+            [void]$p.Start()
         } catch {
-            $start.Remove("WindowStyle")
-            $proc = Start-Process @start
+            return @{ Code = 1; Text = "无法启动 ${exe}：$($_.Exception.Message)" }
         }
-        if (-not $proc) {
-            return @{ Code = 1; Text = "无法启动 $exe" }
-        }
-        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+
+        $outTask = $null
+        $errTask = $null
+        try { $outTask = $p.StandardOutput.ReadToEndAsync() } catch { }
+        try { $errTask = $p.StandardError.ReadToEndAsync() } catch { }
+
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
             Write-Warn "试跑 $exe 超过 ${TimeoutSec} 秒仍无响应，正在结束该进程..."
-            $prev = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
-            $ErrorActionPreference = $prev
+            try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+            try { & taskkill.exe /PID $p.Id /T /F 2>$null | Out-Null } catch { }
             return @{ Code = -1; Text = "试跑超时（${TimeoutSec} 秒）。常见原因：安装不完整、缺少运行库、或弹出了被挡住的错误窗口。" }
         }
-        $text = ""
-        if (Test-Path -LiteralPath $outFile) {
-            $text = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)
+
+        $out = ""
+        $err = ""
+        try { if ($outTask) { $out = $outTask.GetAwaiter().GetResult() } } catch { }
+        try { if ($errTask) { $err = $errTask.GetAwaiter().GetResult() } } catch { }
+        $text = Get-SafeText $out
+        $errText = Get-SafeText $err
+        if ($errText) {
+            if ($text) { $text = $text + "`n" + $errText } else { $text = $errText }
         }
-        if (Test-Path -LiteralPath $errFile) {
-            $err = [string](Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
-            if ($err.Trim()) { $text = ($text.Trim() + "`n" + $err.Trim()).Trim() }
-        }
-        if ($null -eq $text) { $text = "" }
-        return @{ Code = [int]$proc.ExitCode; Text = $text.Trim() }
+        $code = 1
+        try { $code = [int]$p.ExitCode } catch { }
+        try { $p.Dispose() } catch { }
+        return @{ Code = $code; Text = $text }
     } catch {
         return @{ Code = 1; Text = $_.Exception.Message }
     } finally {
-        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+        $ErrorActionPreference = $prevEap
     }
 }
 

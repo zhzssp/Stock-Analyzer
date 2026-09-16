@@ -5,38 +5,37 @@ chcp 65001 >nul
 title Stock-Analyzer setup
 echo.
 echo ========================================
-echo   Stock-Analyzer 环境检查 / 配置
+echo   Stock-Analyzer setup
 echo ========================================
-echo 请不要关闭本窗口。全部完成后会告诉你下一步。
+echo Do not close this window.
+echo Chinese messages will appear below.
 echo.
 
 where powershell >nul 2>&1
 if errorlevel 1 (
-  echo [失败] 找不到 Windows PowerShell。
-  echo 请把本窗口发给工作人员。
+  echo [ERROR] Windows PowerShell not found.
   echo.
   pause
   exit /b 1
 )
 
 if not exist "%~dp0setup.ps1" (
-  echo [失败] 找不到 scripts\setup.ps1，软件文件不完整。
+  echo [ERROR] Missing scripts\setup.ps1
   echo.
   pause
   exit /b 1
 )
 
-echo 正在启动配置脚本 setup.ps1 ...
+echo Starting setup.ps1 ...
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1"
 set ERR=%ERRORLEVEL%
 echo.
 if not "%ERR%"=="0" (
-  echo [失败] 配置没有完成，退出码 %ERR%。
-  echo 请向上滚动阅读中文说明，不要只看这一行。
-  echo 完整日志一般在 data\logs\ 目录。
+  echo [ERROR] Setup exit code %ERR%. Scroll up for the Chinese messages.
+  echo Log files are under data\logs
 ) else (
-  echo 配置脚本已结束。若上面显示「环境检查通过」或「配置成功」，就可以关掉本窗口。
+  echo Setup finished. If you saw success above, you can close this window.
 )
 echo.
 pause

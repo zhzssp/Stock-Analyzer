@@ -81,12 +81,20 @@ function Start-SetupLog {
     }
 }
 
+function Get-SafeText($Value) {
+    if ($null -eq $Value) { return "" }
+    try { return ([string]$Value).Trim() } catch { return "" }
+}
+
 function Format-ProcessArgs([string[]]$Parts) {
-    ($Parts | ForEach-Object {
-        $p = [string]$_
-        if ($p -notmatch '[ \t"]') { return $p }
-        '"' + ($p -replace '"', '\"') + '"'
-    }) -join " "
+    if ($null -eq $Parts) { return "" }
+    $bits = New-Object System.Collections.Generic.List[string]
+    foreach ($raw in @($Parts)) {
+        $p = [string]$raw
+        if ($p -notmatch '[ \t"]') { [void]$bits.Add($p); continue }
+        [void]$bits.Add(('"' + ($p -replace '"', '\"') + '"'))
+    }
+    return ($bits -join " ")
 }
 
 function Invoke-Native([string]$File, [string[]]$NativeArgs, [int]$TimeoutSec = 15) {
@@ -95,55 +103,95 @@ function Invoke-Native([string]$File, [string[]]$NativeArgs, [int]$TimeoutSec = 
         $cmd = Get-Command $File -ErrorAction SilentlyContinue -CommandType Application
         if ($cmd -and $cmd.Source) { $exe = [string]$cmd.Source }
     }
-    $outFile = Join-Path $env:TEMP ("stock-analyzer-out-{0}.txt" -f [guid]::NewGuid().ToString("N"))
-    $errFile = Join-Path $env:TEMP ("stock-analyzer-err-{0}.txt" -f [guid]::NewGuid().ToString("N"))
-    $proc = $null
+    if (-not (Test-Path -LiteralPath $exe)) {
+        return @{ Code = 1; Text = "找不到可执行文件: $File" }
+    }
+    if ($TimeoutSec -lt 1) { $TimeoutSec = 15 }
+
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
-        $start = @{
-            FilePath = $exe
-            PassThru = $true
-            RedirectStandardOutput = $outFile
-            RedirectStandardError = $errFile
-        }
-        if ($NativeArgs -and $NativeArgs.Count -gt 0) {
-            $start.ArgumentList = Format-ProcessArgs $NativeArgs
-        }
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = Format-ProcessArgs @($NativeArgs)
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.ErrorDialog = $false
         $parent = Split-Path -Parent $exe
         if ($parent -and (Test-Path -LiteralPath $parent)) {
-            $start.WorkingDirectory = $parent
+            $psi.WorkingDirectory = $parent
+            try {
+                $pathNow = $psi.EnvironmentVariables["PATH"]
+                if (-not $pathNow) { $pathNow = [Environment]::GetEnvironmentVariable("PATH") }
+                $psi.EnvironmentVariables["PATH"] = $parent + ";" + $pathNow
+            } catch { }
         }
+
+        $p = New-Object System.Diagnostics.Process
+        $p.StartInfo = $psi
         try {
-            $start.WindowStyle = "Hidden"
-            $proc = Start-Process @start
+            [void]$p.Start()
         } catch {
-            $start.Remove("WindowStyle")
-            $proc = Start-Process @start
+            return @{ Code = 1; Text = "无法启动 ${exe}：$($_.Exception.Message)" }
         }
-        if (-not $proc) {
-            return @{ Code = 1; Text = "无法启动 $exe" }
-        }
-        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+
+        $outTask = $null
+        $errTask = $null
+        try { $outTask = $p.StandardOutput.ReadToEndAsync() } catch { }
+        try { $errTask = $p.StandardError.ReadToEndAsync() } catch { }
+
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
             Write-Warn "试跑 $exe 超过 ${TimeoutSec} 秒仍无响应，正在结束该进程..."
-            $prev = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
-            $ErrorActionPreference = $prev
+            try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+            try { & taskkill.exe /PID $p.Id /T /F 2>$null | Out-Null } catch { }
             return @{ Code = -1; Text = "试跑超时（${TimeoutSec} 秒）。常见原因：安装不完整、缺少运行库、或弹出了被挡住的错误窗口。" }
         }
-        $text = ""
-        if (Test-Path -LiteralPath $outFile) {
-            $text = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)
+
+        $out = ""
+        $err = ""
+        try { if ($outTask) { $out = $outTask.GetAwaiter().GetResult() } } catch { }
+        try { if ($errTask) { $err = $errTask.GetAwaiter().GetResult() } } catch { }
+        $text = Get-SafeText $out
+        $errText = Get-SafeText $err
+        if ($errText) {
+            if ($text) { $text = $text + "`n" + $errText } else { $text = $errText }
         }
-        if (Test-Path -LiteralPath $errFile) {
-            $err = [string](Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
-            if ($err.Trim()) { $text = ($text.Trim() + "`n" + $err.Trim()).Trim() }
-        }
-        if ($null -eq $text) { $text = "" }
-        return @{ Code = [int]$proc.ExitCode; Text = $text.Trim() }
+        $code = 1
+        try { $code = [int]$p.ExitCode } catch { }
+        try { $p.Dispose() } catch { }
+        return @{ Code = $code; Text = $text }
     } catch {
         return @{ Code = 1; Text = $_.Exception.Message }
     } finally {
-        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+        $ErrorActionPreference = $prevEap
+    }
+}
+
+function Invoke-NativeViaCmd([string]$File, [string[]]$NativeArgs, [int]$TimeoutSec = 15) {
+    $outFile = Join-Path $env:TEMP ("stock-analyzer-cmdout-{0}.txt" -f [guid]::NewGuid().ToString("N"))
+    $batFile = Join-Path $env:TEMP ("stock-analyzer-cmdrun-{0}.cmd" -f [guid]::NewGuid().ToString("N"))
+    $argLine = Format-ProcessArgs @($NativeArgs)
+    $parent = Split-Path -Parent $File
+    $lines = @(
+        "@echo off",
+        "cd /d `"$parent`"",
+        "`"$File`" $argLine > `"$outFile`" 2>&1"
+    )
+    try {
+        [IO.File]::WriteAllLines($batFile, $lines, [Text.Encoding]::Default)
+        $run = Invoke-Native "cmd.exe" @("/d", "/c", $batFile) $TimeoutSec
+        $text = ""
+        if (Test-Path -LiteralPath $outFile) {
+            try { $text = Get-SafeText ([IO.File]::ReadAllText($outFile)) } catch { }
+        }
+        if (-not $text) { $text = Get-SafeText $run.Text }
+        return @{ Code = $run.Code; Text = $text }
+    } catch {
+        return @{ Code = 1; Text = $_.Exception.Message }
+    } finally {
+        Remove-Item -LiteralPath $outFile, $batFile -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -226,22 +274,32 @@ function Get-PythonProbe([string]$exe) {
         return $probe
     }
     Write-Detail "正在试跑 $exe --version （最多 15 秒，卡住会自动跳过）..."
-    $run = Invoke-Native $exe @("--version") 15
-    if ($run.Code -eq -1) {
-        $probe.Error = $run.Text
+    try {
+        $run = Invoke-Native $exe @("--version") 15
+        if ($run.Code -eq -1) {
+            $probe.Error = Get-SafeText $run.Text
+            return $probe
+        }
+        if ($run.Code -ne 0 -or -not (Get-SafeText $run.Text)) {
+            Write-Detail "改用 -c 再试一次..."
+            $run = Invoke-Native $exe @("-c", "import sys; sys.stdout.write('%d.%d' % (sys.version_info.major, sys.version_info.minor))") 15
+        }
+        if ($run.Code -ne 0 -or -not (Get-SafeText $run.Text)) {
+            Write-Detail "改用 cmd 重定向再试一次..."
+            $run = Invoke-NativeViaCmd $exe @("--version") 15
+        }
+        if ($run.Code -ne 0 -or -not (Get-SafeText $run.Text)) {
+            $detail = Get-SafeText $run.Text
+            if (-not $detail) { $detail = "没有输出。常见原因：安装不完整或被安全软件拦截。" }
+            $probe.Error = "退出码 $($run.Code)：$detail"
+            return $probe
+        }
+    } catch {
+        $probe.Error = "试跑异常：$($_.Exception.Message)"
         return $probe
     }
-    if ($run.Code -ne 0 -or -not $run.Text) {
-        Write-Detail "改用 -c 再试一次..."
-        $run = Invoke-Native $exe @("-c", "import sys; sys.stdout.write('%d.%d' % (sys.version_info.major, sys.version_info.minor))") 15
-    }
-    if ($run.Code -ne 0 -or -not $run.Text) {
-        $detail = $run.Text
-        if (-not $detail) { $detail = "退出码 $($run.Code)，没有输出。常见原因：安装不完整或被安全软件拦截。" }
-        $probe.Error = $detail
-        return $probe
-    }
-    if ($run.Text -match "(\d+)\.(\d+)") {
+    $verText = Get-SafeText $run.Text
+    if ($verText -match "(\d+)\.(\d+)") {
         $maj = [int]$Matches[1]
         $min = [int]$Matches[2]
         $probe.Version = "$maj.$min"
@@ -263,9 +321,11 @@ function Test-CPythonVersion([string]$exe) {
 
 function Test-UnderPythonHome([string]$exe) {
     try {
-        $full = [IO.Path]::GetFullPath($exe)
-        $home = [IO.Path]::GetFullPath($PythonHome)
-        return $full.StartsWith($home, [StringComparison]::OrdinalIgnoreCase)
+        $full = [IO.Path]::GetFullPath($exe).TrimEnd("\")
+        $home = [IO.Path]::GetFullPath($PythonHome).TrimEnd("\")
+        if ($full.Equals($home, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        $prefix = $home + [IO.Path]::DirectorySeparatorChar
+        return $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
     } catch {
         return $false
     }
@@ -326,7 +386,7 @@ function Get-PyLauncherPython {
     foreach ($tag in @("-3.12", "-3.11")) {
         $run = Invoke-Native $cmd.Source @($tag, "-c", "import sys; sys.stdout.write(sys.executable)")
         if ($run.Code -ne 0 -or -not $run.Text) { continue }
-        $exe = $run.Text.Trim().Trim('"')
+        $exe = (Get-SafeText $run.Text).Trim('"')
         if (Test-Path -LiteralPath $exe) { $found += $exe }
     }
     return $found
@@ -337,7 +397,7 @@ function Get-PathPythonCandidates {
     $where = Invoke-Native "where.exe" @("python")
     if (-not $where.Text) { return $found }
     foreach ($line in ($where.Text -split "`n")) {
-        $p = $line.Trim()
+        $p = Get-SafeText $line
         if ($p -and ($p -match "python\.exe$")) { $found += $p }
     }
     return $found
@@ -487,17 +547,40 @@ function Copy-PythonToHome([string]$sourceExe) {
     return $false
 }
 
+function Test-PythonHomeLooksComplete {
+    $exe = Join-Path $PythonHome "python.exe"
+    $osPy = Join-Path $PythonHome "Lib\os.py"
+    if (-not (Test-Path -LiteralPath $exe)) { return $false }
+    if (-not (Test-Path -LiteralPath $osPy)) { return $false }
+    try {
+        if ((Get-Item -LiteralPath $exe).Length -lt 20KB) { return $false }
+    } catch { return $false }
+    $dll312 = Join-Path $PythonHome "python312.dll"
+    $dll311 = Join-Path $PythonHome "python311.dll"
+    return ((Test-Path -LiteralPath $dll312) -or (Test-Path -LiteralPath $dll311))
+}
+
 function Write-PythonNotReadyHelp {
     Write-Host "这不等于软件已经能打开网页。创建运行环境、安装依赖都还没做，现在启动服务会失败。"
     Write-Host ""
     Write-PythonHomeStatus
     Write-Host ""
-    Write-Host "请按顺序试："
-    Write-Host "  1. 打开文件资源管理器，看 $PythonHome\python.exe 和 python312.dll 是否都在。"
-    Write-Host "  2. 再看这个文件在不在："
-    Write-Host "       $env:LocalAppData\Programs\Python\Python312\python.exe"
-    Write-Host "  3. 打开 Windows「设置 → 应用」，若已有 Python 3.11 或 3.12，可先卸载后再装到 E:\python-stock。"
-    Write-Host "  4. 关掉本窗口，右键 scripts\setup.cmd → 以管理员身份运行。"
+    if (Test-PythonHomeLooksComplete) {
+        Write-Host "目录看起来已经是完整的 Python 3.11/3.12，问题出在「试跑 python.exe」。"
+        Write-Host "请按顺序试："
+        Write-Host "  1. 确认本仓库脚本已更新到最新（git pull），再双击 scripts\run.cmd。"
+        Write-Host "  2. 打开资源管理器，双击 $PythonHome\python.exe，看是否弹出报错。"
+        Write-Host "  3. 若杀毒软件拦截了 python.exe，请允许后再试。"
+        Write-Host "  4. 不要反复跑官方安装器：系统若认为 3.12 已安装，它会 2 秒结束且不重写 $PythonHome。"
+        Write-Host "  5. 仍不行：右键 scripts\setup.cmd → 以管理员身份运行。"
+    } else {
+        Write-Host "请按顺序试："
+        Write-Host "  1. 打开文件资源管理器，看 $PythonHome\python.exe 和 python312.dll 是否都在。"
+        Write-Host "  2. 再看这个文件在不在："
+        Write-Host "       $env:LocalAppData\Programs\Python\Python312\python.exe"
+        Write-Host "  3. 打开 Windows「设置 → 应用」，若已有 Python 3.11 或 3.12，可先卸载后再装到 E:\python-stock。"
+        Write-Host "  4. 关掉本窗口，右键 scripts\setup.cmd → 以管理员身份运行。"
+    }
     Write-LogHint
 }
 
@@ -849,10 +932,15 @@ try {
         Write-Info "若安装器把它装到了用户目录，或 E:\ 里是一份不能用的残留，会尝试用系统里已有的 3.12 覆盖过去。"
         $py = Resolve-ManagedPython
         if (-not $py) {
-            Write-Warn "还没有可用的 Python，将自动下载并安装 3.12.10（需要联网）"
-            Install-Python
-            Write-Info "正在确认 $PythonHome 里有没有能用的 python.exe ..."
-            $py = Resolve-ManagedPython
+            if (Test-PythonHomeLooksComplete) {
+                Write-Warn "$PythonHome 看起来已经是完整安装（有 python.exe、python3xx.dll 和 Lib），但试跑仍失败。"
+                Write-Info "不会再跑官方安装器。系统若认为 Python 3.12 已经装过，安装器会 2 秒结束并且不重写文件。"
+            } else {
+                Write-Warn "还没有可用的 Python，将自动下载并安装 3.12.10（需要联网）"
+                Install-Python
+                Write-Info "正在确认 $PythonHome 里有没有能用的 python.exe ..."
+                $py = Resolve-ManagedPython
+            }
         }
         if (-not $py) {
             Write-Fail "还不能继续配置：未在 $PythonHome 找到可用的 Python 3.11/3.12。"
