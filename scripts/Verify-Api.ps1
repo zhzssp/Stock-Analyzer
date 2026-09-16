@@ -3,7 +3,7 @@
     麦蕊股票 API 现状验证脚本
 
 .DESCRIPTION
-    针对 docs/API现状.md 中 §4 列出的「已知限制与坑」逐条实测，
+    针对 docs/设计/API现状.md 中 §4 列出的「已知限制与坑」逐条实测，
     验证文档描述与接口真实行为是否一致，并输出 Markdown 报告。
 
     脚本会先执行「数据源真实性探针」（T0.5）：用三个不同股票代码请求同一接口，
@@ -15,7 +15,7 @@
     要得到有效结论，请传入你自己的正式 licence。
 
 .PARAMETER OutFile
-    报告输出路径。默认为仓库内 docs/验证报告.md
+    报告输出路径。默认为仓库内 docs/报告/验证报告.md
 
 .PARAMETER TestRateLimit
     是否执行限频压测（连续发送 40 次请求），默认关闭以免消耗配额。
@@ -38,7 +38,7 @@ $ErrorActionPreference = 'Continue'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutFile)) {
-    $OutFile = Join-Path $RepoRoot 'docs\验证报告.md'
+    $OutFile = Join-Path $RepoRoot 'docs\报告\验证报告.md'
 }
 
 $BaseApi = "https://api.mairuiapi.com"
@@ -134,7 +134,7 @@ Write-Host "每发起一次接口请求都会在下面打一行进度。"
 
 Add-Line "# API 验证报告"
 Add-Line ""
-Add-Line "> 由 ``scripts/Verify-Api.ps1`` 自动生成，用于实测校验 ``docs/API现状.md`` §4 的各项判断。"
+Add-Line "> 由 ``scripts/Verify-Api.ps1`` 自动生成，用于实测校验 ``docs/设计/API现状.md`` §4 的各项判断。"
 Add-Line ">"
 Add-Line "> 执行时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')　｜　licence：``$Licence``"
 

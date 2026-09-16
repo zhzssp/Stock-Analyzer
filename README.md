@@ -12,28 +12,32 @@
 Stock-Analyzer/
 ├── README.md                 # 本文件
 ├── docs/
-│   ├── INDEX.md               # 文档索引与分工（先看这里）
-│   ├── 软件设计文档.md        # 实现主设计
-│   ├── frontend/              # 本机工作台 HTML
-│   └── …                     # 其余见 docs/INDEX.md
+│   ├── INDEX.md               # 文档入口：分类与权威
+│   ├── 使用/                  # 部署教程、对客说明
+│   ├── 设计/                  # 软件设计、智能体专论、API 现状
+│   ├── 评审/                  # 提效缺口（默认不实现）
+│   ├── 需求/                  # 客户原话（R-）
+│   ├── 问题/                  # 已核实阻塞（P-）
+│   ├── 报告/                  # 脚本生成，勿手改
+│   └── frontend/              # 本机工作台（不要双击 HTML）
 ├── pics/                     # 现有表格截图，字段比对的基准
 ├── src/                      # FastAPI 单体（S1–S5）
 ├── tests/
 ├── requirements.txt
 └── scripts/
-    ├── Verify-Api.ps1        # 接口实测验证脚本
-    ├── Verify-Index.ps1      # S0：指数成份接口探针
-    ├── run-server.cmd        # 推荐：不依赖 PowerShell 执行策略
-    └── run-server.ps1        # 同上（需 Bypass 或放宽执行策略）
+    ├── setup.cmd             # 一键装 Python 到 E:\python-stock、建 venv
+    ├── run-server.cmd        # 启动本机服务
+    ├── Verify-Api.ps1        # 接口实测
+    └── Verify-Index.ps1      # S0：指数成份探针
 ```
 
 ## 文档说明
 
-分工、权威和「先看哪一份」见 [`docs/INDEX.md`](docs/INDEX.md)。根目录 README 只负责怎么跑、怎么验。
+文档分类和「听谁的」见 [`docs/INDEX.md`](docs/INDEX.md)。本文件只负责怎么跑、怎么验。
 
 ## 验证脚本
 
-针对 `API现状.md` §4 的各项判断逐条实测，避免仅凭文档描述做设计。
+针对 [`docs/设计/API现状.md`](docs/设计/API现状.md) §4 逐条实测，避免只凭文档做设计。
 
 ```powershell
 # 用你自己的正式 licence 运行（推荐）
@@ -43,7 +47,7 @@ Stock-Analyzer/
 .\scripts\Verify-Api.ps1 -Licence "你的licence" -TestRateLimit
 
 # 指定报告输出位置
-.\scripts\Verify-Api.ps1 -Licence "你的licence" -OutFile ".\docs\验证报告.md"
+.\scripts\Verify-Api.ps1 -Licence "你的licence" -OutFile ".\docs\报告\验证报告.md"
 ```
 
 **环境要求：** Windows PowerShell 5.1 及以上，无需任何第三方依赖。
@@ -72,7 +76,7 @@ Stock-Analyzer/
 
 ## 本机运行
 
-完全不会用命令的，请按 [`docs/本地部署教程.md`](docs/本地部署教程.md) 做（从安装 Git、`git clone` 到浏览器打开）。下面是给已经会开终端的人看的精简步骤。
+完全不会用命令的，请按 [`docs/使用/本地部署教程.md`](docs/使用/本地部署教程.md) 做。下面是给已经会开终端的人看的精简步骤。
 
 新机器（没有 `E:\python-stock` 下的 Python 3.11/3.12，或没有 `.venv`）先一键配置：
 
@@ -121,7 +125,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-server.ps1
 
 麦蕊数据 · https://api.mairuiapi.com
 
-覆盖沪深 A 股、沪深指数、京市（北交所）、科创板、基金五个板块，共 74 个接口。licence 分体验版/包月版/包年版/钻石版/企业版，各档在限频、全市场快照、1 分钟级历史数据上有差异，详见 `docs/API现状.md` §4.2 与 §4.5。
+覆盖沪深 A 股、沪深指数、京市、科创板、基金。档位与限频见 [`docs/设计/API现状.md`](docs/设计/API现状.md) §4.2、§4.5。
 
 > ⚠️ licence 属于凭据，请勿硬编码进代码或提交至版本库。建议通过环境变量传入：
 >
