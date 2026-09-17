@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -37,8 +37,10 @@ from src.platform.security import issue_token, verify_password
 from src.query.engine import QueryEngine
 from src.query.registry import registry
 from src.tools import registry as tool_registry
-from src.tools.base import ToolContext
-from src.tools.excel_tools import excel_export
+from src.tools.base import ToolContext, ToolResult
+from src.tools.excel_tools import excel_diff, excel_export, excel_read
+from src.tools.research_tools import export_share
+from src.tools.warehouse_tools import warehouse_get
 
 router = APIRouter()
 market = MarketClient()
@@ -60,6 +62,12 @@ class QueryIn(BaseModel):
     pool: str = "watch"
     pool_name: str | None = None
     async_mode: bool = False
+
+
+class DiffIn(BaseModel):
+    id_a: int | None = None
+    id_b: int | None = None
+    column: str | None = None
 
 
 class ChatAttachment(BaseModel):
@@ -103,6 +111,12 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 
 def _tool_ctx(user: User, db: Session) -> ToolContext:
     return ToolContext(user_id=user.id, db=db, market=market, engine=engine)
+
+
+def _tool_http(result: ToolResult) -> dict:
+    if not result.ok:
+        raise HTTPException(status_code=400, detail=result.error or "工具失败")
+    return result.to_dict()
 
 
 @router.get("/health")
@@ -358,6 +372,69 @@ def query_job(job_id: str, user: User = Depends(current_user)):
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     return job_payload(job)
+
+
+@router.post("/artifacts/diff")
+def artifacts_diff(body: DiffIn | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    args: dict = {}
+    if body:
+        if body.id_a:
+            args["id_a"] = body.id_a
+        if body.id_b:
+            args["id_b"] = body.id_b
+        if body.column:
+            args["column"] = body.column
+    return _tool_http(excel_diff(args, _tool_ctx(user, db)))
+
+
+@router.get("/artifacts/{art_id}/preview")
+def preview_artifact(art_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return _tool_http(excel_read({"id": art_id, "limit": 30}, _tool_ctx(user, db)))
+
+
+@router.get("/warehouse")
+def warehouse(
+    kind: str = "list",
+    code: str = "",
+    key: str = "",
+    id: int | None = None,
+    limit: int = 40,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    args: dict = {"kind": kind, "limit": limit}
+    if code:
+        args["code"] = code
+    if key:
+        args["key"] = key
+    if id:
+        args["id"] = id
+    return _tool_http(warehouse_get(args, _tool_ctx(user, db)))
+
+
+@router.get("/export-share")
+def get_export_share(code: str = "", user: User = Depends(current_user), db: Session = Depends(get_db)):
+    args: dict = {}
+    if code:
+        args["code"] = code
+    return _tool_http(export_share(args, _tool_ctx(user, db)))
+
+
+@router.put("/export-share")
+async def put_export_share(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+):
+    name = (file.filename or "").lower()
+    if not name.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="只接受 .csv")
+    raw = await file.read()
+    if len(raw) > 2_000_000:
+        raise HTTPException(status_code=400, detail="文件超过 2MB")
+    path = settings.data_dir / "export_share.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return {"ok": True, "filename": path.name, "bytes": len(raw)}
 
 
 @router.get("/artifacts")

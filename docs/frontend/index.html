@@ -41,6 +41,8 @@
     .brand { font-weight: 650; letter-spacing: 0.02em; }
     .brand span { color: var(--teal); font-weight: 500; margin-left: 8px; font-size: 12px; }
     .user { color: var(--muted); }
+    .top-meta { display: flex; gap: 14px; align-items: center; min-width: 0; }
+    .status { color: var(--muted); font-size: 12px; max-width: 52vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .shell {
       display: grid;
       grid-template-columns: 260px 1fr;
@@ -115,6 +117,7 @@
       display: flex;
       gap: 8px;
       align-items: center;
+      flex-wrap: wrap;
       padding: 12px 16px;
     }
     .toolbar .hint { margin-left: auto; color: var(--muted); }
@@ -141,8 +144,9 @@
       font-size: 16px; line-height: 1; padding: 0 4px;
     }
     .watch .rm:hover { color: var(--down); }
-    .pick-card { width: 460px; max-width: calc(100vw - 32px); }
+    .pick-card { width: 520px; max-width: calc(100vw - 32px); }
     .col-card { width: 520px; }
+    .art-card { width: 760px; max-height: 86vh; overflow: auto; }
     .pick-list { max-height: 280px; overflow: auto; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
     .pick-list label {
       display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px;
@@ -174,8 +178,21 @@
     }
     .alert b { display: block; margin-bottom: 2px; }
     .alert .meta { color: var(--muted); font-size: 11px; }
-    .job { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .job { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); gap: 8px; }
+    .job-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
     .off { color: var(--warn); font-size: 12px; }
+    .session-list { max-height: 180px; overflow: auto; margin-bottom: 8px; }
+    .session-item {
+      display: block; width: 100%; text-align: left; border: 0; background: transparent;
+      padding: 8px; border-radius: 8px; cursor: pointer; color: inherit; font: inherit;
+    }
+    .session-item.on, .session-item:hover { background: var(--paper); }
+    .session-item .sub { color: var(--muted); font-size: 11px; }
+    .meta-list { color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .meta-list .sub, .meta-list b { color: var(--ink); }
+    .meta-list .sub { color: var(--muted); font-weight: 400; display: block; }
+    .preview-wrap { overflow: auto; max-height: 220px; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; }
+    .preview-wrap table { font-size: 12px; }
     .toast {
       position: fixed; right: 20px; bottom: 20px;
       background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 8px;
@@ -202,7 +219,10 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">Stock-Analyzer <span>本机工作台</span></div>
-      <div class="user" id="userLabel">未登录</div>
+      <div class="top-meta">
+        <div class="status" id="healthBar">未检查</div>
+        <div class="user" id="userLabel">未登录</div>
+      </div>
     </header>
     <div class="shell">
       <aside class="sidebar">
@@ -248,6 +268,8 @@
             <button class="btn" id="refreshBtn" type="button">刷新</button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
+            <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
+            <button class="btn ghost" id="diffBtn" type="button">对照上一份</button>
             <span class="export-scope" id="exportScope">当前导出：自选</span>
             <span class="hint" id="queryHint">尚未查询</span>
           </div>
@@ -287,10 +309,20 @@
               </div>
             </div>
             <aside class="panel">
+              <div class="side-title" style="margin-bottom:10px;">历史对话</div>
+              <div id="sessionList" class="session-list"><div class="meta">登录后列出近期对话。</div></div>
               <div class="side-title" style="margin-bottom:10px;">本轮引用</div>
               <div id="chatCites" class="alert"><span class="meta">尚无。问答后这里列出 Tool 来源。</span></div>
               <div class="side-title" style="margin:14px 0 10px;">Tool 轨迹</div>
               <div id="chatTools" class="meta">问答走 analyst；盯盘在监控中心。</div>
+              <div class="side-title" style="margin:14px 0 8px;">本机仓库</div>
+              <p class="pane-note">导出档案、行情缓存、日线。日线来自本机缓存或离线切片，不是编造。</p>
+              <div id="warehouseBox" class="meta-list">尚未加载</div>
+              <div class="composer-row" style="margin-top:8px;">
+                <input id="barsCode" placeholder="代码，如 600038" style="flex:1;" />
+                <button class="btn sm" id="barsBtn" type="button">看日线</button>
+              </div>
+              <div id="barsBox" class="meta-list" style="margin-top:8px;"></div>
             </aside>
           </div>
         </div>
@@ -304,6 +336,21 @@
             <div id="monitorJobs"></div>
             <div class="side-title" style="margin:16px 0 8px;">提醒</div>
             <div id="monitorAlerts" class="meta">尚未跑过</div>
+            <div class="side-title" style="margin:16px 0 8px;">关注机构白名单</div>
+            <p class="pane-note">监控对照用的名字表，不是持仓实况。</p>
+            <div id="instList" class="meta-list">尚未加载</div>
+            <div class="side-title" style="margin:16px 0 8px;">关联期货品种</div>
+            <p class="pane-note">只有品种名字，没有期货价格。</p>
+            <div id="futuresList" class="meta-list">尚未加载</div>
+            <div class="side-title" style="margin:16px 0 8px;">出口占比手工表</div>
+            <p class="pane-note">只认本机 data/export_share.csv。没有表就是空的，不会编。</p>
+            <div class="composer-row" style="margin:8px 0;">
+              <input id="shareCode" placeholder="代码查询，如 600038" style="flex:1;" />
+              <button class="btn sm" id="shareLookup" type="button">查询</button>
+              <input id="shareFile" type="file" accept=".csv,text/csv" hidden />
+              <button class="btn sm" id="shareUpload" type="button">上传 csv</button>
+            </div>
+            <div id="shareBox" class="meta-list">尚未查询</div>
           </div>
         </div>
       </section>
@@ -313,20 +360,23 @@
   <div class="login-mask" id="pickerMask" style="display:none;">
     <div class="login-card pick-card">
       <h2>按市场筛选进自选</h2>
-      <p>沪、深、北可以分开筛。这里只是往自选里加票，不会一次导出整个交易所。北交所财务列允许为空。</p>
+      <p>沪、深、创业板、科创、北可以分开筛。加入是追加；替换会清空当前自选。仅查询一次不改自选，随后导出 Excel 也只含这一批。</p>
       <div class="chips" id="marketChips">
         <button class="btn sm chip-btn on" type="button" data-market="all">全部</button>
         <button class="btn sm chip-btn" type="button" data-market="sh">沪市</button>
         <button class="btn sm chip-btn" type="button" data-market="sz">深市</button>
         <button class="btn sm chip-btn" type="button" data-market="kc">科创</button>
+        <button class="btn sm chip-btn" type="button" data-market="cy">创业板</button>
         <button class="btn sm chip-btn" type="button" data-market="bj">北交所</button>
       </div>
       <div class="chips" id="sectorChips"></div>
+      <div class="chips" id="swChips"></div>
       <div class="chips" id="conceptChips"></div>
       <input id="pickQ" placeholder="名称、代码、申万一级或概念，如 茅台 / 国防军工 / 人工智能" />
       <div class="pick-list" id="pickList"><div class="pick-empty">输入关键词或切换市场</div></div>
       <div class="pick-actions">
         <button class="btn primary" id="addPicked" type="button">加入自选</button>
+        <button class="btn" id="replaceWatch" type="button">替换自选</button>
         <button class="btn" id="queryPicked" type="button">仅查询一次</button>
         <button class="btn ghost" id="closePicker" type="button">取消</button>
       </div>
@@ -340,6 +390,23 @@
       <div class="pick-actions">
         <button class="btn primary" id="saveCols" type="button">保存并查询</button>
         <button class="btn ghost" id="closeCols" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+  <div class="login-mask" id="archiveMask" style="display:none;">
+    <div class="login-card pick-card art-card">
+      <h2>导出档案库</h2>
+      <p>这里是本机已经写下的 Excel。可以再下一份、预览前几行，或勾两份对照某一列。</p>
+      <div class="pick-list" id="artList"><div class="pick-empty">还没有档案</div></div>
+      <div class="composer-row" style="margin-bottom:8px;">
+        <input id="diffColumn" placeholder="对照列名，默认 前十大流通股东" />
+        <button class="btn sm" id="diffSelected" type="button">对照勾选的两份</button>
+        <button class="btn sm" id="diffLatest" type="button">对照最近两份</button>
+      </div>
+      <div id="artPreview" class="meta-list">尚未预览</div>
+      <div id="artDiff" class="meta-list"></div>
+      <div class="pick-actions">
+        <button class="btn ghost" id="closeArchive" type="button">关闭</button>
       </div>
     </div>
   </div>
@@ -365,10 +432,14 @@
         tab.classList.add("on");
         document.getElementById(tab.dataset.view).classList.add("on");
         if (tab.dataset.view === "monitor") loadMonitor().catch((e) => toast(e.message));
+        if (tab.dataset.view === "agent") {
+          loadSessions().catch((e) => toast(e.message));
+          loadWarehouse().catch((e) => toast(e.message));
+        }
       });
     });
 
-    const marketLabel = { hs: "沪深主板", kc: "科创", bj: "北交", sh: "沪市", sz: "深市" };
+    const marketLabel = { hs: "沪深主板", kc: "科创", bj: "北交", sh: "沪市", sz: "深市", cy: "创业板" };
     const exchangeLabel = { SH: "沪", SZ: "深", BJ: "北" };
     const state = {
       token: sessionStorage.getItem("sa_token") || "",
@@ -384,6 +455,7 @@
       pool: "watch",
       pools: [],
       poolLabel: "自选",
+      lastQueryCodes: null,
     };
 
     function toast(text) {
@@ -393,10 +465,42 @@
       setTimeout(() => { el.style.display = "none"; }, 2200);
     }
 
+    function esc(text) {
+      return String(text == null ? "" : text).replace(/</g, "&lt;").replace(/\n/g, "<br>");
+    }
+
+    async function loadHealth() {
+      const data = await api("/health");
+      const m = data.market || {};
+      const a = data.agent || {};
+      const st = a.llm_status || {};
+      const marketText = m.offline ? "离线切片" : (m.status || "行情在线");
+      const llmText = a.llm ? ((st.provider || "模型") + " 已配置") : "无模型 key · 确定性编排";
+      const channels = (a.channels || []).filter((c) => c.enabled).map((c) => c.name);
+      const chText = channels.length ? channels.join("、") : "无提醒通道";
+      document.getElementById("healthBar").textContent = marketText + " · " + llmText + " · " + chText;
+      document.getElementById("healthBar").title = JSON.stringify({ market: m, llm: st, channels: a.channels || [] });
+    }
+
     async function api(path, options = {}) {
       const headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
       if (state.token) headers.Authorization = "Bearer " + state.token;
       const res = await fetch("/api" + path, Object.assign({}, options, { headers }));
+      if (res.status === 401) {
+        state.token = "";
+        sessionStorage.removeItem("sa_token");
+        document.getElementById("loginMask").style.display = "flex";
+        throw new Error("未登录");
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "请求失败");
+      return data;
+    }
+
+    async function apiForm(path, form) {
+      const headers = {};
+      if (state.token) headers.Authorization = "Bearer " + state.token;
+      const res = await fetch("/api" + path, { method: "PUT", headers, body: form });
       if (res.status === 401) {
         state.token = "";
         sessionStorage.removeItem("sa_token");
@@ -588,6 +692,8 @@
     }
 
     async function runQuery(codes) {
+      if (codes && codes.length) state.lastQueryCodes = codes;
+      else state.lastQueryCodes = null;
       const payload = codes && codes.length ? { codes } : { pool: state.pool };
       let data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
       if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
@@ -596,7 +702,8 @@
       const scope = codes && codes.length ? "筛选一次" : (data.pool || state.poolLabel || state.pool);
       const note = data.note ? ` · ${data.note}` : "";
       document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}`;
-      if (!codes || !codes.length) updateExportScope(data.pool || scope);
+      if (state.lastQueryCodes) updateExportScope("筛选一次");
+      else updateExportScope(data.pool || scope);
     }
 
     async function downloadArtifact(id, filename) {
@@ -623,11 +730,13 @@
     }
 
     async function exportXlsx() {
-      const pool = currentExportPool();
-      let data = await api("/query/export", { method: "POST", body: JSON.stringify({ pool }) });
+      const payload = state.lastQueryCodes && state.lastQueryCodes.length
+        ? { codes: state.lastQueryCodes }
+        : { pool: currentExportPool() };
+      let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
       if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
       await downloadArtifact(data.id, data.filename);
-      toast("已写入档案库，并下载 " + data.filename + "（" + (data.pool || pool) + "）");
+      toast("已写入档案库，并下载 " + data.filename + "（" + (data.pool || payload.pool || "筛选一次") + "）");
     }
 
     const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", flow: "资金", bottom: "底/顶" };
@@ -673,7 +782,10 @@
         const canToggle = !j.reason;
         return `<div class="job">
           <span>${j.name}</span>
-          ${canToggle ? `<button class="btn sm ghost" type="button" data-job="${j.job_key}" data-on="${j.enabled ? 1 : 0}">${j.enabled ? "已开启" : "已关闭"}</button>` : status}
+          <span class="job-actions">
+            ${j.enabled && !j.reason ? `<button class="btn sm" type="button" data-run="${j.job_key}">只跑这条</button>` : ""}
+            ${canToggle ? `<button class="btn sm ghost" type="button" data-job="${j.job_key}" data-on="${j.enabled ? 1 : 0}">${j.enabled ? "已开启" : "已关闭"}</button>` : status}
+          </span>
         </div>`;
       }).join("");
     }
@@ -693,6 +805,10 @@
       const [jobs, alerts] = await Promise.all([api("/monitor/jobs"), api("/alerts")]);
       renderJobs(jobs);
       renderAlerts(alerts);
+      await loadTaxonomyData();
+      renderInstitutions();
+      renderFutures();
+      await loadExportShare();
     }
 
     async function runMonitor() {
@@ -706,6 +822,7 @@
       sessionStorage.setItem("sa_token", token);
       document.getElementById("userLabel").textContent = username + " · 已登录";
       document.getElementById("loginMask").style.display = "none";
+      await loadHealth();
       await loadWatch();
       await loadPools();
       await runQuery();
@@ -732,10 +849,23 @@
     document.getElementById("refreshBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
     document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
+    document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
+    document.getElementById("diffBtn").addEventListener("click", () => openArchive({ diffLatest: true }).catch((e) => toast(e.message)));
     document.getElementById("closeCols").addEventListener("click", closeCols);
     document.getElementById("saveCols").addEventListener("click", () => saveCols().catch((e) => toast(e.message)));
     document.getElementById("monitorRun").addEventListener("click", () => runMonitor().catch((e) => toast(e.message)));
     document.getElementById("monitorJobs").addEventListener("click", async (e) => {
+      const run = e.target.closest("[data-run]");
+      if (run) {
+        try {
+          const data = await api("/monitor/jobs/" + run.dataset.run + "/run", { method: "POST" });
+          toast(data.count ? `本条 ${data.count} 条提醒` : "这条没有新提醒");
+          await loadMonitor();
+        } catch (err) {
+          toast(err.message);
+        }
+        return;
+      }
       const btn = e.target.closest("[data-job]");
       if (!btn) return;
       try {
@@ -786,15 +916,27 @@
         toast(err.message);
       }
     });
-    async function loadTaxonomyChips() {
-      if (state.taxonomy) return;
+    async function loadTaxonomyData() {
+      if (state.taxonomyLoaded) return;
       const data = await api("/markets/taxonomy");
       state.taxonomy = data.taxonomy || {};
+      state.institutions = data.institutions || [];
+      state.futures = data.futures || {};
+      state.taxonomyLoaded = true;
+    }
+
+    async function loadTaxonomyChips() {
+      await loadTaxonomyData();
       const sectors = document.getElementById("sectorChips");
       const concepts = document.getElementById("conceptChips");
+      const sw = document.getElementById("swChips");
       sectors.innerHTML = (state.taxonomy.sectors || []).map((s) =>
         `<button class="btn sm chip-btn" type="button" data-tax="${s.label}">${s.label}</button>`
       ).join("");
+      sw.innerHTML = (state.taxonomy.sw_l1 || []).map((s) => {
+        const label = typeof s === "string" ? s : (s.label || s.id);
+        return `<button class="btn sm chip-btn" type="button" data-tax="${label}">${label}</button>`;
+      }).join("");
       concepts.innerHTML = (state.taxonomy.concepts_2026 || []).map((s) =>
         `<button class="btn sm chip-btn" type="button" data-tax="${s.label}">${s.label}</button>`
       ).join("");
@@ -814,6 +956,10 @@
       if (btn) applyTaxChip(btn.dataset.tax);
     });
     document.getElementById("conceptChips").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-tax]");
+      if (btn) applyTaxChip(btn.dataset.tax);
+    });
+    document.getElementById("swChips").addEventListener("click", (e) => {
       const btn = e.target.closest("[data-tax]");
       if (btn) applyTaxChip(btn.dataset.tax);
     });
@@ -840,6 +986,24 @@
         renderWatch(data.items);
         closePicker();
         toast(`已加入 ${data.added.length} 只`);
+        await runQuery();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("replaceWatch").addEventListener("click", async () => {
+      const codes = selectedPickCodes();
+      if (!codes.length) return toast("先勾选股票");
+      if (!window.confirm("会清空当前自选，换成勾选的这些。确定？")) return;
+      try {
+        const items = await api("/watchlist", {
+          method: "PUT",
+          body: JSON.stringify({ items: codes.map((code) => ({ code })) }),
+        });
+        renderWatch(items);
+        setSide("watch");
+        closePicker();
+        toast("自选已替换为 " + items.length + " 只");
         await runQuery();
       } catch (err) {
         toast(err.message);
@@ -996,6 +1160,7 @@
         state.lastChat = { question, answer, cites, tools };
         state.nextAgent = "auto";
         renderAgentMeta(cites, tools);
+        loadSessions().catch(() => {});
       } catch (err) {
         bot.textContent = err.message;
       }
@@ -1014,6 +1179,7 @@
       state.nextAgent = "auto";
       document.getElementById("chatLog").innerHTML = "";
       appendBubble("bot", "已开新对话。");
+      loadSessions().catch(() => {});
     });
     document.getElementById("chatResearch").addEventListener("click", () => {
       state.nextAgent = "researcher";
@@ -1047,7 +1213,250 @@
       try {
         await runQuery(codes);
         closePicker();
-        toast("已按筛选结果查询，未改自选");
+        toast("已按筛选结果查询，未改自选。导出 Excel 会导出这一批。");
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+
+    function kindLabel(kind) {
+      return { swf: "主权基金", stabilizer: "平准", ib: "投行", fund: "基金", etf: "ETF" }[kind] || kind || "";
+    }
+
+    function renderInstitutions() {
+      const box = document.getElementById("instList");
+      const items = state.institutions || [];
+      if (!items.length) {
+        box.innerHTML = "名单为空";
+        return;
+      }
+      box.innerHTML = items.map((i) =>
+        `<div>${esc(i.name)}<div class="sub">${esc(kindLabel(i.kind))}${i.country ? " · " + esc(i.country) : ""}</div></div>`
+      ).join("");
+    }
+
+    function renderFutures() {
+      const box = document.getElementById("futuresList");
+      const by = (state.futures && state.futures.by_l1) || {};
+      const keys = Object.keys(by);
+      if (!keys.length) {
+        box.innerHTML = "没有品种映射";
+        return;
+      }
+      box.innerHTML = keys.map((l1) => {
+        const names = (by[l1] || []).map((f) => f.name).join("、");
+        return `<div><b>${esc(l1)}</b> · ${esc(names)} · 无价格</div>`;
+      }).join("");
+    }
+
+    async function loadExportShare(code) {
+      const q = code || (document.getElementById("shareCode").value || "").trim();
+      const data = await api("/export-share" + (q ? ("?code=" + encodeURIComponent(q)) : ""));
+      const box = document.getElementById("shareBox");
+      const payload = data.data;
+      if (Array.isArray(payload)) {
+        if (!payload.length) {
+          box.textContent = "手工表里没有这些代码";
+          return;
+        }
+        box.innerHTML = payload.map((r) =>
+          `<div>${esc(r.name)} ${esc(r.code)} · 出口 ${esc(r.export_pct)} · 海外 ${esc(r.overseas_pct)}${r.note ? " · " + esc(r.note) : ""}</div>`
+        ).join("");
+        return;
+      }
+      const path = payload && payload.path ? payload.path : "";
+      const src = payload && payload.source;
+      box.textContent = src === "empty" || (payload && payload.rows && !payload.rows.length)
+        ? ("还没有手工表" + (path ? "（可上传到本机）" : ""))
+        : ("已有手工表" + (path ? " · " + path : "") + "。输入代码再查。");
+    }
+
+    async function loadWarehouse() {
+      const data = await api("/warehouse?kind=list");
+      const d = data.data || {};
+      const arts = d.artifacts || [];
+      const cache = d.cache || [];
+      document.getElementById("warehouseBox").innerHTML =
+        `档案 ${arts.length} 份 · 缓存 ${cache.length} 个 · 自选 ${d.watch_count || 0} 只` +
+        (arts.length ? `<div class="sub">最近：${esc(arts[0].filename)}</div>` : "");
+    }
+
+    async function loadBars() {
+      const code = (document.getElementById("barsCode").value || "").trim();
+      if (!code) return toast("先填代码");
+      const data = await api("/warehouse?kind=bars&code=" + encodeURIComponent(code) + "&limit=12");
+      const rows = data.data || [];
+      const box = document.getElementById("barsBox");
+      if (!rows.length) {
+        box.textContent = "没有日线";
+        return;
+      }
+      box.innerHTML = rows.map((r) => {
+        const bars = (r.bars || []).slice(-8);
+        const line = bars.map((b) => `${b.d || b.t || ""} ${b.c || b.p || ""}`).join(" · ");
+        return `<div><b>${esc(r.name)}</b> ${esc(r.code)} · ${r.count} 根 · ${esc(r.source)}<div class="sub">${esc(line)}</div></div>`;
+      }).join("");
+    }
+
+    function renderSessions(items) {
+      const box = document.getElementById("sessionList");
+      if (!items || !items.length) {
+        box.innerHTML = `<div class="meta">还没有历史对话</div>`;
+        return;
+      }
+      box.innerHTML = items.map((s) =>
+        `<button class="session-item ${s.id === state.sessionId ? "on" : ""}" type="button" data-session="${s.id}">
+          ${esc(s.title || "未命名")}
+          <div class="sub">${esc(s.agent || "")} · ${esc((s.updated_at || s.created_at || "").replace("T", " ").slice(0, 16))}</div>
+        </button>`
+      ).join("");
+    }
+
+    async function loadSessions() {
+      const items = await api("/agent/sessions");
+      renderSessions(items);
+    }
+
+    async function openSession(id) {
+      const data = await api("/agent/sessions/" + id);
+      state.sessionId = data.id;
+      sessionStorage.setItem("sa_session", String(data.id));
+      const log = document.getElementById("chatLog");
+      log.innerHTML = "";
+      (data.messages || []).forEach((m) => {
+        const role = m.role === "user" ? "me" : "bot";
+        appendBubble(role, esc(m.content || ""));
+      });
+      if (!(data.messages || []).length) appendBubble("bot", "这轮还没有内容。");
+      renderSessions(await api("/agent/sessions"));
+    }
+
+    function selectedArtIds() {
+      return [...document.querySelectorAll("#artList input[type=checkbox]:checked")].map((el) => Number(el.value));
+    }
+
+    function renderArtifacts(items) {
+      const box = document.getElementById("artList");
+      if (!items || !items.length) {
+        box.innerHTML = `<div class="pick-empty">还没有档案。先在传统查询里导出。</div>`;
+        return;
+      }
+      box.innerHTML = items.map((it) =>
+        `<label>
+          <input type="checkbox" value="${it.id}" />
+          <span><b>${esc(it.filename)}</b>
+            <div class="sub">${esc(it.pool_name || "")} · ${esc((it.created_at || "").replace("T", " ").slice(0, 19))} · ${it.exists ? "在磁盘" : "文件丢失"}
+              · <a href="#" data-dl="${it.id}" data-name="${esc(it.filename)}">下载</a>
+              · <a href="#" data-preview="${it.id}">预览</a>
+            </div>
+          </span>
+        </label>`
+      ).join("");
+    }
+
+    function renderPreview(payload) {
+      const sheet = (payload && payload.data) || {};
+      const headers = sheet.headers || [];
+      const rows = sheet.rows || [];
+      const box = document.getElementById("artPreview");
+      if (!headers.length) {
+        box.textContent = payload && payload.cite ? payload.cite : "没有可预览的行";
+        return;
+      }
+      const head = "<tr>" + headers.map((h) => `<th>${esc(h)}</th>`).join("") + "</tr>";
+      const body = rows.slice(0, 12).map((row) =>
+        "<tr>" + headers.map((h) => `<td>${esc(row[h])}</td>`).join("") + "</tr>"
+      ).join("");
+      box.innerHTML = `${esc(sheet.filename || "")} · ${esc((payload && payload.cite) || "")}<div class="preview-wrap"><table>${head}${body}</table></div>`;
+    }
+
+    function renderDiff(payload) {
+      const d = (payload && payload.data) || {};
+      const box = document.getElementById("artDiff");
+      const changes = d.changes || [];
+      const a = d.a || {};
+      const b = d.b || {};
+      const head = `${esc(a.filename || "")} → ${esc(b.filename || "")} · 列「${esc(d.column || "")}」· ${d.change_count || 0} 处变化`;
+      if (!changes.length) {
+        box.innerHTML = head + `<div class="sub">这两份这一列没有差别。</div>`;
+        return;
+      }
+      box.innerHTML = head + changes.map((c) =>
+        `<div>${esc(c.name)} ${esc(c.code)}<div class="sub">前：${esc(c.before)} → 后：${esc(c.after)}</div></div>`
+      ).join("");
+    }
+
+    async function runDiff(useSelected) {
+      const payload = {};
+      const col = (document.getElementById("diffColumn").value || "").trim();
+      if (col) payload.column = col;
+      if (useSelected) {
+        const ids = selectedArtIds().sort((x, y) => x - y);
+        if (ids.length !== 2) throw new Error("对照请勾选恰好两份");
+        payload.id_a = ids[0];
+        payload.id_b = ids[1];
+      }
+      const data = await api("/artifacts/diff", { method: "POST", body: JSON.stringify(payload) });
+      renderDiff(data);
+      toast((data.cite || "对照完成") + " · " + (((data.data || {}).change_count) || 0) + " 处");
+    }
+
+    async function openArchive(opts) {
+      document.getElementById("archiveMask").style.display = "flex";
+      const items = await api("/artifacts");
+      renderArtifacts(items);
+      document.getElementById("artPreview").textContent = "点预览看前几行。";
+      document.getElementById("artDiff").textContent = "";
+      if (opts && opts.diffLatest) {
+        await runDiff(false);
+      }
+    }
+
+    function closeArchive() {
+      document.getElementById("archiveMask").style.display = "none";
+    }
+
+    document.getElementById("closeArchive").addEventListener("click", closeArchive);
+    document.getElementById("diffSelected").addEventListener("click", () => runDiff(true).catch((e) => toast(e.message)));
+    document.getElementById("diffLatest").addEventListener("click", () => runDiff(false).catch((e) => toast(e.message)));
+    document.getElementById("artList").addEventListener("click", async (e) => {
+      const dl = e.target.closest("[data-dl]");
+      const pv = e.target.closest("[data-preview]");
+      if (dl) {
+        e.preventDefault();
+        try {
+          await downloadArtifact(dl.dataset.dl, dl.dataset.name);
+        } catch (err) {
+          toast(err.message);
+        }
+      }
+      if (pv) {
+        e.preventDefault();
+        try {
+          renderPreview(await api("/artifacts/" + pv.dataset.preview + "/preview"));
+        } catch (err) {
+          toast(err.message);
+        }
+      }
+    });
+    document.getElementById("sessionList").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-session]");
+      if (!btn) return;
+      openSession(Number(btn.dataset.session)).catch((err) => toast(err.message));
+    });
+    document.getElementById("barsBtn").addEventListener("click", () => loadBars().catch((e) => toast(e.message)));
+    document.getElementById("shareLookup").addEventListener("click", () => loadExportShare().catch((e) => toast(e.message)));
+    document.getElementById("shareUpload").addEventListener("click", () => document.getElementById("shareFile").click());
+    document.getElementById("shareFile").addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      try {
+        const form = new FormData();
+        form.append("file", file, file.name);
+        await apiForm("/export-share", form);
+        toast("已写入本机手工表");
+        await loadExportShare();
       } catch (err) {
         toast(err.message);
       }

@@ -102,3 +102,80 @@ def test_s3_filter_append_and_once_query():
         removed = client.delete("/api/watchlist/430017", headers=headers)
         assert removed.status_code == 200
         assert not any(x["code6"] == "430017" for x in removed.json()["items"])
+
+
+def test_health_cy_export_codes_artifacts_warehouse():
+    from src.config import settings
+
+    path = settings.data_dir / "export_share.csv"
+    old = path.read_bytes() if path.exists() else None
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})
+        token = login.json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        health = client.get("/api/health")
+        assert health.status_code == 200
+        assert health.json()["ok"] is True
+        assert "llm_status" in health.json()["agent"]
+        assert {c["id"] for c in health.json()["agent"]["channels"]} >= {"log", "desktop", "webhook"}
+
+        cy = client.get("/api/markets/instruments?market=cy")
+        assert cy.status_code == 200
+        assert {x["code6"] for x in cy.json()} == {"300750"}
+
+        tax = client.get("/api/markets/taxonomy")
+        assert "银行" in tax.json()["taxonomy"]["sw_l1"]
+        assert tax.json()["institutions"]
+        assert tax.json()["futures"]["quotes_enabled"] is False
+
+        first = client.post("/api/query/export", json={"pool": "watch"}, headers=headers)
+        second = client.post("/api/query/export", json={"codes": ["300750"]}, headers=headers)
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert second.json()["pool"] == "筛选一次"
+
+        preview = client.get(f"/api/artifacts/{second.json()['id']}/preview", headers=headers)
+        assert preview.status_code == 200
+        assert preview.json()["ok"] is True
+        assert preview.json()["data"]["headers"]
+
+        diffed = client.post("/api/artifacts/diff", json={}, headers=headers)
+        assert diffed.status_code == 200
+        assert diffed.json()["ok"] is True
+        assert "change_count" in diffed.json()["data"]
+
+        listed = client.get("/api/artifacts", headers=headers)
+        assert listed.status_code == 200
+        assert any(x["id"] == second.json()["id"] for x in listed.json())
+
+        sessions = client.get("/api/agent/sessions", headers=headers)
+        assert sessions.status_code == 200
+
+        warehouse = client.get("/api/warehouse?kind=list", headers=headers)
+        assert warehouse.status_code == 200
+        assert warehouse.json()["ok"] is True
+        assert "artifacts" in warehouse.json()["data"]
+
+        bars = client.get("/api/warehouse?kind=bars&code=600038&limit=8", headers=headers)
+        assert bars.status_code == 200
+        assert bars.json()["ok"] is True
+        assert bars.json()["data"][0]["code"].startswith("600038")
+        assert bars.json()["data"][0]["count"] >= 1
+
+        try:
+            uploaded = client.put(
+                "/api/export-share",
+                files={"file": ("export_share.csv", "code6,export_pct,overseas_pct,note\n600038,12,8,test\n", "text/csv")},
+                headers=headers,
+            )
+            assert uploaded.status_code == 200
+            share = client.get("/api/export-share?code=600038", headers=headers)
+            assert share.status_code == 200
+            rows = share.json()["data"]
+            assert rows[0]["export_pct"] == "12"
+        finally:
+            if old is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(old)
