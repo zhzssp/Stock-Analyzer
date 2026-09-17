@@ -43,7 +43,7 @@
     .user { color: var(--muted); }
     .shell {
       display: grid;
-      grid-template-columns: 228px 1fr;
+      grid-template-columns: 260px 1fr;
       min-height: 0;
     }
     .sidebar {
@@ -53,7 +53,12 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
+      min-height: 0;
     }
+    .side-pane { min-height: 0; overflow: auto; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    .pane-note { color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .pool-hint { color: var(--muted); font-size: 12px; line-height: 1.45; margin-top: auto; }
+    .export-scope { color: var(--muted); font-size: 12px; }
     .side-title {
       display: flex;
       justify-content: space-between;
@@ -188,7 +193,8 @@
     .login-card p { color: var(--muted); margin: 0 0 14px; }
     .login-card label { display: block; margin: 8px 0 4px; color: var(--muted); }
     .login-error { color: var(--down); min-height: 18px; font-size: 12px; }
-    .side-modes { display: flex; gap: 6px; }
+    .side-modes { display: flex; gap: 6px; flex-wrap: wrap; }
+    .side-modes .chip-btn { flex: 1; min-width: 0; }
     .chip-btn.off { opacity: 0.55; cursor: not-allowed; }
   </style>
 </head>
@@ -201,21 +207,33 @@
     <div class="shell">
       <aside class="sidebar">
         <div class="side-modes">
-          <button class="btn sm chip-btn on" id="sideWatch" type="button">自选</button>
-          <button class="btn sm chip-btn" id="sideQuote" type="button">行情</button>
+          <button class="btn sm chip-btn on" id="sideWatch" type="button" data-side="watch">自选</button>
+          <button class="btn sm chip-btn" id="sideQuote" type="button" data-side="quote">行情</button>
+          <button class="btn sm chip-btn" id="sideExchange" type="button" data-side="exchange">交易所</button>
         </div>
-        <div id="watchPane">
+        <div class="side-pane" id="watchPane">
           <div class="side-title">自选池 <button class="btn sm ghost" id="openPicker" type="button">+ 添加 / 筛选</button></div>
+          <p class="pane-note">查询和导出只含你勾过的票。自选里若同时有沪、深、北，会在同一张表。</p>
           <input id="watchFilter" placeholder="搜索当前自选" />
           <ul class="watch" id="watchList"></ul>
         </div>
-        <div id="quotePane" style="display:none;">
+        <div class="side-pane" id="quotePane" style="display:none;">
           <div class="side-title">指数成份</div>
+          <p class="pane-note">只导出当前指数的成份股。上证指数 ≠ 沪市全部，深证成指 ≠ 深市全部，北证50 ≠ 北交所全部。</p>
           <div class="chips" id="indexChips"></div>
           <input id="quoteFilter" placeholder="搜索当前成份" />
           <ul class="watch" id="quoteList"></ul>
         </div>
-        <div class="hint" id="poolHint" style="color:var(--muted);font-size:12px;margin-top:auto;">行情只导出当前指数的成份股，不是沪/深/北交易所全部股票。</div>
+        <div class="side-pane" id="exchangePane" style="display:none;">
+          <div class="side-title">交易所全市场</div>
+          <p class="pane-note">沪、深、北分开选、分开导，一次只出当前这一所。点三次得到三张表，不会混在一起。沪市含科创，深市含创业板。</p>
+          <div class="chips" id="exchangeChips"></div>
+          <div class="side-title" style="font-weight:500;font-size:12px;color:var(--muted);margin-top:4px;">板块另池（不是指数）</div>
+          <div class="chips" id="boardChips"></div>
+          <input id="exchangeFilter" placeholder="搜索当前这一所 / 这一板块" />
+          <ul class="watch" id="exchangeList"></ul>
+        </div>
+        <div class="pool-hint" id="poolHint">查询和导出只含当前自选。</div>
       </aside>
       <section class="main">
         <nav class="tabs">
@@ -230,6 +248,7 @@
             <button class="btn" id="refreshBtn" type="button">刷新</button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
+            <span class="export-scope" id="exportScope">当前导出：自选</span>
             <span class="hint" id="queryHint">尚未查询</span>
           </div>
           <div class="table-wrap">
@@ -293,11 +312,12 @@
   <div class="toast" id="toast"></div>
   <div class="login-mask" id="pickerMask" style="display:none;">
     <div class="login-card pick-card">
-      <h2>沪深 / 北交所筛选</h2>
-      <p>按市场、七大板块或 2026 概念筛选。北交所财务列允许为空。</p>
+      <h2>按市场筛选进自选</h2>
+      <p>沪、深、北可以分开筛。这里只是往自选里加票，不会一次导出整个交易所。北交所财务列允许为空。</p>
       <div class="chips" id="marketChips">
         <button class="btn sm chip-btn on" type="button" data-market="all">全部</button>
-        <button class="btn sm chip-btn" type="button" data-market="hs">沪深</button>
+        <button class="btn sm chip-btn" type="button" data-market="sh">沪市</button>
+        <button class="btn sm chip-btn" type="button" data-market="sz">深市</button>
         <button class="btn sm chip-btn" type="button" data-market="kc">科创</button>
         <button class="btn sm chip-btn" type="button" data-market="bj">北交所</button>
       </div>
@@ -348,7 +368,8 @@
       });
     });
 
-    const marketLabel = { hs: "沪深", kc: "科创", bj: "北交" };
+    const marketLabel = { hs: "沪深主板", kc: "科创", bj: "北交", sh: "沪市", sz: "深市" };
+    const exchangeLabel = { SH: "沪", SZ: "深", BJ: "北" };
     const state = {
       token: sessionStorage.getItem("sa_token") || "",
       fields: [],
@@ -362,6 +383,7 @@
       side: "watch",
       pool: "watch",
       pools: [],
+      poolLabel: "自选",
     };
 
     function toast(text) {
@@ -409,37 +431,71 @@
       }
       ul.innerHTML = shown.map((it, i) =>
         `<li class="${i === 0 ? "active" : ""}" data-code="${it.code6}">
-          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${marketLabel[it.market] || it.market || ""}</span></span>
+          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || marketLabel[it.market] || it.market || ""}</span></span>
           <button class="rm" type="button" data-rm="${it.code6}" title="移出自选">×</button>
         </li>`
       ).join("");
     }
 
-    function renderQuoteList(items) {
-      state.quoteItems = items;
-      const needle = (document.getElementById("quoteFilter").value || "").trim().toLowerCase();
-      const shown = items.filter((it) => {
+    function renderPoolList(items) {
+      state.quoteItems = items || [];
+      const filterId = state.side === "exchange" ? "exchangeFilter" : "quoteFilter";
+      const listId = state.side === "exchange" ? "exchangeList" : "quoteList";
+      const empty = state.side === "exchange" ? "当前这一所无匹配" : "当前成份无匹配";
+      const needle = ((document.getElementById(filterId) || {}).value || "").trim().toLowerCase();
+      const shown = state.quoteItems.filter((it) => {
         if (!needle) return true;
         return `${it.name} ${it.code6} ${it.code_full}`.toLowerCase().includes(needle);
       });
-      const ul = document.getElementById("quoteList");
+      const ul = document.getElementById(listId);
+      if (!ul) return;
       if (!shown.length) {
-        ul.innerHTML = `<li class="code" style="display:block;">当前池无匹配</li>`;
+        ul.innerHTML = `<li class="code" style="display:block;">${empty}</li>`;
         return;
       }
       ul.innerHTML = shown.map((it, i) =>
         `<li class="${i === 0 ? "active" : ""}">
-          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${marketLabel[it.market] || it.exchange || ""}</span></span>
+          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || it.exchange || ""}</span></span>
         </li>`
       ).join("");
     }
 
+    function chipButtons(pools) {
+      return pools.map((p) => {
+        const on = state.side !== "watch" && state.pool === p.id;
+        const extra = p.enabled ? (p.count ? " · " + p.count : "") : " · 未启用";
+        const title = p.reason || p.label;
+        return `<button class="btn sm chip-btn ${on ? "on" : ""} ${p.enabled ? "" : "off"}" type="button" data-pool="${p.id}" ${p.enabled ? "" : "disabled"} title="${title}">${p.label}${extra}</button>`;
+      }).join("");
+    }
+
     function renderPoolChips(pools) {
-      state.pools = pools;
+      state.pools = pools || [];
       const idx = document.getElementById("indexChips");
-      idx.innerHTML = pools.filter((p) => p.kind === "index").map((p) =>
-        `<button class="btn sm chip-btn ${state.pool === p.id ? "on" : ""} ${p.enabled ? "" : "off"}" type="button" data-pool="${p.id}" ${p.enabled ? "" : "disabled"} title="${p.reason || (p.enabled ? "成份股" : "未启用")}">${p.label}${p.enabled ? (p.count ? " · " + p.count : "") : " · 未启用"}</button>`
-      ).join("");
+      const ex = document.getElementById("exchangeChips");
+      const board = document.getElementById("boardChips");
+      if (idx) idx.innerHTML = chipButtons(state.pools.filter((p) => p.kind === "index"));
+      if (ex) ex.innerHTML = chipButtons(state.pools.filter((p) => p.kind === "exchange"));
+      if (board) board.innerHTML = chipButtons(state.pools.filter((p) => p.kind === "board"));
+    }
+
+    function poolHintText(side, meta) {
+      if (side === "watch") return "查询和导出只含当前自选。自选里可以同时有沪、深、北，会在同一张表。";
+      if (side === "quote") {
+        return (meta && meta.note) || "只导出当前指数的成份股，不是该交易所全部挂牌。";
+      }
+      const extra = (meta && meta.note) ? (" " + meta.note) : "";
+      return "只导出当前选中的这一所或这一板块。沪、深、北要分开点三次，得到三张表。" + extra;
+    }
+
+    function updateExportScope(label) {
+      state.poolLabel = label || state.poolLabel || "自选";
+      const el = document.getElementById("exportScope");
+      if (el) el.textContent = "当前导出：" + state.poolLabel;
+    }
+
+    function currentExportPool() {
+      return state.side === "watch" ? "watch" : state.pool;
     }
 
     async function loadPools() {
@@ -451,8 +507,9 @@
       state.pool = poolId;
       renderPoolChips(state.pools);
       const data = await api("/markets/pools/" + encodeURIComponent(poolId) + "/instruments");
-      renderQuoteList(data.items || []);
-      document.getElementById("poolHint").textContent = data.note || "行情只导出当前指数的成份股。";
+      renderPoolList(data.items || []);
+      document.getElementById("poolHint").textContent = poolHintText(state.side, data);
+      updateExportScope(data.label || poolId);
       await runQuery();
     }
 
@@ -460,9 +517,15 @@
       state.side = side;
       document.getElementById("sideWatch").classList.toggle("on", side === "watch");
       document.getElementById("sideQuote").classList.toggle("on", side === "quote");
-      document.getElementById("watchPane").style.display = side === "watch" ? "block" : "none";
-      document.getElementById("quotePane").style.display = side === "quote" ? "block" : "none";
-      if (side === "watch") state.pool = "watch";
+      document.getElementById("sideExchange").classList.toggle("on", side === "exchange");
+      document.getElementById("watchPane").style.display = side === "watch" ? "flex" : "none";
+      document.getElementById("quotePane").style.display = side === "quote" ? "flex" : "none";
+      document.getElementById("exchangePane").style.display = side === "exchange" ? "flex" : "none";
+      if (side === "watch") {
+        state.pool = "watch";
+        updateExportScope("自选");
+        document.getElementById("poolHint").textContent = poolHintText("watch");
+      }
     }
 
     function selectedPickCodes() {
@@ -530,9 +593,10 @@
       if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
       renderTable(data.fields, data.rows);
       const mode = data.sample || (data.market && data.market.offline) ? "离线切片" : (data.market && data.market.status);
-      const scope = codes && codes.length ? "筛选一次" : (data.pool || state.pool);
+      const scope = codes && codes.length ? "筛选一次" : (data.pool || state.poolLabel || state.pool);
       const note = data.note ? ` · ${data.note}` : "";
       document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}`;
+      if (!codes || !codes.length) updateExportScope(data.pool || scope);
     }
 
     async function downloadArtifact(id, filename) {
@@ -559,11 +623,11 @@
     }
 
     async function exportXlsx() {
-      const pool = document.getElementById("sideQuote").classList.contains("on") ? state.pool : "watch";
+      const pool = currentExportPool();
       let data = await api("/query/export", { method: "POST", body: JSON.stringify({ pool }) });
       if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
       await downloadArtifact(data.id, data.filename);
-      toast("已写入档案库，并下载 " + data.filename);
+      toast("已写入档案库，并下载 " + data.filename + "（" + (data.pool || pool) + "）");
     }
 
     const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", flow: "资金", bottom: "底/顶" };
@@ -685,22 +749,31 @@
       }
     });
     document.getElementById("watchFilter").addEventListener("input", () => renderWatch(state.watch));
-    document.getElementById("quoteFilter").addEventListener("input", () => renderQuoteList(state.quoteItems));
-    document.getElementById("sideWatch").addEventListener("click", () => {
-      setSide("watch");
-      runQuery().catch((e) => toast(e.message));
+    document.getElementById("quoteFilter").addEventListener("input", () => renderPoolList(state.quoteItems));
+    document.getElementById("exchangeFilter").addEventListener("input", () => renderPoolList(state.quoteItems));
+    document.querySelector(".side-modes").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-side]");
+      if (!btn) return;
+      const side = btn.dataset.side;
+      setSide(side);
+      if (side === "watch") {
+        runQuery().catch((err) => toast(err.message));
+        return;
+      }
+      const kind = side === "quote" ? "index" : "exchange";
+      const first = (state.pools || []).find((p) => p.kind === kind && p.enabled);
+      if (first) selectPool(first.id).catch((err) => toast(err.message));
+      else toast(side === "quote" ? "还没有可用的指数成份" : "还没有可用的交易所池");
     });
-    document.getElementById("sideQuote").addEventListener("click", () => {
-      setSide("quote");
-      const first = (state.pools || []).find((p) => p.kind === "index" && p.enabled);
-      if (first) selectPool(first.id).catch((e) => toast(e.message));
-      else toast("还没有可用的指数成份");
-    });
-    document.getElementById("indexChips").addEventListener("click", (e) => {
+    function onPoolChipClick(e) {
       const btn = e.target.closest("[data-pool]");
-      if (!btn || btn.disabled) return toast(btn.title || "指数未启用");
+      if (!btn) return;
+      if (btn.disabled) return toast(btn.title || "未启用");
       selectPool(btn.dataset.pool).catch((err) => toast(err.message));
-    });
+    }
+    document.getElementById("indexChips").addEventListener("click", onPoolChipClick);
+    document.getElementById("exchangeChips").addEventListener("click", onPoolChipClick);
+    document.getElementById("boardChips").addEventListener("click", onPoolChipClick);
     document.getElementById("watchList").addEventListener("click", async (e) => {
       const rm = e.target.closest("[data-rm]");
       if (!rm) return;

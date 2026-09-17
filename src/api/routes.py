@@ -131,6 +131,7 @@ def _watch_payload(item: WatchItem) -> dict:
         "name": item.name,
         "group": item.group_name,
         "market": infer_market(item.code6, suffix),
+        "exchange": suffix.upper() if suffix else "",
     }
 
 
