@@ -50,7 +50,10 @@ def test_pools_catalog_and_exchange_query_export():
         assert bj_row["yffy"] is None
 
         cy = client.post("/api/query/run", json={"pool": "board:cy"}, headers=headers)
-        assert {row["code6"] for row in cy.json()["rows"]} == {"300750"}
+        cy_codes = {row["code6"] for row in cy.json()["rows"]}
+        assert "300750" in cy_codes
+        assert cy_codes >= {"300750", "300274", "300760"}
+        assert all(code.startswith("300") for code in cy_codes)
 
         client.put("/api/watchlist", json={"items": [{"code": i.code_full} for i in WATCH_SEED]}, headers=headers)
         watch = client.post("/api/query/run", json={"pool": "watch"}, headers=headers)

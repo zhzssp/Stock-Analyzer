@@ -73,7 +73,8 @@ def test_s3_filter_append_and_once_query():
         assert any(x["code6"] == "600519" for x in maotai.json())
 
         kc = client.get("/api/markets/instruments?market=kc")
-        assert any(x["code6"] == "688001" for x in kc.json())
+        kc_codes = {x["code6"] for x in kc.json()}
+        assert kc_codes >= {"688001", "688981"}
         assert all(x["market"] == "kc" for x in kc.json())
 
         added = client.post(
@@ -125,7 +126,9 @@ def test_health_cy_export_codes_artifacts_warehouse():
 
         cy = client.get("/api/markets/instruments?market=cy")
         assert cy.status_code == 200
-        assert {x["code6"] for x in cy.json()} == {"300750"}
+        cy_codes = {x["code6"] for x in cy.json()}
+        assert cy_codes >= {"300750", "300274", "300760"}
+        assert all(code.startswith("300") for code in cy_codes)
 
         tax = client.get("/api/markets/taxonomy")
         assert "银行" in tax.json()["taxonomy"]["sw_l1"]

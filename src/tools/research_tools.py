@@ -87,6 +87,8 @@ def futures_map(args: dict, ctx: ToolContext) -> ToolResult:
 
 
 def export_share(args: dict, ctx: ToolContext) -> ToolResult:
+    from src.market import fixtures
+
     path = Path(settings.data_dir) / "export_share.csv"
     table = {}
     if path.exists():
@@ -99,6 +101,8 @@ def export_share(args: dict, ctx: ToolContext) -> ToolResult:
                         "overseas_pct": row.get("overseas_pct") or row.get("外市场占比"),
                         "note": row.get("note") or "",
                     }
+    elif getattr(ctx.market, "offline", False):
+        table = {code: dict(row) for code, row in fixtures.EXPORT_SHARE.items()}
     insts = _pick(args, ctx)
     if not insts:
         return ToolResult(
