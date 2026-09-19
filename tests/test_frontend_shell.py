@@ -67,3 +67,14 @@ def test_workbench_pct_column_sorts_index_constituents():
     assert "点击切换正序/反序" in html
     assert 'sortKey: "pct"' in html
     assert 'sortDir: "desc"' in html
+
+
+def test_workbench_picker_dialog_is_wide_and_short():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert "picker-card" in html
+    assert "picker-toolbar" in html
+    assert "picker-tax" in html
+    assert "min(900px" in html
+    assert "min(86vh, 680px)" in html
+    assert "font: 15px/1.5" in html
+    assert ".table-wrap { overflow: auto;" in html or "table-wrap { overflow: auto" in html

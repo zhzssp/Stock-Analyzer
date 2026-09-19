@@ -19,16 +19,17 @@
       --warn: #9a6700;
     }
     * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
     body {
-      font: 13px/1.45 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font: 15px/1.5 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       color: var(--ink);
       background: var(--bg);
     }
     .app {
       height: 100%;
       display: grid;
-      grid-template-rows: 58px 1fr;
+      grid-template-rows: auto 1fr;
+      overflow: hidden;
     }
     .topbar {
       display: grid;
@@ -38,12 +39,14 @@
       padding: 0 18px;
       border-bottom: 1px solid var(--line);
       background: var(--paper);
+      overflow-x: auto;
+      min-height: 56px;
     }
-    .brand { font-weight: 650; letter-spacing: 0.02em; justify-self: start; }
-    .brand span { color: var(--teal); font-weight: 500; margin-left: 8px; font-size: 12px; }
+    .brand { font-weight: 650; letter-spacing: 0.02em; justify-self: start; font-size: 16px; }
+    .brand span { color: var(--teal); font-weight: 500; margin-left: 8px; font-size: 13px; }
     .user { color: var(--muted); white-space: nowrap; }
     .top-meta { display: flex; gap: 14px; align-items: center; min-width: 0; justify-self: end; }
-    .status { color: var(--muted); font-size: 12px; max-width: min(34vw, 380px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status { color: var(--muted); font-size: 13px; max-width: min(36vw, 420px); overflow-x: auto; white-space: nowrap; }
     .board {
       display: flex;
       align-items: stretch;
@@ -53,33 +56,36 @@
       border: 1px solid #cfe3df;
       border-radius: 10px;
       padding: 4px 6px;
+      max-width: 100%;
+      overflow-x: auto;
     }
     .board-item {
       display: flex;
       align-items: baseline;
       gap: 6px;
-      padding: 3px 14px;
+      padding: 4px 14px;
       white-space: nowrap;
     }
     .board-item + .board-item { border-left: 1px solid #c5d9d5; }
-    .board-item .name { font-size: 13px; font-weight: 700; color: var(--ink); }
+    .board-item .name { font-size: 15px; font-weight: 700; color: var(--ink); }
     .board-item .px {
-      font-size: 18px;
+      font-size: 20px;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
       letter-spacing: -0.02em;
       line-height: 1;
     }
     .board-item .pc {
-      font-size: 14px;
+      font-size: 16px;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
     }
     .board-item .pc.flat { color: var(--muted); font-weight: 600; }
     .shell {
       display: grid;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: 280px 1fr;
       min-height: 0;
+      overflow: hidden;
     }
     .sidebar {
       background: var(--sidebar);
@@ -89,28 +95,32 @@
       flex-direction: column;
       gap: 10px;
       min-height: 0;
+      overflow: hidden;
     }
     .side-pane { min-height: 0; overflow: auto; flex: 1; display: flex; flex-direction: column; gap: 8px; }
-    .pane-note { color: var(--muted); font-size: 11px; line-height: 1.45; }
-    .pool-hint { color: var(--muted); font-size: 12px; line-height: 1.45; margin-top: auto; }
-    .export-scope { color: var(--muted); font-size: 12px; }
+    .side-pane .chips { max-height: 28vh; overflow: auto; flex-shrink: 0; }
+    .pane-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .pool-hint { color: var(--muted); font-size: 13px; line-height: 1.5; margin-top: auto; flex-shrink: 0; overflow: auto; max-height: 4.5em; }
+    .export-scope { color: var(--muted); font-size: 13px; }
     .side-title {
       display: flex;
       justify-content: space-between;
       align-items: center;
       font-weight: 600;
     }
+    .board-sub { font-weight: 500; font-size: 13px; color: var(--muted); margin-top: 4px; }
     .btn {
       border: 1px solid var(--line);
       background: var(--paper);
       border-radius: 8px;
-      padding: 6px 10px;
+      padding: 7px 12px;
       cursor: pointer;
       color: var(--ink);
+      font: inherit;
     }
     .btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
     .btn.ghost { background: transparent; }
-    .btn.sm { padding: 3px 8px; font-size: 12px; }
+    .btn.sm { padding: 5px 10px; font-size: 13px; }
     input, textarea {
       width: 100%;
       border: 1px solid var(--line);
@@ -126,10 +136,10 @@
       padding: 8px 8px;
       border-radius: 8px;
     }
-    .watch { margin: 0; padding: 0; }
+    .watch { margin: 0; padding: 0; flex: 1; min-height: 0; overflow: auto; }
     .watch li:hover, .watch li.active { background: var(--paper); }
-    .watch .code { color: var(--muted); font-size: 11px; }
-    .main { min-width: 0; display: flex; flex-direction: column; }
+    .watch .code { color: var(--muted); font-size: 13px; }
+    .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
     .tabs {
       display: flex;
       gap: 4px;
@@ -144,6 +154,7 @@
       color: var(--muted);
       cursor: pointer;
       border-bottom: 2px solid transparent;
+      font: inherit;
     }
     .tab.on { color: var(--ink); border-bottom-color: var(--teal); font-weight: 600; }
     .toolbar {
@@ -152,15 +163,16 @@
       align-items: center;
       flex-wrap: wrap;
       padding: 12px 16px;
+      flex-shrink: 0;
     }
-    .toolbar .hint { margin-left: auto; color: var(--muted); }
-    .view { display: none; flex: 1; min-height: 0; }
+    .toolbar .hint { margin-left: auto; color: var(--muted); white-space: normal; }
+    .view { display: none; flex: 1; min-height: 0; overflow: hidden; }
     .view.on { display: flex; flex-direction: column; }
-    .table-wrap { overflow: auto; padding: 0 16px 16px; }
+    .table-wrap { overflow: auto; padding: 0 16px 16px; flex: 1; min-height: 0; }
     table { width: 100%; border-collapse: collapse; background: var(--paper); }
     th, td {
       border-bottom: 1px solid var(--line);
-      padding: 9px 10px;
+      padding: 10px 12px;
       text-align: left;
       white-space: nowrap;
     }
@@ -184,7 +196,7 @@
     #queryTable th.sortable:hover .col-label { color: var(--ink); }
     #queryTable .sort-ind {
       margin-left: 3px;
-      font-size: 10px;
+      font-size: 12px;
       color: var(--teal);
       font-weight: 700;
     }
@@ -223,7 +235,7 @@
     body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
     .up { color: var(--up); }
     .down { color: var(--down); }
-    .chip { display: inline-block; padding: 1px 6px; border-radius: 999px; background: var(--teal-soft); color: var(--teal); font-size: 11px; }
+    .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--teal-soft); color: var(--teal); font-size: 13px; }
     .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px; }
     .chip-btn.on { background: var(--teal); color: #fff; border-color: var(--teal); }
     .watch li { align-items: center; gap: 8px; }
@@ -234,30 +246,99 @@
     }
     .watch .rm:hover { color: var(--down); }
     .pick-card { width: 520px; max-width: calc(100vw - 32px); }
-    .col-card { width: 520px; }
-    .art-card { width: 760px; max-height: 86vh; overflow: auto; }
-    .pick-list { max-height: 280px; overflow: auto; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+    .col-card { width: min(640px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
+    .art-card { width: min(860px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
+    .login-card.picker-card {
+      width: min(900px, calc(100vw - 48px));
+      max-width: calc(100vw - 48px);
+      max-height: min(86vh, 680px);
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      padding: 18px 22px 16px;
+    }
+    .login-card.picker-card h2 { font-size: 22px; margin-bottom: 6px; }
+    .login-card.picker-card > p { margin: 0 0 10px; font-size: 15px; line-height: 1.5; }
+    .picker-toolbar {
+      display: grid;
+      grid-template-columns: auto minmax(220px, 1fr);
+      gap: 10px 14px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .picker-toolbar .chips { margin: 0; }
+    .picker-toolbar input { margin: 0; }
+    .picker-tax {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px 14px;
+      max-height: 140px;
+      overflow: auto;
+      margin-bottom: 10px;
+    }
+    .picker-tax .chips { margin: 0; }
+    .picker-tax-label {
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .picker-card .pick-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      flex: 1 1 auto;
+      min-height: 160px;
+      max-height: min(42vh, 360px);
+      overflow: auto;
+      margin: 0 0 12px;
+    }
+    .picker-card .pick-list .pick-empty { grid-column: 1 / -1; }
+    .picker-card .pick-list label {
+      display: flex;
+      margin: 0;
+      padding: 10px 12px;
+      min-width: 0;
+      border-right: 1px solid var(--line);
+    }
+    .picker-card .pick-list label span { min-width: 0; flex: 1; }
+    .picker-card .pick-list label:nth-child(even) { border-right: 0; }
+    .picker-card .pick-list .sub { font-size: 13px; }
+    .picker-card .pick-actions { flex-shrink: 0; flex-wrap: wrap; }
+    @media (max-width: 800px) {
+      .picker-toolbar { grid-template-columns: 1fr; }
+      .picker-tax { grid-template-columns: 1fr; max-height: 96px; }
+      .picker-card .pick-list { grid-template-columns: 1fr; }
+      .picker-card .pick-list label { border-right: 0; }
+    }
+    .pick-list { max-height: min(50vh, 420px); overflow: auto; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
     .pick-list label {
       display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px;
       border-bottom: 1px solid var(--line); cursor: pointer;
     }
+    .pick-list input[type="checkbox"] {
+      width: auto;
+      flex: 0 0 auto;
+      margin: 3px 0 0;
+    }
     .pick-list label:last-child { border-bottom: 0; }
-    .pick-list .sub { color: var(--muted); font-size: 11px; }
-    .pick-actions { display: flex; gap: 8px; }
+    .pick-list .sub { color: var(--muted); font-size: 13px; }
+    .pick-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .pick-empty { color: var(--muted); padding: 16px; text-align: center; }
-    .col-group { font-size: 11px; color: var(--muted); padding: 8px 10px 2px; }
-    .split { display: grid; grid-template-columns: 1.3fr 0.9fr; flex: 1; min-height: 0; }
-    .chat, .panel { padding: 16px; overflow: auto; }
+    .col-group { font-size: 13px; color: var(--muted); padding: 8px 10px 2px; }
+    .split { display: grid; grid-template-columns: 1.3fr 0.9fr; flex: 1; min-height: 0; overflow: hidden; }
+    .chat, .panel { padding: 16px; overflow: auto; min-height: 0; }
+    .chat { display: flex; flex-direction: column; }
+    #chatLog { flex: 1; min-height: 0; overflow: auto; }
     .panel { border-left: 1px solid var(--line); background: #faf9f6; }
     .bubble { max-width: 86%; padding: 10px 12px; border-radius: 12px; margin-bottom: 10px; }
     .me { margin-left: auto; background: var(--teal-soft); }
     .bot { background: var(--paper); border: 1px solid var(--line); }
     .cites { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-    .cite { font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted); }
-    .composer { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-    .composer-row { display: flex; gap: 8px; align-items: center; }
+    .cite { font-size: 13px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted); }
+    .composer { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; flex-shrink: 0; }
+    .composer-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .composer textarea { min-height: 64px; resize: vertical; }
-    .attach-hint { color: var(--muted); font-size: 12px; flex: 1; }
+    .attach-hint { color: var(--muted); font-size: 13px; flex: 1; min-width: 160px; }
     .alert {
       background: var(--paper);
       border: 1px solid var(--line);
@@ -266,22 +347,22 @@
       margin-bottom: 8px;
     }
     .alert b { display: block; margin-bottom: 2px; }
-    .alert .meta { color: var(--muted); font-size: 11px; }
+    .alert .meta { color: var(--muted); font-size: 13px; }
     .job { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); gap: 8px; }
-    .job-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
-    .off { color: var(--warn); font-size: 12px; }
-    .session-list { max-height: 180px; overflow: auto; margin-bottom: 8px; }
+    .job-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; flex-wrap: wrap; }
+    .off { color: var(--warn); font-size: 13px; }
+    .session-list { max-height: 220px; overflow: auto; margin-bottom: 8px; }
     .session-item {
       display: block; width: 100%; text-align: left; border: 0; background: transparent;
       padding: 8px; border-radius: 8px; cursor: pointer; color: inherit; font: inherit;
     }
     .session-item.on, .session-item:hover { background: var(--paper); }
-    .session-item .sub { color: var(--muted); font-size: 11px; }
-    .meta-list { color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .session-item .sub { color: var(--muted); font-size: 13px; }
+    .meta-list { color: var(--muted); font-size: 13px; line-height: 1.55; }
     .meta-list .sub, .meta-list b { color: var(--ink); }
     .meta-list .sub { color: var(--muted); font-weight: 400; display: block; }
-    .preview-wrap { overflow: auto; max-height: 220px; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; }
-    .preview-wrap table { font-size: 12px; }
+    .preview-wrap { overflow: auto; max-height: 280px; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; }
+    .preview-wrap table { font-size: 13px; }
     .toast {
       position: fixed; right: 20px; bottom: 20px;
       background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 8px;
@@ -290,18 +371,26 @@
     .login-mask {
       position: fixed; inset: 0; background: rgba(28,27,24,.28);
       display: flex; align-items: center; justify-content: center;
+      overflow: auto;
+      padding: 16px;
     }
     .login-card {
-      width: 320px; background: var(--paper); border: 1px solid var(--line);
+      width: 380px; max-width: calc(100vw - 32px); background: var(--paper); border: 1px solid var(--line);
       border-radius: 12px; padding: 20px;
+      max-height: 90vh;
+      overflow: auto;
     }
-    .login-card h2 { margin: 0 0 8px; font-size: 18px; }
+    .login-card h2 { margin: 0 0 8px; font-size: 20px; }
     .login-card p { color: var(--muted); margin: 0 0 14px; }
     .login-card label { display: block; margin: 8px 0 4px; color: var(--muted); }
-    .login-error { color: var(--down); min-height: 18px; font-size: 12px; }
+    .login-card .pick-list label { display: flex; margin: 0; color: inherit; }
+    .login-error { color: var(--down); min-height: 18px; font-size: 13px; }
+    .login-card.col-card { width: min(640px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
+    .login-card.art-card { width: min(860px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
     .side-modes { display: flex; gap: 6px; flex-wrap: wrap; }
     .side-modes .chip-btn { flex: 1; min-width: 0; }
     .chip-btn.off { opacity: 0.55; cursor: not-allowed; }
+    .monitor-body { border: 0; flex: 1; min-height: 0; overflow: auto; }
   </style>
 </head>
 <body>
@@ -342,7 +431,7 @@
           <div class="side-title">交易所全市场</div>
           <p class="pane-note">沪、深、北分开选、分开导，一次只出当前这一所。点三次得到三张表，不会混在一起。沪市含科创，深市含创业板。</p>
           <div class="chips" id="exchangeChips"></div>
-          <div class="side-title" style="font-weight:500;font-size:12px;color:var(--muted);margin-top:4px;">板块另池（不是指数）</div>
+          <div class="side-title board-sub">板块另池（不是指数）</div>
           <div class="chips" id="boardChips"></div>
           <input id="exchangeFilter" placeholder="搜索当前这一所 / 这一板块" />
           <ul class="watch" id="exchangeList"></ul>
@@ -378,8 +467,8 @@
 
         <div id="agent" class="view">
           <div class="split">
-            <div class="chat" style="display:flex;flex-direction:column;">
-              <div id="chatLog" style="flex:1;overflow:auto;">
+            <div class="chat">
+              <div id="chatLog">
                 <div class="bubble bot">
                   可以问现价、股东、财务、离底；也可粘贴 Excel。多轮对话会记住上下文。问「看市场」走 researcher。未配置 DeepSeek key 时走确定性编排。
                   <div class="cites">
@@ -427,7 +516,7 @@
             <button class="btn primary" id="monitorRun" type="button">立刻跑一轮</button>
             <span class="hint">交易日 09:00–15:00 每 5 分钟扫接近底部；20:20 跑已开启规则。期货行情、彭博检索未接则保持未启用。</span>
           </div>
-          <div class="panel" style="border:0; flex:1;">
+          <div class="panel monitor-body">
             <div id="monitorJobs"></div>
             <div class="side-title" style="margin:16px 0 8px;">提醒</div>
             <div id="monitorAlerts" class="meta">尚未跑过</div>
@@ -453,21 +542,34 @@
   </div>
   <div class="toast" id="toast"></div>
   <div class="login-mask" id="pickerMask" style="display:none;">
-    <div class="login-card pick-card">
+    <div class="login-card pick-card picker-card">
       <h2>按市场筛选进自选</h2>
       <p>沪、深、创业板、科创、北可以分开筛。加入是追加；替换会清空当前自选。仅查询一次不改自选，随后导出 Excel 也只含这一批。</p>
-      <div class="chips" id="marketChips">
-        <button class="btn sm chip-btn on" type="button" data-market="all">全部</button>
-        <button class="btn sm chip-btn" type="button" data-market="sh">沪市</button>
-        <button class="btn sm chip-btn" type="button" data-market="sz">深市</button>
-        <button class="btn sm chip-btn" type="button" data-market="kc">科创</button>
-        <button class="btn sm chip-btn" type="button" data-market="cy">创业板</button>
-        <button class="btn sm chip-btn" type="button" data-market="bj">北交所</button>
+      <div class="picker-toolbar">
+        <div class="chips" id="marketChips">
+          <button class="btn sm chip-btn on" type="button" data-market="all">全部</button>
+          <button class="btn sm chip-btn" type="button" data-market="sh">沪市</button>
+          <button class="btn sm chip-btn" type="button" data-market="sz">深市</button>
+          <button class="btn sm chip-btn" type="button" data-market="kc">科创</button>
+          <button class="btn sm chip-btn" type="button" data-market="cy">创业板</button>
+          <button class="btn sm chip-btn" type="button" data-market="bj">北交所</button>
+        </div>
+        <input id="pickQ" placeholder="名称、代码、申万一级或概念，如 茅台 / 国防军工 / 人工智能" />
       </div>
-      <div class="chips" id="sectorChips"></div>
-      <div class="chips" id="swChips"></div>
-      <div class="chips" id="conceptChips"></div>
-      <input id="pickQ" placeholder="名称、代码、申万一级或概念，如 茅台 / 国防军工 / 人工智能" />
+      <div class="picker-tax">
+        <div>
+          <div class="picker-tax-label">板块</div>
+          <div class="chips" id="sectorChips"></div>
+        </div>
+        <div>
+          <div class="picker-tax-label">申万一级</div>
+          <div class="chips" id="swChips"></div>
+        </div>
+        <div>
+          <div class="picker-tax-label">2026概念</div>
+          <div class="chips" id="conceptChips"></div>
+        </div>
+      </div>
       <div class="pick-list" id="pickList"><div class="pick-empty">输入关键词或切换市场</div></div>
       <div class="pick-actions">
         <button class="btn primary" id="addPicked" type="button">加入自选</button>
@@ -536,14 +638,14 @@
 
     const marketLabel = { hs: "沪深主板", kc: "科创", bj: "北交", sh: "沪市", sz: "深市", cy: "创业板" };
     const exchangeLabel = { SH: "沪", SZ: "深", BJ: "北" };
-    const COL_MIN = 56;
-    const COL_MAX_DEFAULT = 168;
+    const COL_MIN = 64;
+    const COL_MAX_DEFAULT = 200;
     const COL_SHORT = {
-      name: 88, code: 100, price: 72, pct: 88, pe: 72, pb: 72,
-      zgb: 88, ltgb: 88, mgwfplr: 110, yffy: 88, mgjzc: 96, eps: 88,
-      gross: 72, net: 72, flow_in: 88, flow_out: 88, flow_net: 80,
-      northbound: 88, low1y: 88, low_long: 80, high: 64, off_low: 72,
-      multiple: 72, target: 88,
+      name: 96, code: 112, price: 80, pct: 96, pe: 80, pb: 80,
+      zgb: 96, ltgb: 96, mgwfplr: 120, yffy: 96, mgjzc: 104, eps: 96,
+      gross: 80, net: 80, flow_in: 96, flow_out: 96, flow_net: 88,
+      northbound: 96, low1y: 96, low_long: 88, high: 72, off_low: 80,
+      multiple: 80, target: 96,
     };
     function loadColWidths() {
       try {
