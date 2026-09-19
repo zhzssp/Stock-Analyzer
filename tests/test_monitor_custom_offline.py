@@ -18,6 +18,7 @@ def test_policy_endpoint_and_health():
         health = client.get("/api/health")
         policies = health.json()["agent"]["policies"]
         assert "watch_card" in policies["analyst"]["tools"]
+        assert "watch_review" in policies["analyst"]["tools"]
         assert policies["researcher"]["inject_today_queue"] is True
         listed = client.get("/api/agent/policy")
         assert listed.status_code == 200

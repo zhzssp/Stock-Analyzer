@@ -25,6 +25,13 @@ _COLUMNS = {
         ("status", "VARCHAR(16) DEFAULT 'open'"),
         ("severity", "VARCHAR(16) DEFAULT 'watch'"),
         ("rule_id", "VARCHAR(64) DEFAULT ''"),
+        ("hit_price", "FLOAT"),
+        ("hit_date", "VARCHAR(16) DEFAULT ''"),
+        ("review_status", "VARCHAR(16) DEFAULT 'pending'"),
+        ("review_return_pct", "FLOAT"),
+        ("review_close", "FLOAT"),
+        ("reviewed_at", "DATETIME"),
+        ("review_note", "TEXT DEFAULT ''"),
     ],
 }
 

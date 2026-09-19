@@ -23,6 +23,7 @@ tools:
   - futures_map
   - export_share
   - watch_card
+  - watch_review
 forbidden:
   - 荐股
   - 目标收益

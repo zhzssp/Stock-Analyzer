@@ -15,6 +15,7 @@ from src.agents.rules import (
     merge_params,
     parse_json,
     validate_custom_spec,
+    _num,
 )
 from src.market.client import MarketClient, resolve_instruments
 from src.market.holders_diff import diff_holders, format_diff, normalize_holders, watch_hits
@@ -118,6 +119,12 @@ def _today_dup(db: Session, user_id: int, job_key: str, code6: str) -> bool:
     )
 
 
+def _price_of(row: dict | None) -> float | None:
+    if not row:
+        return None
+    return _num(row.get("price") if row.get("price") is not None else row.get("p"))
+
+
 def _alert(
     db: Session,
     user_id: int,
@@ -129,7 +136,9 @@ def _alert(
     persist: bool,
     severity: str = "watch",
     rule_id: str = "",
+    hit_price: float | None = None,
 ) -> dict | None:
+    hit_date = date.today().isoformat()
     payload = {
         "job_key": job_key,
         "rule_id": rule_id or job_key,
@@ -137,6 +146,9 @@ def _alert(
         "title": title,
         "detail": detail,
         "severity": severity,
+        "hit_price": hit_price,
+        "hit_date": hit_date,
+        "review_status": "pending",
     }
     if not persist:
         return payload
@@ -151,6 +163,9 @@ def _alert(
         status="open",
         severity=severity,
         rule_id=rule_id or job_key,
+        hit_price=hit_price,
+        hit_date=hit_date,
+        review_status="pending",
     )
     db.add(rec)
     return payload
@@ -265,7 +280,8 @@ def run_watcher(
             elif job.job_key == "corp-events":
                 hit = _rule_events(db, user, ctx, inst, params, persist)
             elif job.job_key == "near-bottom":
-                ok, detail = eval_near_bottom(rows_by_code.get(item.code6) or {}, params)
+                qrow = rows_by_code.get(item.code6) or {}
+                ok, detail = eval_near_bottom(qrow, params)
                 if ok:
                     hit = _alert(
                         db,
@@ -276,9 +292,11 @@ def run_watcher(
                         detail,
                         persist=persist,
                         severity=job.severity or "act",
+                        hit_price=_price_of(qrow),
                     )
             elif job.job_key == "near-target":
-                ok, detail = eval_near_target(rows_by_code.get(item.code6) or {}, params)
+                qrow = rows_by_code.get(item.code6) or {}
+                ok, detail = eval_near_target(qrow, params)
                 if ok:
                     hit = _alert(
                         db,
@@ -289,6 +307,7 @@ def run_watcher(
                         detail,
                         persist=persist,
                         severity=job.severity or "act",
+                        hit_price=_price_of(qrow),
                     )
             if hit:
                 hits.append(hit)
@@ -317,6 +336,7 @@ def run_watcher(
                 persist=persist and row is not None,
                 severity=severity,
                 rule_id=job_key_custom,
+                hit_price=_price_of(qrow),
             )
             if hit:
                 hits.append(hit)

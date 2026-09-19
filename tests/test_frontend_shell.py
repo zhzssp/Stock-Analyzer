@@ -36,6 +36,9 @@ def test_workbench_exposes_landed_backend_entries():
     assert "添加规则" in html
     assert "决策卡" in html
     assert 'data-monitor="today"' in html
+    assert 'data-monitor="review"' in html
+    assert 'id="reviewRun"' in html
+    assert "/monitor/review/run" in html
     assert 'class="subtab on" data-monitor="today"' in html
     assert 'querySelectorAll("nav.tabs > .tab[data-view]")' in html
     assert "本轮守则" in html

@@ -51,6 +51,7 @@ _FALLBACK = {
             "futures_map",
             "export_share",
             "watch_card",
+            "watch_review",
         ),
         rules=("只引用 Tool 数字；禁止荐股。",),
         plan_prompt="你是本机股票分析助手。禁止编造数字，禁止荐股。",
@@ -75,6 +76,7 @@ _FALLBACK = {
             "fund_holding",
             "taxonomy_lookup",
             "watch_card",
+            "watch_review",
         ),
         inject_watch_hits=True,
         inject_today_queue=True,
@@ -124,6 +126,9 @@ def load_policy(name: str) -> AgentPolicy:
 
 def reload_policies() -> list[str]:
     load_policy.cache_clear()
+    from src.agents.reviewer import reload_review_config
+
+    reload_review_config()
     return [load_policy("analyst").id, load_policy("researcher").id]
 
 

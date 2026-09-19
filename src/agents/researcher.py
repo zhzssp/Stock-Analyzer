@@ -26,6 +26,12 @@ def _with_context(question: str, ctx: ToolContext | None = None) -> str:
                 "今日该看："
                 + "；".join(f"{q.get('title')}（{q.get('code6') or ''}）" for q in queue[:12])
             )
+    if ctx is not None and ctx.db is not None:
+        from src.agents.reviewer import recent_review_lines
+
+        reviews = recent_review_lines(ctx.db, ctx.user_id)
+        if reviews:
+            extra.append("次日复盘：" + "；".join(reviews))
     if not extra:
         return question
     return question + "\n\n" + "\n".join(extra)

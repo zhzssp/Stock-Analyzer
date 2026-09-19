@@ -11,6 +11,7 @@ def start_scheduler():
     except ImportError:
         return None
 
+    from src.agents.reviewer import run_reviewer
     from src.agents.watcher import run_watcher
     from src.api.routes import market
 
@@ -19,6 +20,8 @@ def start_scheduler():
         try:
             for user in db.query(User).all():
                 run_watcher(db, user, market, schedule=schedule)
+                if schedule == "eod":
+                    run_reviewer(db, user, market)
         finally:
             db.close()
 

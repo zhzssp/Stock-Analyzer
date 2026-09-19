@@ -11,6 +11,7 @@ from src.agents.llm import llm_status
 from src.agents.planner import llm_available
 from src.agents.policy import policies_public, reload_policies, tools_for
 from src.agents.queue import today_queue
+from src.agents.reviewer import REVIEW_LABELS, reviews_payload, run_reviewer
 from src.agents.researcher import run_researcher, stream_researcher
 from src.agents.rules import GROUPS, metric_specs, validate_custom_spec
 from src.agents.runner import iter_agent, pick_agent
@@ -870,6 +871,16 @@ def list_alerts(user: User = Depends(current_user), db: Session = Depends(get_db
     return [_alert_payload(i) for i in items]
 
 
+@router.get("/monitor/reviews")
+def list_reviews(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return reviews_payload(db, user.id)
+
+
+@router.post("/monitor/review/run")
+def run_reviews(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return run_reviewer(db, user, market)
+
+
 @router.patch("/alerts/{alert_id}")
 def patch_alert(alert_id: int, body: AlertPatchIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     rec = db.query(Alert).filter_by(id=alert_id, user_id=user.id).first()
@@ -893,4 +904,12 @@ def _alert_payload(i: Alert) -> dict:
         "status": i.status or "open",
         "severity": i.severity or "watch",
         "created_at": i.created_at.isoformat() if i.created_at else None,
+        "hit_price": i.hit_price,
+        "hit_date": i.hit_date or "",
+        "review_status": i.review_status or "pending",
+        "review_label": REVIEW_LABELS.get(i.review_status or "pending", i.review_status or "pending"),
+        "review_return_pct": i.review_return_pct,
+        "review_close": i.review_close,
+        "reviewed_at": i.reviewed_at.isoformat() if i.reviewed_at else None,
+        "review_note": i.review_note or "",
     }

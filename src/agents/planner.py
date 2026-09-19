@@ -25,6 +25,7 @@ PASTE_HINTS = ("粘贴", "这张表", "这份表", "上传的", "附件")
 WAREHOUSE_HINTS = ("仓库", "日线", "K线", "k线", "历史行情", "历史数据", "缓存")
 API_HINTS = ("接口", "实时", "实盘", "查一下", "按代码")
 ACTION_HINTS = ("该不该", "减仓", "买入", "买区", "决策卡", "成本", "作废", "持有逻辑")
+REVIEW_HINTS = ("复盘", "次日", "假信号", "规则有效", "同向", "反向")
 RESEARCH_HINTS = research_hints()
 
 
@@ -91,6 +92,7 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
     wants_futures = _has(question, FUTURES_HINTS)
     wants_export = _has(question, EXPORT_HINTS)
     wants_action = _has(question, ACTION_HINTS)
+    wants_review = _has(question, REVIEW_HINTS)
 
     if not any(
         (
@@ -112,6 +114,7 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
             wants_futures,
             wants_export,
             wants_action,
+            wants_review,
         )
     ):
         if insts:
@@ -144,6 +147,8 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
         add("watch_card")
     if wants_action:
         add("watch_card")
+    if wants_review:
+        add("watch_review")
     if wants_paste:
         add("excel_parse", {"question": question})
     if wants_warehouse:
@@ -413,6 +418,17 @@ def _draft_lines(observations: list[dict]) -> list[str]:
                 if row.get("invalid_if"):
                     bits.append(f"作废条件 {row.get('invalid_if')}")
                 lines.append(f"{row.get('name')} 决策卡：{'；'.join(bits) or '已填但无数字'}。")
+        elif tool == "watch_review" and isinstance(data, dict):
+            counts = data.get("counts") or {}
+            bits = [f"{k} {v}" for k, v in counts.items() if v]
+            lines.append("次日复盘计数：" + ("，".join(bits) or "还没有打标。"))
+            for row in (data.get("done") or data.get("items") or [])[:6]:
+                ret = row.get("review_return_pct")
+                ret_s = f"{ret:+.2f}%" if isinstance(ret, (int, float)) else "—"
+                lines.append(
+                    f"{row.get('name') or row.get('code6')} {row.get('job_key')} "
+                    f"{row.get('review_label') or row.get('review_status')} 次日 {ret_s}。"
+                )
         elif tool == "bottom" and isinstance(data, list):
             for row in data:
                 if row.get("low_long") is None:

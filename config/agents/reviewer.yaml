@@ -1,0 +1,21 @@
+id: reviewer
+up_pct: 1
+down_pct: 1
+bounce_jobs:
+  - near-bottom
+fade_jobs:
+  - near-target
+info_jobs:
+  - holders-change
+  - fund-holding
+  - corp-events
+  - capital-flow
+bounce_metrics:
+  - off_low
+  - dist_buy
+fade_metrics:
+  - dist_reduce
+rules:
+  - 只对照命中价与下一根交易日收盘，禁止荐股。
+  - 不按复盘结果自动关闭规则或下单。
+  - 股东、资金、事件类不按涨跌打分。

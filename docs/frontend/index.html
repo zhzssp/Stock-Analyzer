@@ -570,10 +570,11 @@
             <div class="subtabs">
               <button class="subtab on" data-monitor="today" type="button">今日</button>
               <button class="subtab" data-monitor="rules" type="button">规则</button>
+              <button class="subtab" data-monitor="review" type="button">复盘</button>
               <button class="subtab" data-monitor="prefs" type="button">偏好</button>
             </div>
             <button class="btn primary" id="monitorRun" type="button">立刻跑一轮</button>
-            <span class="hint">交易日 09:00–15:00 每 5 分钟扫盘中实时规则；20:20 跑日终规则。期货行情、彭博检索未接则保持未启用。</span>
+            <span class="hint">交易日 09:00–15:00 每 5 分钟扫盘中实时规则；20:20 跑日终规则并给昨天的命中打次日标签。期货行情、彭博检索未接则保持未启用。</span>
           </div>
           <div class="panel monitor-body">
             <div id="monitorToday" class="monitor-pane on">
@@ -647,8 +648,17 @@
                   <button class="btn" id="rulePreviewBtn" type="button">预览命中</button>
                   <button class="btn ghost" id="ruleCancel" type="button">取消</button>
                 </div>
-                <div id="rulePreview" class="meta-list" style="margin-top:8px;"></div>
+              <div id="rulePreview" class="meta-list" style="margin-top:8px;"></div>
               </form>
+            </div>
+            <div id="monitorReview" class="monitor-pane">
+              <div class="side-title">次日复盘 <button class="btn sm primary" id="reviewRun" type="button">立刻复盘</button></div>
+              <p class="pane-note">命中后等到下一根交易日收盘再打标。同向 / 反向只描述涨跌，不是买卖建议，也不会自动关规则。</p>
+              <div id="reviewCounts" class="meta">尚未复盘</div>
+              <div class="side-title" style="margin:16px 0 8px;">待复盘</div>
+              <div id="reviewPending" class="meta">没有待复盘的提醒</div>
+              <div class="side-title" style="margin:16px 0 8px;">已打标</div>
+              <div id="reviewDone" class="meta">还没有次日标签</div>
             </div>
             <div id="monitorPrefs" class="monitor-pane">
               <div class="side-title">关注机构白名单</div>
@@ -1433,7 +1443,7 @@
       box.innerHTML = items.map((a) =>
         `<div class="alert">
           <b>${esc(a.title)}</b>
-          <div class="meta">${esc(a.detail || "")} · ${esc(a.status || "open")} · ${esc(a.created_at || "")}</div>
+          <div class="meta">${esc(a.detail || "")} · ${esc(a.status || "open")} · ${esc(reviewLabel(a))} · ${esc(a.created_at || "")}</div>
           <div class="alert-actions">
             <button class="btn sm" type="button" data-alert="${a.id}" data-status="seen">已看</button>
             <button class="btn sm" type="button" data-alert="${a.id}" data-status="watch">再观察</button>
@@ -1442,6 +1452,45 @@
           </div>
         </div>`
       ).join("");
+    }
+
+    function reviewLabel(a) {
+      const map = {
+        pending: "待复盘",
+        helpful: "次日同向",
+        noise: "次日反向",
+        mixed: "波动不足",
+        skipped: "不按涨跌",
+        deferred: "尚无次日收盘",
+      };
+      const key = a.review_status || a.review_label || "pending";
+      return a.review_label || map[key] || key;
+    }
+
+    function renderReviewItem(a) {
+      const ret = (typeof a.review_return_pct === "number")
+        ? ((a.review_return_pct >= 0 ? "+" : "") + a.review_return_pct.toFixed(2) + "%")
+        : "—";
+      return `<div class="alert">
+        <b>${esc(a.title)}</b>
+        <div class="meta">${esc(reviewLabel(a))} · 命中价 ${esc(a.hit_price == null ? "—" : a.hit_price)} · 次日 ${esc(ret)} · ${esc(a.review_note || "")}</div>
+      </div>`;
+    }
+
+    function renderReviews(data) {
+      const counts = (data && data.counts) || {};
+      const bits = Object.keys(counts).filter((k) => counts[k]).map((k) => `${reviewLabel({ review_status: k })} ${counts[k]}`);
+      document.getElementById("reviewCounts").innerHTML = bits.length
+        ? `<div class="meta">${esc(bits.join(" · "))}</div>`
+        : `<div class="meta">还没有复盘记录。</div>`;
+      const pending = (data && data.pending) || [];
+      const done = (data && data.done) || [];
+      document.getElementById("reviewPending").innerHTML = pending.length
+        ? pending.map(renderReviewItem).join("")
+        : `<div class="meta">没有待复盘的提醒。</div>`;
+      document.getElementById("reviewDone").innerHTML = done.length
+        ? done.map(renderReviewItem).join("")
+        : `<div class="meta">还没有次日标签。</div>`;
     }
 
     function readJobParams(card) {
@@ -1492,12 +1541,13 @@
     }
 
     async function loadMonitor() {
-      const [jobs, alerts, rules, queue, metrics] = await Promise.all([
+      const [jobs, alerts, rules, queue, metrics, reviews] = await Promise.all([
         api("/monitor/jobs"),
         api("/alerts"),
         api("/monitor/rules"),
         api("/monitor/queue"),
         api("/monitor/metrics"),
+        api("/monitor/reviews"),
       ]);
       state.customRules = rules;
       state.metrics = metrics;
@@ -1505,6 +1555,7 @@
       renderAlerts(alerts);
       renderCustomRules(rules);
       renderQueue(queue);
+      renderReviews(reviews);
       fillMetrics(metrics);
       await loadTaxonomyData();
       await loadMonitorPrefs();
@@ -1518,11 +1569,18 @@
       await loadMonitor();
     }
 
+    async function runReview() {
+      const data = await api("/monitor/review/run", { method: "POST", body: "{}" });
+      toast(data.count ? `复盘 ${data.count} 条` : "没有到期的待复盘提醒");
+      await loadMonitor();
+    }
+
     function setMonitorTab(name) {
       state.monitorTab = name;
       document.querySelectorAll("[data-monitor]").forEach((t) => t.classList.toggle("on", t.dataset.monitor === name));
       document.getElementById("monitorToday").classList.toggle("on", name === "today");
       document.getElementById("monitorRules").classList.toggle("on", name === "rules");
+      document.getElementById("monitorReview").classList.toggle("on", name === "review");
       document.getElementById("monitorPrefs").classList.toggle("on", name === "prefs");
     }
 
@@ -1634,6 +1692,7 @@
     document.getElementById("closeCols").addEventListener("click", closeCols);
     document.getElementById("saveCols").addEventListener("click", () => saveCols().catch((e) => toast(e.message)));
     document.getElementById("monitorRun").addEventListener("click", () => runMonitor().catch((e) => toast(e.message)));
+    document.getElementById("reviewRun").addEventListener("click", () => runReview().catch((e) => toast(e.message)));
     document.getElementById("monitorJobs").addEventListener("click", async (e) => {
       const save = e.target.closest("[data-save-job]");
       if (save) {
