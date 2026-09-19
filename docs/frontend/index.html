@@ -392,7 +392,16 @@
     .chip-btn.off { opacity: 0.55; cursor: not-allowed; }
     .monitor-body { border: 0; flex: 1; min-height: 0; overflow: auto; }
     .subtabs { display: flex; gap: 4px; }
-    .subtabs .tab { padding: 6px 10px 8px; }
+    .subtabs .subtab {
+      border: 0;
+      background: none;
+      padding: 6px 10px 8px;
+      color: var(--muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      font: inherit;
+    }
+    .subtabs .subtab.on { color: var(--ink); border-bottom-color: var(--teal); font-weight: 600; }
     .monitor-pane { display: none; }
     .monitor-pane.on { display: block; }
     .policy-bar {
@@ -559,9 +568,9 @@
         <div id="monitor" class="view">
           <div class="toolbar">
             <div class="subtabs">
-              <button class="tab on" data-monitor="today" type="button">今日</button>
-              <button class="tab" data-monitor="rules" type="button">规则</button>
-              <button class="tab" data-monitor="prefs" type="button">偏好</button>
+              <button class="subtab on" data-monitor="today" type="button">今日</button>
+              <button class="subtab" data-monitor="rules" type="button">规则</button>
+              <button class="subtab" data-monitor="prefs" type="button">偏好</button>
             </div>
             <button class="btn primary" id="monitorRun" type="button">立刻跑一轮</button>
             <span class="hint">交易日 09:00–15:00 每 5 分钟扫盘中实时规则；20:20 跑日终规则。期货行情、彭博检索未接则保持未启用。</span>
@@ -776,14 +785,15 @@
     </form>
   </div>
   <script>
-    const tabs = document.querySelectorAll(".tab");
+    const tabs = document.querySelectorAll("nav.tabs > .tab[data-view]");
     const views = document.querySelectorAll(".view");
     tabs.forEach((tab) => {
       tab.addEventListener("click", () => {
         tabs.forEach((t) => t.classList.remove("on"));
         views.forEach((v) => v.classList.remove("on"));
         tab.classList.add("on");
-        document.getElementById(tab.dataset.view).classList.add("on");
+        const view = document.getElementById(tab.dataset.view);
+        if (view) view.classList.add("on");
         if (tab.dataset.view === "monitor") loadMonitor().catch((e) => toast(e.message));
         if (tab.dataset.view === "agent") {
           loadSessions().catch((e) => toast(e.message));
