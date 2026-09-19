@@ -96,3 +96,13 @@ def test_workbench_picker_dialog_is_wide_and_short():
     assert "min(86vh, 680px)" in html
     assert "font: 15px/1.5" in html
     assert ".table-wrap { overflow: auto;" in html or "table-wrap { overflow: auto" in html
+
+
+def test_decision_card_overlay_sits_above_sticky_table_headers():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert "isolation: isolate;" in html
+    assert ".drawer-mask {" in html
+    assert html.split(".drawer-mask {", 1)[1].split("}", 1)[0].count("z-index: 40") == 1
+    assert html.split(".login-mask {", 1)[1].split("}", 1)[0].count("z-index: 40") == 1
+    assert "#queryTable th" in html
+    assert "z-index: 1;" in html.split("#queryTable th {", 1)[1].split("}", 1)[0]

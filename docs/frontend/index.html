@@ -168,7 +168,7 @@
     .toolbar .hint { margin-left: auto; color: var(--muted); white-space: normal; }
     .view { display: none; flex: 1; min-height: 0; overflow: hidden; }
     .view.on { display: flex; flex-direction: column; }
-    .table-wrap { overflow: auto; padding: 0 16px 16px; flex: 1; min-height: 0; }
+    .table-wrap { overflow: auto; padding: 0 16px 16px; flex: 1; min-height: 0; isolation: isolate; }
     table { width: 100%; border-collapse: collapse; background: var(--paper); }
     th, td {
       border-bottom: 1px solid var(--line);
@@ -367,12 +367,14 @@
       position: fixed; right: 20px; bottom: 20px;
       background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 8px;
       display: none;
+      z-index: 50;
     }
     .login-mask {
       position: fixed; inset: 0; background: rgba(28,27,24,.28);
       display: flex; align-items: center; justify-content: center;
       overflow: auto;
       padding: 16px;
+      z-index: 40;
     }
     .login-card {
       width: 380px; max-width: calc(100vw - 32px); background: var(--paper); border: 1px solid var(--line);
@@ -432,6 +434,7 @@
     .drawer-mask {
       position: fixed; inset: 0; background: rgba(28,27,24,.28);
       display: flex; justify-content: flex-end;
+      z-index: 40;
     }
     .drawer {
       width: min(420px, 100vw);
@@ -440,6 +443,8 @@
       border-left: 1px solid var(--line);
       padding: 18px;
       overflow: auto;
+      position: relative;
+      z-index: 1;
     }
     .drawer h2 { margin: 0 0 8px; font-size: 18px; }
     .watch li.filled .code::after { content: " · 卡"; color: var(--teal); }
