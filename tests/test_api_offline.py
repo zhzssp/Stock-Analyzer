@@ -179,3 +179,52 @@ def test_health_cy_export_codes_artifacts_warehouse():
                 path.unlink(missing_ok=True)
             else:
                 path.write_bytes(old)
+
+
+def test_board_indices_offline():
+    with TestClient(app) as client:
+        data = client.get("/api/markets/board")
+        assert data.status_code == 200
+        items = data.json()["items"]
+        assert [x["short"] for x in items] == ["上证", "深成", "科创"]
+        by = {x["short"]: x for x in items}
+        assert by["上证"]["code"] == "000001.SH"
+        assert by["上证"]["p"] == 3900.87
+        assert by["上证"]["pc"] == 1.86
+        assert by["深成"]["code"] == "399001.SZ"
+        assert by["深成"]["p"] == 13650.68
+        assert by["深成"]["pc"] == 2.01
+        assert by["科创"]["code"] == "000688.SH"
+        assert by["科创"]["label"] == "科创50"
+        assert by["科创"]["p"] == 1948.21
+        assert by["科创"]["pc"] == 2.37
+
+
+def test_index_quote_parser_accepts_mairui_shapes():
+    from src.market.client import MarketClient, _parse_index_quote
+
+    assert _parse_index_quote({"p": 3900.87, "pc": 1.86}) == {"p": 3900.87, "pc": 1.86}
+    parsed = _parse_index_quote([{"zs": "13650.68", "zf": "+2.01%"}])
+    assert parsed == {"p": 13650.68, "pc": 2.01}
+    parsed = _parse_index_quote({"close": 1948.21, "zdf": 2.37})
+    assert parsed == {"p": 1948.21, "pc": 2.37}
+
+    client = MarketClient.__new__(MarketClient)
+    client.offline = False
+    client.sample_only = False
+
+    def fake_try_get(path: str):
+        if "000001" in path:
+            return [{"p": 3900.87, "pc": 1.86}]
+        if "399001" in path:
+            return {"zs": 13650.68, "zf": "+2.01%"}
+        if "000688" in path:
+            return {"close": 1948.21, "percent": 2.37}
+        return None
+
+    client._try_get = fake_try_get
+    items = {x["short"]: x for x in client.index_quotes()}
+    assert items["上证"]["source"] == "live"
+    assert items["上证"]["p"] == 3900.87
+    assert items["深成"]["pc"] == 2.01
+    assert items["科创"]["p"] == 1948.21

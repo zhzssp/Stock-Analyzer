@@ -28,21 +28,54 @@
     .app {
       height: 100%;
       display: grid;
-      grid-template-rows: 48px 1fr;
+      grid-template-rows: 58px 1fr;
     }
     .topbar {
-      display: flex;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
       align-items: center;
-      justify-content: space-between;
+      gap: 16px;
       padding: 0 18px;
       border-bottom: 1px solid var(--line);
       background: var(--paper);
     }
-    .brand { font-weight: 650; letter-spacing: 0.02em; }
+    .brand { font-weight: 650; letter-spacing: 0.02em; justify-self: start; }
     .brand span { color: var(--teal); font-weight: 500; margin-left: 8px; font-size: 12px; }
-    .user { color: var(--muted); }
-    .top-meta { display: flex; gap: 14px; align-items: center; min-width: 0; }
-    .status { color: var(--muted); font-size: 12px; max-width: 52vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .user { color: var(--muted); white-space: nowrap; }
+    .top-meta { display: flex; gap: 14px; align-items: center; min-width: 0; justify-self: end; }
+    .status { color: var(--muted); font-size: 12px; max-width: min(34vw, 380px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .board {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      justify-self: center;
+      background: var(--teal-soft);
+      border: 1px solid #cfe3df;
+      border-radius: 10px;
+      padding: 4px 6px;
+    }
+    .board-item {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 3px 14px;
+      white-space: nowrap;
+    }
+    .board-item + .board-item { border-left: 1px solid #c5d9d5; }
+    .board-item .name { font-size: 13px; font-weight: 700; color: var(--ink); }
+    .board-item .px {
+      font-size: 18px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+    .board-item .pc {
+      font-size: 14px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .board-item .pc.flat { color: var(--muted); font-weight: 600; }
     .shell {
       display: grid;
       grid-template-columns: 260px 1fr;
@@ -132,6 +165,62 @@
       white-space: nowrap;
     }
     th { color: var(--muted); font-weight: 550; background: #faf8f4; position: sticky; top: 0; }
+    #queryTable {
+      width: max-content;
+      min-width: 0;
+      table-layout: fixed;
+    }
+    #queryTable td {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #queryTable th {
+      z-index: 1;
+      overflow: visible;
+    }
+    #queryTable th.sortable {
+      cursor: pointer;
+    }
+    #queryTable th.sortable:hover .col-label { color: var(--ink); }
+    #queryTable .sort-ind {
+      margin-left: 3px;
+      font-size: 10px;
+      color: var(--teal);
+      font-weight: 700;
+    }
+    #queryTable .col-label {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding-right: 6px;
+    }
+    #queryTable .col-resizer {
+      position: absolute;
+      top: 0;
+      right: -5px;
+      width: 12px;
+      height: 100%;
+      cursor: col-resize;
+      user-select: none;
+      z-index: 2;
+    }
+    #queryTable .col-resizer::after {
+      content: "";
+      position: absolute;
+      top: 8px;
+      bottom: 8px;
+      right: 4px;
+      width: 2px;
+      border-radius: 1px;
+      background: transparent;
+    }
+    #queryTable th:hover .col-resizer::after,
+    #queryTable .col-resizer:hover::after,
+    body.col-resizing #queryTable .col-resizer.active::after {
+      background: var(--teal);
+    }
+    body.col-resizing,
+    body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
     .up { color: var(--up); }
     .down { color: var(--down); }
     .chip { display: inline-block; padding: 1px 6px; border-radius: 999px; background: var(--teal-soft); color: var(--teal); font-size: 11px; }
@@ -219,6 +308,11 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">Stock-Analyzer <span>本机工作台</span></div>
+      <div class="board" id="boardBar" aria-label="核心指数">
+        <div class="board-item"><span class="name">上证：</span><span class="px">—</span><span class="pc">—</span></div>
+        <div class="board-item"><span class="name">深成：</span><span class="px">—</span><span class="pc">—</span></div>
+        <div class="board-item"><span class="name">科创：</span><span class="px">—</span><span class="pc">—</span></div>
+      </div>
       <div class="top-meta">
         <div class="status" id="healthBar">未检查</div>
         <div class="user" id="userLabel">未登录</div>
@@ -274,7 +368,8 @@
             <span class="hint" id="queryHint">尚未查询</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table id="queryTable">
+              <colgroup id="tableCols"></colgroup>
               <thead id="tableHead"></thead>
               <tbody id="tableBody"></tbody>
             </table>
@@ -441,9 +536,33 @@
 
     const marketLabel = { hs: "沪深主板", kc: "科创", bj: "北交", sh: "沪市", sz: "深市", cy: "创业板" };
     const exchangeLabel = { SH: "沪", SZ: "深", BJ: "北" };
+    const COL_MIN = 56;
+    const COL_MAX_DEFAULT = 168;
+    const COL_SHORT = {
+      name: 88, code: 100, price: 72, pct: 88, pe: 72, pb: 72,
+      zgb: 88, ltgb: 88, mgwfplr: 110, yffy: 88, mgjzc: 96, eps: 88,
+      gross: 72, net: 72, flow_in: 88, flow_out: 88, flow_net: 80,
+      northbound: 88, low1y: 88, low_long: 80, high: 64, off_low: 72,
+      multiple: 72, target: 88,
+    };
+    function loadColWidths() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem("sa_col_widths") || "{}");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+        const out = {};
+        Object.keys(parsed).forEach((k) => {
+          const n = Number(parsed[k]);
+          if (k && Number.isFinite(n)) out[k] = Math.max(COL_MIN, Math.round(n));
+        });
+        return out;
+      } catch (e) {
+        return {};
+      }
+    }
     const state = {
       token: sessionStorage.getItem("sa_token") || "",
       fields: [],
+      colWidths: loadColWidths(),
       watch: [],
       quoteItems: [],
       pickMarket: "all",
@@ -456,6 +575,10 @@
       pools: [],
       poolLabel: "自选",
       lastQueryCodes: null,
+      boardTimer: null,
+      rowsRaw: [],
+      sortKey: "pct",
+      sortDir: "desc",
     };
 
     function toast(text) {
@@ -480,6 +603,36 @@
       const chText = channels.length ? channels.join("、") : "无提醒通道";
       document.getElementById("healthBar").textContent = marketText + " · " + llmText + " · " + chText;
       document.getElementById("healthBar").title = JSON.stringify({ market: m, llm: st, channels: a.channels || [] });
+    }
+
+    function renderBoard(items) {
+      const list = (items && items.length) ? items : [
+        { short: "上证" }, { short: "深成" }, { short: "科创" },
+      ];
+      document.getElementById("boardBar").innerHTML = list.map((it) => {
+        const pNum = Number(it.p);
+        const price = Number.isFinite(pNum) ? pNum.toFixed(2) : "—";
+        const pcNum = Number(it.pc);
+        let pcCls = "flat";
+        let pcText = "—";
+        if (Number.isFinite(pcNum)) {
+          pcCls = pcNum > 0 ? "up" : (pcNum < 0 ? "down" : "flat");
+          pcText = (pcNum > 0 ? "+" : "") + pcNum.toFixed(2) + "%";
+        }
+        const title = [it.label || it.short || "", it.code || ""].filter(Boolean).join(" ");
+        return `<div class="board-item" title="${escAttr(title)}"><span class="name">${escHtml(it.short || "")}：</span><span class="px">${escHtml(price)}</span><span class="pc ${pcCls}">${escHtml(pcText)}</span></div>`;
+      }).join("");
+    }
+
+    async function loadBoard() {
+      const data = await api("/markets/board");
+      renderBoard(data.items || []);
+    }
+
+    function startBoardClock() {
+      loadBoard().catch((e) => toast(e.message));
+      if (state.boardTimer) clearInterval(state.boardTimer);
+      state.boardTimer = setInterval(() => loadBoard().catch(() => {}), 20000);
     }
 
     async function api(path, options = {}) {
@@ -519,6 +672,112 @@
         return sign + value.toFixed(2) + "%";
       }
       return value;
+    }
+
+    function escHtml(text) {
+      return String(text == null ? "" : text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function escAttr(text) {
+      return escHtml(text).replace(/"/g, "&quot;");
+    }
+
+    function defaultColWidth(field) {
+      if (COL_SHORT[field.key]) return COL_SHORT[field.key];
+      const label = String(field.label || field.key || "");
+      return Math.min(Math.max(label.length * 14 + 28, 96), COL_MAX_DEFAULT);
+    }
+
+    function colWidth(field) {
+      const saved = state.colWidths[field.key];
+      if (typeof saved === "number" && Number.isFinite(saved)) return Math.max(COL_MIN, saved);
+      return defaultColWidth(field);
+    }
+
+    function persistColWidths() {
+      localStorage.setItem("sa_col_widths", JSON.stringify(state.colWidths));
+    }
+
+    function applyColLayout(fields) {
+      const widths = fields.map((f) => colWidth(f));
+      const total = widths.reduce((sum, w) => sum + w, 0);
+      document.getElementById("queryTable").style.width = total + "px";
+      document.getElementById("tableCols").innerHTML = fields.map((f, i) =>
+        `<col data-key="${escAttr(f.key)}" style="width:${widths[i]}px">`
+      ).join("");
+    }
+
+    function setColWidth(key, px) {
+      const w = Math.max(COL_MIN, Math.round(px));
+      state.colWidths[key] = w;
+      const col = document.querySelector(`#tableCols col[data-key="${CSS.escape(key)}"]`);
+      if (col) col.style.width = w + "px";
+      const th = document.querySelector(`#tableHead th[data-key="${CSS.escape(key)}"]`);
+      if (th) th.style.width = w + "px";
+      const total = (state.fields || []).reduce((sum, f) => sum + colWidth(f), 0);
+      if (total) document.getElementById("queryTable").style.width = total + "px";
+    }
+
+    function bindColResize() {
+      document.getElementById("tableHead").addEventListener("mousedown", (e) => {
+        const handle = e.target.closest(".col-resizer");
+        if (!handle) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const key = handle.dataset.key;
+        const field = (state.fields || []).find((f) => f.key === key);
+        if (!field) return;
+        const startX = e.clientX;
+        const startW = colWidth(field);
+        handle.classList.add("active");
+        document.body.classList.add("col-resizing");
+        const onMove = (ev) => setColWidth(key, startW + (ev.clientX - startX));
+        const onUp = () => {
+          handle.classList.remove("active");
+          document.body.classList.remove("col-resizing");
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+          persistColWidths();
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+    }
+
+    function sortValue(row, key) {
+      const raw = row ? row[key] : null;
+      if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+      if (raw == null || raw === "" || raw === "—") return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function sortedRows(rows) {
+      const key = state.sortKey || "pct";
+      const dir = state.sortDir === "asc" ? 1 : -1;
+      return (rows || []).slice().sort((a, b) => {
+        const av = sortValue(a, key);
+        const bv = sortValue(b, key);
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        if (av === bv) return 0;
+        return av > bv ? dir : -dir;
+      });
+    }
+
+    function bindPctSort() {
+      document.getElementById("tableHead").addEventListener("click", (e) => {
+        if (e.target.closest(".col-resizer")) return;
+        const th = e.target.closest('th[data-key="pct"]');
+        if (!th) return;
+        state.sortKey = "pct";
+        state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
+        renderTable(state.fields, state.rowsRaw);
+      });
     }
 
     function renderWatch(items) {
@@ -609,6 +868,10 @@
 
     async function selectPool(poolId) {
       state.pool = poolId;
+      if (String(poolId).startsWith("index:")) {
+        state.sortKey = "pct";
+        state.sortDir = "desc";
+      }
       renderPoolChips(state.pools);
       const data = await api("/markets/pools/" + encodeURIComponent(poolId) + "/instruments");
       renderPoolList(data.items || []);
@@ -629,6 +892,10 @@
         state.pool = "watch";
         updateExportScope("自选");
         document.getElementById("poolHint").textContent = poolHintText("watch");
+      }
+      if (side === "quote") {
+        state.sortKey = "pct";
+        state.sortDir = "desc";
       }
     }
 
@@ -662,14 +929,26 @@
 
     function renderTable(fields, rows) {
       state.fields = fields;
+      state.rowsRaw = rows || [];
+      applyColLayout(fields);
+      const shown = sortedRows(state.rowsRaw);
       document.getElementById("tableHead").innerHTML =
-        "<tr>" + fields.map((f) => `<th>${f.label}</th>`).join("") + "</tr>";
-      document.getElementById("tableBody").innerHTML = rows.map((row) => {
+        "<tr>" + fields.map((f) => {
+          const w = colWidth(f);
+          const sortable = f.key === "pct";
+          const cls = sortable ? "sortable" : "";
+          const aria = sortable ? ` aria-sort="${state.sortDir === "asc" ? "ascending" : "descending"}"` : "";
+          const mark = sortable ? `<span class="sort-ind">${state.sortDir === "asc" ? "▲" : "▼"}</span>` : "";
+          const tip = sortable ? `${f.label} · 点击切换正序/反序` : f.label;
+          return `<th class="${cls}" data-key="${escAttr(f.key)}" style="width:${w}px" title="${escAttr(tip)}"${aria}><span class="col-label">${escHtml(f.label)}${mark}</span><span class="col-resizer" data-key="${escAttr(f.key)}"></span></th>`;
+        }).join("") + "</tr>";
+      document.getElementById("tableBody").innerHTML = shown.map((row) => {
         const tds = fields.map((f) => {
           const raw = row[f.key];
+          const display = String(fmt(f.key, raw));
           let cls = "";
           if (f.key === "pct" && typeof raw === "number") cls = raw >= 0 ? "up" : "down";
-          return `<td class="${cls}">${fmt(f.key, raw)}</td>`;
+          return `<td class="${cls}" title="${escAttr(display)}">${escHtml(display)}</td>`;
         }).join("");
         return `<tr>${tds}</tr>`;
       }).join("");
@@ -823,6 +1102,7 @@
       document.getElementById("userLabel").textContent = username + " · 已登录";
       document.getElementById("loginMask").style.display = "none";
       await loadHealth();
+      startBoardClock();
       await loadWatch();
       await loadPools();
       await runQuery();
@@ -845,6 +1125,8 @@
       }
     });
 
+    bindColResize();
+    bindPctSort();
     document.getElementById("queryBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
     document.getElementById("refreshBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
     document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));

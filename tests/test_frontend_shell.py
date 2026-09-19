@@ -35,3 +35,35 @@ def test_workbench_exposes_landed_backend_entries():
     assert "只跑这条" in html
     assert "对照上一份" in html
     assert "历史对话" in html
+
+
+def test_workbench_query_table_columns_are_resizable():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert 'id="queryTable"' in html
+    assert "col-resizer" in html
+    assert "table-layout: fixed" in html
+    assert "text-overflow: ellipsis" in html
+    assert "sa_col_widths" in html
+    assert "bindColResize" in html
+    assert 'title="${escAttr(display)}"' in html
+
+
+def test_workbench_shows_core_index_board():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert 'id="boardBar"' in html
+    assert "/markets/board" in html
+    assert "startBoardClock" in html
+    assert "上证：" in html
+    assert "深成：" in html
+    assert "科创：" in html
+    assert "loadBoard" in html
+
+
+def test_workbench_pct_column_sorts_index_constituents():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert "sortedRows" in html
+    assert "bindPctSort" in html
+    assert 'th[data-key="pct"]' in html
+    assert "点击切换正序/反序" in html
+    assert 'sortKey: "pct"' in html
+    assert 'sortDir: "desc"' in html

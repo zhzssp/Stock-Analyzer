@@ -91,6 +91,40 @@ class MarketClient:
             "has_licence": bool(self.licence),
         }
 
+    def index_quotes(self) -> list[dict]:
+        from src.market.indices import BOARD_INDICES
+
+        return [self._index_quote_item(spec) for spec in BOARD_INDICES]
+
+    def _index_quote_item(self, spec: dict) -> dict:
+        code = spec["code"]
+        row = self._index_quote(code)
+        return {
+            "code": code,
+            "short": spec["short"],
+            "label": spec["label"],
+            "p": row.get("p"),
+            "pc": row.get("pc"),
+            "source": row.get("source") or "",
+        }
+
+    def _index_quote(self, code: str) -> dict:
+        if self.offline or self.sample_only:
+            data = fixtures.INDEX_QUOTE.get(code) or {}
+            return {"p": data.get("p"), "pc": data.get("pc"), "source": data.get("source") or "offline"}
+        code6 = code.split(".")[0]
+        for path in (
+            f"/hsindex/real/time/{code}",
+            f"/hsindex/real/time/{code6}",
+            f"/hsindex/latest/{code}",
+            f"/hsindex/latest/{code6}",
+        ):
+            parsed = _parse_index_quote(self._try_get(path))
+            if parsed:
+                parsed["source"] = "live"
+                return parsed
+        return {"p": None, "pc": None, "source": "unavailable"}
+
     def list_hs(self) -> list[Instrument]:
         if self.offline:
             return list(fixtures.UNIVERSE_HS)
@@ -433,6 +467,41 @@ class MarketClient:
                     if isinstance(x, dict)
                 ]
         return []
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace("%", "").replace(",", "").replace("+", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_index_quote(data: Any) -> dict | None:
+    if not data:
+        return None
+    row = data[0] if isinstance(data, list) else data
+    if not isinstance(row, dict):
+        return None
+    price = None
+    for key in ("p", "price", "close", "c", "zs", "zx", "last", "index"):
+        price = _as_float(row.get(key))
+        if price is not None:
+            break
+    pct = None
+    for key in ("pc", "zdf", "zf", "percent", "pct", "change_pct"):
+        pct = _as_float(row.get(key))
+        if pct is not None:
+            break
+    if price is None and pct is None:
+        return None
+    return {"p": price, "pc": pct}
 
 
 def cninfo_url(code6: str) -> str:

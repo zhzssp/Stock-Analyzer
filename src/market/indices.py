@@ -24,6 +24,13 @@ INDEX_SPECS = [
     {"code": "000016.SH", "label": "上证50", "market": "sh"},
 ]
 
+# Header pulse: 上证 / 深成 / 科创. 科创用科创50点位，不是科创综指成份池。
+BOARD_INDICES = [
+    {"code": "000001.SH", "short": "上证", "label": "上证指数"},
+    {"code": "399001.SZ", "short": "深成", "label": "深证成指"},
+    {"code": "000688.SH", "short": "科创", "label": "科创50"},
+]
+
 
 def probe_path() -> Path:
     return settings.data_dir / "index_probe.json"
