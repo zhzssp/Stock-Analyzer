@@ -57,8 +57,10 @@ Write-Host ""
 Write-Host ">>> [2/2] 启动服务" -ForegroundColor Cyan
 Write-Host "    正在调用 $serverPs1"
 Write-Host ""
+# Same console / same process: a nested powershell.exe would also get Ctrl+C
+# and die before run-server.ps1 could finish cleanup.
 $ErrorActionPreference = "Continue"
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $serverPs1
+& $serverPs1
 $serverCode = $LASTEXITCODE
 $ErrorActionPreference = $prev
 if ($null -eq $serverCode) { $serverCode = 1 }

@@ -29,15 +29,9 @@ if not exist "%~dp0run.ps1" (
 
 echo Starting run.ps1 ...
 echo.
+REM KEEP_WINDOW: PowerShell waits for a key after stop so Explorer's
+REM `cmd /c` window does not vanish. This file MUST end with the
+REM powershell line — any pause/exit after it makes cmd.exe show
+REM "Terminate batch job (Y/N)?" on Ctrl+C and often swallows keyboard input.
+set STOCK_ANALYZER_KEEP_WINDOW=1
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1"
-set ERR=%ERRORLEVEL%
-echo.
-if not "%ERR%"=="0" (
-  echo [ERROR] Exit code %ERR%. Scroll up for the Chinese messages.
-  echo Log files are under data\logs
-) else (
-  echo Server stopped. You can close this window.
-)
-echo.
-pause
-exit /b %ERR%

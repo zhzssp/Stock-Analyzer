@@ -54,6 +54,284 @@ function Start-RunLog {
     }
 }
 
+# Ctrl+C used to interrupt PowerShell mid-taskkill; cmd.exe then asked
+# "Terminate batch job (Y/N)?" while Quick Edit / a dying child still owned
+# stdin, so the user could not type Y. Closing the window never ran finally.
+# Native ctrl handler + job object KILL_ON_JOB_CLOSE cover both paths.
+$saRunHostSrc = @"
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+
+public static class SaRunHost {
+    public const uint CTRL_C = 0;
+    public const uint CTRL_BREAK = 1;
+    public const uint CTRL_CLOSE = 2;
+    public const uint CTRL_LOGOFF = 5;
+    public const uint CTRL_SHUTDOWN = 6;
+    public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+    public const int JobObjectExtendedLimitInformation = 9;
+    public const uint ENABLE_QUICK_EDIT = 0x0040;
+    public const uint ENABLE_EXTENDED_FLAGS = 0x0080;
+    public const int STD_INPUT_HANDLE = -10;
+    public const uint PROCESS_ALL_ACCESS = 0x001F0FFF;
+
+    public static volatile bool StopRequested;
+    public static volatile bool Closing;
+    public static int ChildPid;
+    public static string PidPath;
+    public static uint SavedConsoleMode;
+    public static bool HaveSavedConsoleMode;
+    public static HandlerRoutine HandlerRef;
+
+    public delegate bool HandlerRoutine(uint ctrlType);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetConsoleCtrlHandler(HandlerRoutine handler, bool add);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetInformationJobObject(IntPtr hJob, int jobObjectInfoClass, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IO_COUNTERS {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    public static bool OnCtrl(uint ctrlType) {
+        if (ctrlType == CTRL_C || ctrlType == CTRL_BREAK) {
+            StopRequested = true;
+            return true;
+        }
+        if (ctrlType == CTRL_CLOSE || ctrlType == CTRL_LOGOFF || ctrlType == CTRL_SHUTDOWN) {
+            Closing = true;
+            StopRequested = true;
+            KillChild();
+            return true;
+        }
+        return false;
+    }
+
+    public static void Register() {
+        if (HandlerRef != null) return;
+        HandlerRef = new HandlerRoutine(OnCtrl);
+        SetConsoleCtrlHandler(HandlerRef, true);
+    }
+
+    public static void RequestStop() {
+        StopRequested = true;
+    }
+
+    public static void DisableQuickEdit() {
+        IntPtr h = GetStdHandle(STD_INPUT_HANDLE);
+        uint mode;
+        if (h == IntPtr.Zero || h == new IntPtr(-1)) return;
+        if (!GetConsoleMode(h, out mode)) return;
+        if (!HaveSavedConsoleMode) {
+            SavedConsoleMode = mode;
+            HaveSavedConsoleMode = true;
+        }
+        uint next = (mode | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT;
+        SetConsoleMode(h, next);
+    }
+
+    public static void RestoreConsoleMode() {
+        if (!HaveSavedConsoleMode) return;
+        IntPtr h = GetStdHandle(STD_INPUT_HANDLE);
+        if (h == IntPtr.Zero || h == new IntPtr(-1)) return;
+        SetConsoleMode(h, SavedConsoleMode);
+    }
+
+    public static IntPtr CreateKillOnCloseJob() {
+        IntPtr job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) return IntPtr.Zero;
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        int length = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+        IntPtr ptr = Marshal.AllocHGlobal(length);
+        try {
+            Marshal.StructureToPtr(info, ptr, false);
+            if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ptr, (uint)length)) {
+                CloseHandle(job);
+                return IntPtr.Zero;
+            }
+        } finally {
+            Marshal.FreeHGlobal(ptr);
+        }
+        return job;
+    }
+
+    public static bool AssignPidToJob(IntPtr job, int pid) {
+        if (job == IntPtr.Zero || pid <= 0) return false;
+        IntPtr h = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
+        if (h == IntPtr.Zero) return false;
+        try {
+            return AssignProcessToJobObject(job, h);
+        } finally {
+            CloseHandle(h);
+        }
+    }
+
+    public static void CloseJob(IntPtr job) {
+        if (job == IntPtr.Zero) return;
+        try { CloseHandle(job); } catch { }
+    }
+
+    public static void KillChild() {
+        int pid = ChildPid;
+        if (pid > 0) {
+            try {
+                string rootDir = Environment.GetEnvironmentVariable("SystemRoot");
+                if (string.IsNullOrEmpty(rootDir)) rootDir = "C:\\Windows";
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = Path.Combine(rootDir, "System32", "taskkill.exe");
+                psi.Arguments = "/PID " + pid.ToString() + " /T /F";
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                Process p = Process.Start(psi);
+                if (p != null) p.WaitForExit(3000);
+            } catch { }
+            try {
+                Process proc = Process.GetProcessById(pid);
+                if (!proc.HasExited) proc.Kill();
+            } catch { }
+        }
+        try {
+            if (!string.IsNullOrEmpty(PidPath) && File.Exists(PidPath)) File.Delete(PidPath);
+        } catch { }
+    }
+}
+"@
+
+$script:JobHandle = [IntPtr]::Zero
+$script:PidFile = Join-Path $root "data\run\server.pid"
+$script:HostReady = $false
+
+function Initialize-SaRunHost {
+    if ("SaRunHost" -as [type]) {
+        $script:HostReady = $true
+    } else {
+        try {
+            Add-Type -TypeDefinition $saRunHostSrc -Language CSharp -ErrorAction Stop
+            $script:HostReady = $true
+        } catch {
+            Write-Warn "无法注册控制台关闭处理：$($_.Exception.Message)"
+            Write-Warn "关掉窗口时可能留下 python 进程；下次启动会再清理。"
+            $script:HostReady = $false
+        }
+    }
+    if (-not $script:HostReady) { return }
+    [SaRunHost]::PidPath = $script:PidFile
+    [SaRunHost]::Register()
+    [SaRunHost]::DisableQuickEdit()
+    try {
+        [Console]::TreatControlCAsInput = $false
+        [Console]::add_CancelKeyPress({
+            param($sender, $e)
+            $e.Cancel = $true
+            [SaRunHost]::RequestStop()
+        })
+    } catch { }
+    try {
+        Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
+            try { [SaRunHost]::KillChild() } catch { }
+        } | Out-Null
+    } catch { }
+}
+
+function Test-SaStopRequested {
+    if (-not $script:HostReady) { return $false }
+    return [bool][SaRunHost]::StopRequested
+}
+
+function Test-ControlCExitCode($Value) {
+    if ($null -eq $Value) { return $false }
+    try {
+        $n = [int]$Value
+    } catch {
+        return $false
+    }
+    return ($n -eq -1073741510 -or $n -eq 3221225786)
+}
+
+function Wait-KeepWindow {
+    if ($env:STOCK_ANALYZER_KEEP_WINDOW -ne "1") { return }
+    if ($script:HostReady -and [SaRunHost]::Closing) { return }
+    Write-Host ""
+    Write-Host "按任意键关闭本窗口..."
+    try {
+        if ($script:HostReady) { [SaRunHost]::RestoreConsoleMode() }
+        while ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true) }
+        $null = [Console]::ReadKey($true)
+    } catch {
+        Start-Sleep -Seconds 6
+    }
+}
+
+function Clear-PidFile {
+    if ($script:PidFile -and (Test-Path -LiteralPath $script:PidFile)) {
+        try { Remove-Item -LiteralPath $script:PidFile -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
+function Stop-ProcessTree([int]$ProcessId) {
+    if ($ProcessId -le 0) { return }
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & taskkill.exe /PID $ProcessId /T /F 2>$null | Out-Null
+    $ErrorActionPreference = $prev
+}
+
 function Get-SafeText($Value) {
     if ($null -eq $Value) { return "" }
     try { return ([string]$Value).Trim() } catch { return "" }
@@ -187,6 +465,7 @@ $code = 0
 $proc = $null
 
 try {
+    Initialize-SaRunHost
     Write-Step "[1/4] 检查运行环境"
     $skipSetup = ($env:STOCK_ANALYZER_SKIP_SETUP -eq "1")
     if ($skipSetup -and (Test-VenvPython $venvPy)) {
@@ -258,14 +537,6 @@ try {
     $url = "http://127.0.0.1:$port"
     Write-Info "访问地址将是 $url"
 
-    function Stop-ProcessTree([int]$ProcessId) {
-        if ($ProcessId -le 0) { return }
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        & taskkill.exe /PID $ProcessId /T /F 2>$null | Out-Null
-        $ErrorActionPreference = $prev
-    }
-
     function Get-ListenPids([int]$Port) {
         $ids = New-Object System.Collections.Generic.List[int]
         $pattern = ":$Port\s+\S+\s+LISTENING\s+(\d+)\s*$"
@@ -316,6 +587,17 @@ try {
     }
 
     Write-Step "[3/4] 清理上次没关干净的服务"
+    if (Test-Path -LiteralPath $script:PidFile) {
+        $oldPidText = Get-SafeText (Get-Content -LiteralPath $script:PidFile -TotalCount 1 -ErrorAction SilentlyContinue)
+        if ($oldPidText -match '^\d+$') {
+            $oldPid = [int]$oldPidText
+            if (Test-OurServerProcess $oldPid) {
+                Write-Warn "发现上次未关闭的服务 PID $oldPid（来自 pid 文件），正在结束"
+                Stop-ProcessTree $oldPid
+            }
+        }
+        Clear-PidFile
+    }
     $ids = New-Object System.Collections.Generic.List[int]
     foreach ($processId in Get-OurServerPids) {
         if (-not $ids.Contains($processId)) { $ids.Add($processId) }
@@ -359,6 +641,21 @@ try {
         exit 1
     }
     Write-Ok "进程已启动，PID $($proc.Id)"
+    try {
+        $runDir = Split-Path -Parent $script:PidFile
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath $script:PidFile -Value ([string]$proc.Id) -Encoding ASCII
+    } catch { }
+    if ($script:HostReady) {
+        [SaRunHost]::ChildPid = [int]$proc.Id
+        [SaRunHost]::PidPath = $script:PidFile
+        $script:JobHandle = [SaRunHost]::CreateKillOnCloseJob()
+        if ($script:JobHandle -eq [IntPtr]::Zero) {
+            Write-Warn "未能创建作业对象；直接关掉窗口时，下次启动会再清理残留进程"
+        } elseif (-not [SaRunHost]::AssignPidToJob($script:JobHandle, [int]$proc.Id)) {
+            Write-Warn "未能把服务进程加入作业对象；关掉窗口时将改用强制结束"
+        }
+    }
     Write-Info "正在等待端口 $port 就绪（首次启动可能要几十秒）..."
 
     $ready = $false
@@ -366,6 +663,10 @@ try {
     $lastPing = Get-Date
     $started = Get-Date
     while ($proc -and -not $proc.HasExited -and (Get-Date) -lt $deadline) {
+        if (Test-SaStopRequested) {
+            Write-Info "收到停止请求，正在取消启动..."
+            break
+        }
         $listening = @(Get-ListenPids $port)
         if ($listening.Count -gt 0) {
             $ready = $true
@@ -381,42 +682,53 @@ try {
         $proc.Refresh()
     }
 
-    if ($proc.HasExited) {
+    if (Test-SaStopRequested) {
+        $code = 0
+    } elseif ($proc -and $proc.HasExited) {
         $code = $proc.ExitCode
-        Write-Fail "服务进程已退出，退出码 $code"
-        Write-Host "请向上滚动，查看红色或英文报错，把完整内容发给工作人员。"
-        Write-LogHint
-        exit $code
-    }
-
-    if ($ready) {
-        Write-Host ""
-        Write-Host "========================================" -ForegroundColor Green
-        Write-Host "  启动成功，可以打开浏览器了" -ForegroundColor Green
-        Write-Host "========================================" -ForegroundColor Green
+        if (Test-ControlCExitCode $code) {
+            $code = 0
+        } else {
+            Write-Fail "服务进程已退出，退出码 $code"
+            Write-Host "请向上滚动，查看红色或英文报错，把完整内容发给工作人员。"
+            Write-LogHint
+            exit $code
+        }
     } else {
-        Write-Warn "60 秒内还没检测到端口 $port，服务可能仍在加载"
-        Write-Warn "请再等一会儿再试浏览器；一直打不开就把本窗口内容发给工作人员"
+        if ($ready) {
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Green
+            Write-Host "  启动成功，可以打开浏览器了" -ForegroundColor Green
+            Write-Host "========================================" -ForegroundColor Green
+        } else {
+            Write-Warn "60 秒内还没检测到端口 $port，服务可能仍在加载"
+            Write-Warn "请再等一会儿再试浏览器；一直打不开就把本窗口内容发给工作人员"
+            Write-Host ""
+        }
+
+        Write-Host "  请在浏览器地址栏输入（不要去搜索）："
+        Write-Host "    $url" -ForegroundColor Yellow
+        Write-Host "  登录账号: $user"
+        Write-Host "  登录密码: $pass"
         Write-Host ""
-    }
+        Write-Host "  *** 请不要关闭本窗口，不要点右上角的叉 ***" -ForegroundColor Yellow
+        Write-Host "  用完后：用鼠标点一下本窗口，按 Ctrl+C 停止（不必回答 Terminate batch job）。"
+        Write-Host "  如果直接点窗口右上角关闭，服务进程也会一并结束。"
+        Write-Host ""
+        Write-LogHint
+        Write-Host ""
 
-    Write-Host "  请在浏览器地址栏输入（不要去搜索）："
-    Write-Host "    $url" -ForegroundColor Yellow
-    Write-Host "  登录账号: $user"
-    Write-Host "  登录密码: $pass"
-    Write-Host ""
-    Write-Host "  *** 请不要关闭本窗口，不要点右上角的叉 ***" -ForegroundColor Yellow
-    Write-Host "  用完后：用鼠标点一下本窗口，按 Ctrl+C 停止。"
-    Write-Host ""
-    Write-LogHint
-    Write-Host ""
-
-    while ($proc -and -not $proc.HasExited) {
-        Start-Sleep -Milliseconds 300
-        $proc.Refresh()
-    }
-    if ($proc -and $null -ne $proc.ExitCode) {
-        $code = $proc.ExitCode
+        while ($proc -and -not $proc.HasExited) {
+            if (Test-SaStopRequested) { break }
+            Start-Sleep -Milliseconds 300
+            $proc.Refresh()
+        }
+        if ($proc -and $proc.HasExited -and $null -ne $proc.ExitCode) {
+            $code = $proc.ExitCode
+        }
+        if (Test-SaStopRequested -or (Test-ControlCExitCode $code)) {
+            $code = 0
+        }
     }
 } catch {
     $code = 1
@@ -426,24 +738,39 @@ try {
     Write-Host "请把本窗口全文发给工作人员。"
     Write-LogHint
 } finally {
+    $closingWindow = $false
+    try { if ($script:HostReady) { $closingWindow = [bool][SaRunHost]::Closing } } catch { }
     if ($proc) {
         try { $proc.Refresh() } catch { }
         if (-not $proc.HasExited) {
-            Write-Host ""
-            Write-Warn "正在停止服务 PID $($proc.Id) ..."
-            if ($proc.Id -gt 0) {
-                $prev = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
-                $ErrorActionPreference = $prev
+            if (-not $closingWindow) {
+                Write-Host ""
+                Write-Warn "正在停止服务 PID $($proc.Id) ..."
             }
-            Write-Ok "服务已停止"
-        } else {
+            if ($script:HostReady) {
+                [SaRunHost]::ChildPid = [int]$proc.Id
+                [SaRunHost]::KillChild()
+            } elseif ($proc.Id -gt 0) {
+                Stop-ProcessTree $proc.Id
+            }
+            try { $proc.WaitForExit(4000) } catch { }
+            if (-not $closingWindow) { Write-Ok "服务已停止" }
+        } elseif (-not $closingWindow) {
             Write-Host ""
             Write-Info "服务已结束（退出码 $code）"
         }
+    } elseif ($script:HostReady) {
+        try { [SaRunHost]::KillChild() } catch { }
     }
+    Clear-PidFile
+    if ($script:JobHandle -ne [IntPtr]::Zero -and $script:HostReady) {
+        try { [SaRunHost]::CloseJob($script:JobHandle) } catch { }
+        $script:JobHandle = [IntPtr]::Zero
+    }
+    try { if ($script:HostReady) { [SaRunHost]::RestoreConsoleMode() } } catch { }
     try { $Host.UI.RawUI.WindowTitle = "Stock-Analyzer 已停止" } catch { }
     try { Stop-Transcript | Out-Null } catch { }
+    if (Test-ControlCExitCode $code) { $code = 0 }
+    Wait-KeepWindow
 }
 exit $code
