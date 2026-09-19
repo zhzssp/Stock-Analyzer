@@ -15,9 +15,9 @@ def _num(value) -> float | None:
         return None
 
 
-def normalize_holder(item: dict) -> dict:
+def normalize_holder(item: dict, catalog: list[dict] | None = None) -> dict:
     name = str(item.get("Gdmc") or item.get("gdmc") or item.get("name") or "").strip()
-    inst = match_institution(name)
+    inst = match_institution(name, catalog)
     return {
         "name": name,
         "shares": _num(item.get("Cgsl") or item.get("cgsl") or item.get("shares")),
@@ -28,12 +28,12 @@ def normalize_holder(item: dict) -> dict:
     }
 
 
-def normalize_holders(items: list | None) -> list[dict]:
+def normalize_holders(items: list | None, catalog: list[dict] | None = None) -> list[dict]:
     out = []
     for item in items or []:
         if not isinstance(item, dict):
             continue
-        row = normalize_holder(item)
+        row = normalize_holder(item, catalog)
         if row["name"]:
             out.append(row)
     return out

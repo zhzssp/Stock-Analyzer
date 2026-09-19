@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from src.agents.llm import chat_completions, chat_completions_stream, llm_available, llm_supports_tools
+from src.agents.policy import load_policy, research_hints
 from src.tools.registry import registry
 from src.tools.resolve import mentioned, watch_instruments
 from src.tools.table_parse import looks_like_table
@@ -23,7 +24,8 @@ TABLE_HINTS = ("自选表", "整表", "查表", "自选现在")
 PASTE_HINTS = ("粘贴", "这张表", "这份表", "上传的", "附件")
 WAREHOUSE_HINTS = ("仓库", "日线", "K线", "k线", "历史行情", "历史数据", "缓存")
 API_HINTS = ("接口", "实时", "实盘", "查一下", "按代码")
-RESEARCH_HINTS = ("看市场", "趋势", "盘面", "自选相关", "今日市场", "今天市场")
+ACTION_HINTS = ("该不该", "减仓", "买入", "买区", "决策卡", "成本", "作废", "持有逻辑")
+RESEARCH_HINTS = research_hints()
 
 
 def _has(text: str, keys: tuple[str, ...]) -> bool:
@@ -84,10 +86,11 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
     wants_paste = has_paste or _has(question, PASTE_HINTS)
     wants_warehouse = _has(question, WAREHOUSE_HINTS)
     wants_api = _has(question, API_HINTS)
-    wants_research = _has(question, RESEARCH_HINTS)
+    wants_research = _has(question, research_hints())
     wants_funds = _has(question, FUND_HINTS)
     wants_futures = _has(question, FUTURES_HINTS)
     wants_export = _has(question, EXPORT_HINTS)
+    wants_action = _has(question, ACTION_HINTS)
 
     if not any(
         (
@@ -108,6 +111,7 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
             wants_funds,
             wants_futures,
             wants_export,
+            wants_action,
         )
     ):
         if insts:
@@ -137,6 +141,9 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
         add("quote")
         add("company_profile")
         add("capital_flow")
+        add("watch_card")
+    if wants_action:
+        add("watch_card")
     if wants_paste:
         add("excel_parse", {"question": question})
     if wants_warehouse:
@@ -205,12 +212,7 @@ def llm_plan(question: str, observations: list[dict], called: set[str], ctx) -> 
     messages = [
         {
             "role": "system",
-            "content": (
-                "你是本机股票研究助手，通过 DeepSeek 兼容的 Tool 取数。"
-                "禁止编造价格、财务或离底数字。没有数据就说没有。"
-                "粘贴表用 excel_parse；仓库日线/档案用 warehouse_get；按参数查实盘用 market_fetch。"
-                + extra
-            ),
+            "content": (load_policy(getattr(ctx, "agent_name", None) or "analyst").plan_prompt + extra),
         },
     ]
     for turn in (getattr(ctx, "history", None) or [])[-6:]:
@@ -260,30 +262,31 @@ def _cites(observations: list[dict]) -> list[dict]:
     return cites
 
 
-def write_answer(question: str, observations: list[dict]) -> tuple[str, list[dict]]:
+def write_answer(question: str, observations: list[dict], agent: str = "analyst") -> tuple[str, list[dict]]:
     cites = _cites(observations)
     if not observations:
         return "没有调用到可用 Tool，也没有现成数字可报。请点名自选里的股票，或先导出一张表。", cites
     drafted = _draft_lines(observations)
     if llm_available():
-        prose = _llm_write(question, drafted)
+        prose = _llm_write(question, drafted, agent)
         if prose:
             return prose, cites
     return "\n".join(drafted) if drafted else "Tool 已执行，但没有可展示的字段。", cites
 
 
-def write_answer_iter(question: str, observations: list[dict]):
+def write_answer_iter(question: str, observations: list[dict], agent: str = "analyst"):
     cites = _cites(observations)
     if not observations:
         yield "没有调用到可用 Tool，也没有现成数字可报。请点名自选里的股票，或先导出一张表。", cites
         return
     drafted = _draft_lines(observations)
     fallback = "\n".join(drafted) if drafted else "Tool 已执行，但没有可展示的字段。"
+    prompt = load_policy(agent).write_prompt
     if llm_available():
         acc = []
         for chunk in chat_completions_stream(
             [
-                {"role": "system", "content": "只用下面 Tool 数字回答，禁止编造。没有的字段直说没有。"},
+                {"role": "system", "content": prompt},
                 {"role": "user", "content": question + "\n\n已取到：\n" + "\n".join(drafted)},
             ]
         ):
@@ -291,17 +294,17 @@ def write_answer_iter(question: str, observations: list[dict]):
             yield chunk, cites
         if acc and "".join(acc).strip():
             return
-        prose = _llm_write(question, drafted)
+        prose = _llm_write(question, drafted, agent)
         if prose:
             yield prose, cites
             return
     yield fallback, cites
 
 
-def _llm_write(question: str, drafted: list[str]) -> str | None:
+def _llm_write(question: str, drafted: list[str], agent: str = "analyst") -> str | None:
     msg = chat_completions(
         [
-            {"role": "system", "content": "只用下面 Tool 数字回答，禁止编造。没有的字段直说没有。"},
+            {"role": "system", "content": load_policy(agent).write_prompt},
             {"role": "user", "content": question + "\n\n已取到：\n" + "\n".join(drafted)},
         ]
     )
@@ -391,6 +394,25 @@ def _draft_lines(observations: list[dict]) -> list[str]:
             lines.append(f"查询引擎返回 {data.get('count')} 只。前几只：{'，'.join(bits)}。")
         elif tool == "universe" and isinstance(data, list):
             lines.append("当前自选：" + "、".join(f"{x.get('name')} {x.get('code')}" for x in data))
+        elif tool == "watch_card" and isinstance(data, list):
+            for row in data:
+                if not row.get("filled"):
+                    lines.append(f"{row.get('name')} 未填决策卡，监控仍用统计底 / 默认目标卖价。")
+                    continue
+                bits = []
+                if row.get("group"):
+                    bits.append(f"分组 {row.get('group')}")
+                if row.get("thesis"):
+                    bits.append(f"逻辑 {row.get('thesis')}")
+                if row.get("buy_low") is not None or row.get("buy_high") is not None:
+                    bits.append(f"买区 {row.get('buy_low') or '—'}–{row.get('buy_high') or '—'}")
+                if row.get("reduce_price") is not None:
+                    bits.append(f"减仓 {row.get('reduce_price')}")
+                if row.get("cost") is not None:
+                    bits.append(f"成本 {row.get('cost')}")
+                if row.get("invalid_if"):
+                    bits.append(f"作废条件 {row.get('invalid_if')}")
+                lines.append(f"{row.get('name')} 决策卡：{'；'.join(bits) or '已填但无数字'}。")
         elif tool == "bottom" and isinstance(data, list):
             for row in data:
                 if row.get("low_long") is None:

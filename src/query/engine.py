@@ -5,6 +5,7 @@ from typing import Any
 from src.market.client import MarketClient
 from src.market.normalize import Instrument
 from src.query.bottom import compute_bottom
+from src.query.cards import derive_card_metrics
 from src.query.registry import registry
 
 
@@ -16,14 +17,28 @@ class QueryEngine:
 
     def fields(self) -> list[dict]:
         return [
-            {"key": s.key, "label": s.label, "group": s.group}
+            {
+                "key": s.key,
+                "label": s.label,
+                "group": s.group,
+                "alertable": s.alertable,
+                "realtime": s.realtime,
+                "default": s.default,
+            }
             for s in registry.all()
         ]
 
-    def run(self, instruments: list[Instrument], field_keys: list[str] | None = None) -> list[dict]:
+    def run(
+        self,
+        instruments: list[Instrument],
+        field_keys: list[str] | None = None,
+        cards: dict[str, dict] | None = None,
+    ) -> list[dict]:
         keys = field_keys or registry.default_keys()
         specs = [registry.get(k) for k in keys]
         need = {dep for spec in specs for dep in spec.requires}
+        if any(s.group == "card" for s in specs):
+            need.add("quote")
         quotes = self.market.quotes_many(instruments) if "quote" in need else {}
         rows = []
         for inst in instruments:
@@ -54,6 +69,12 @@ class QueryEngine:
                 "name": inst.name,
                 "market": inst.market,
             }
+            derived = derive_card_metrics(
+                (bag["quote"] or {}).get("p"),
+                (cards or {}).get(inst.code6),
+                (bag["bottom"] or {}).get("target"),
+            )
+            bag["card"] = derived
             for spec in specs:
                 row[spec.key] = self._value(spec.key, inst, bag)
             rows.append(row)
@@ -95,5 +116,14 @@ class QueryEngine:
             "multiple": b.get("multiple"),
             "target": b.get("target"),
             "low_note": b.get("note"),
+            "buy_low": bag.get("card", {}).get("buy_low"),
+            "buy_high": bag.get("card", {}).get("buy_high"),
+            "reduce_at": bag.get("card", {}).get("reduce_at"),
+            "cost": bag.get("card", {}).get("cost"),
+            "vs_cost": bag.get("card", {}).get("vs_cost"),
+            "dist_buy": bag.get("card", {}).get("dist_buy"),
+            "dist_reduce": bag.get("card", {}).get("dist_reduce"),
+            "thesis": bag.get("card", {}).get("thesis") or "",
+            "reduce_for_rule": bag.get("card", {}).get("reduce_for_rule"),
         }
         return mapping.get(key)

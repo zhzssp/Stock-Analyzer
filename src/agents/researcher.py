@@ -1,28 +1,43 @@
 from __future__ import annotations
 
 from src.agents.runner import collect_agent, iter_agent
+from src.agents.policy import load_policy
 from src.platform.bus import bus
 from src.tools.base import ToolContext
 
 
-def _with_hits(question: str) -> str:
-    hits = bus.recent("watch.hit", limit=8)
-    if not hits:
+def _with_context(question: str, ctx: ToolContext | None = None) -> str:
+    policy = load_policy("researcher")
+    extra: list[str] = []
+    if policy.inject_watch_hits:
+        hits = bus.recent("watch.hit", limit=8)
+        bits = []
+        for msg in hits:
+            payload = msg.get("payload") or {}
+            bits.append(payload.get("title") or payload.get("job_key") or msg.get("id"))
+        if bits:
+            extra.append("最近盯盘命中：" + "；".join(str(b) for b in bits if b))
+    if policy.inject_today_queue and ctx is not None and ctx.db is not None:
+        from src.agents.queue import today_queue
+
+        queue = today_queue(ctx.db, ctx.user_id)
+        if queue:
+            extra.append(
+                "今日该看："
+                + "；".join(f"{q.get('title')}（{q.get('code6') or ''}）" for q in queue[:12])
+            )
+    if not extra:
         return question
-    bits = []
-    for msg in hits:
-        payload = msg.get("payload") or {}
-        bits.append(payload.get("title") or payload.get("job_key") or msg.get("id"))
-    return question + "\n\n最近盯盘命中：" + "；".join(str(b) for b in bits if b)
+    return question + "\n\n" + "\n".join(extra)
 
 
 def run_researcher(question: str, ctx: ToolContext, attachments: list[dict] | None = None, history: list[dict] | None = None) -> dict:
-    return collect_agent(_with_hits(question), ctx, agent="researcher", attachments=attachments, history=history)
+    return collect_agent(_with_context(question, ctx), ctx, agent="researcher", attachments=attachments, history=history)
 
 
 def stream_researcher(question: str, ctx: ToolContext, attachments: list[dict] | None = None, history: list[dict] | None = None):
     yield from iter_agent(
-        _with_hits(question),
+        _with_context(question, ctx),
         ctx,
         agent="researcher",
         attachments=attachments,

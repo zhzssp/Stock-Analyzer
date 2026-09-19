@@ -6,14 +6,26 @@ from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import router
 from src.config import ROOT, settings
-from src.db import Base, SessionLocal, engine
-from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, Snapshot, User, WatchItem  # noqa: F401
+from src.db import SessionLocal, engine
+from src.models import (  # noqa: F401
+    AgentSession,
+    Alert,
+    Artifact,
+    FieldPref,
+    MonitorJob,
+    MonitorPref,
+    Snapshot,
+    User,
+    UserRule,
+    WatchItem,
+)
 from src.platform.channels import attach as attach_channels
+from src.platform.migrate import migrate_schema
 from src.platform.seed import bootstrap
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
+    migrate_schema(engine)
     db = SessionLocal()
     try:
         bootstrap(db)

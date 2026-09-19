@@ -16,7 +16,13 @@ def query_run(args: dict, ctx: ToolContext) -> ToolResult:
     if not insts:
         return ToolResult(ok=False, error="自选为空，也没有提到具体股票", source="query_run", cite="查询引擎")
     keys = args.get("fields") or fields.default_keys()
-    rows = ctx.engine.run(insts, keys)
+    cards = {}
+    if ctx.db is not None:
+        from src.models import WatchItem
+        from src.query.cards import card_dict
+
+        cards = {i.code6: card_dict(i) for i in ctx.db.query(WatchItem).filter_by(user_id=ctx.user_id).all()}
+    rows = ctx.engine.run(insts, keys, cards=cards)
     compact = []
     keep = {"name", "code", "price", "pct", "industry", "holders", "yffy", "eps", "pe", "net"}
     for row in rows[:40]:

@@ -51,6 +51,8 @@ def test_watcher_jobs_alerts_and_disabled_slots():
         assert by_key["capital-flow"]["enabled"] is True
         assert by_key["corp-events"]["enabled"] is True
         assert by_key["near-bottom"]["enabled"] is True
+        assert by_key["near-target"]["enabled"] is True
+        assert by_key["near-bottom"]["params"]["off_low_max"] == 8
         assert by_key["futures"]["enabled"] is False
         assert "期货" in by_key["futures"]["reason"]
 

@@ -43,7 +43,13 @@ def fund_holding(args: dict, ctx: ToolContext) -> ToolResult:
     for inst in insts:
         holdings = ctx.market.fund_holdings(inst)
         names = [h.get("name") or "" for h in holdings]
-        hits = match_many(names, ("fund", "etf", "stabilizer", "ib", "swf"))
+        catalog = None
+        if ctx.db is not None and ctx.user_id:
+            from src.platform.monitor_prefs import institution_catalog_for
+
+            catalog = institution_catalog_for(ctx.db, ctx.user_id)
+        hits = match_many(names, ("fund", "etf", "stabilizer", "ib", "swf"), catalog)
+
         rows.append(
             {
                 "name": inst.name,

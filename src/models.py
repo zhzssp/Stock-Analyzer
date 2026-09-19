@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db import Base
@@ -25,6 +25,13 @@ class WatchItem(Base):
     code_full: Mapped[str] = mapped_column(String(32))
     name: Mapped[str] = mapped_column(String(64), default="")
     group_name: Mapped[str] = mapped_column(String(32), default="自选")
+    thesis: Mapped[str] = mapped_column(Text, default="")
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    shares: Mapped[float | None] = mapped_column(Float, nullable=True)
+    buy_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    buy_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reduce_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    invalid_if: Mapped[str] = mapped_column(Text, default="")
 
 
 class Artifact(Base):
@@ -71,6 +78,30 @@ class MonitorJob(Base):
     name: Mapped[str] = mapped_column(String(64))
     enabled: Mapped[int] = mapped_column(Integer, default=1)
     reason: Mapped[str] = mapped_column(String(128), default="")
+    params: Mapped[str] = mapped_column(Text, default="{}")
+    kind: Mapped[str] = mapped_column(String(16), default="template")
+    schedule: Mapped[str] = mapped_column(String(16), default="eod")
+    severity: Mapped[str] = mapped_column(String(16), default="watch")
+
+
+class MonitorPref(Base):
+    __tablename__ = "monitor_prefs"
+    __table_args__ = (UniqueConstraint("user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    institutions: Mapped[str] = mapped_column(Text, default="")
+
+
+class UserRule(Base):
+    __tablename__ = "user_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    name: Mapped[str] = mapped_column(String(64), default="")
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    spec: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class AgentSession(Base):
@@ -95,3 +126,6 @@ class Alert(Base):
     title: Mapped[str] = mapped_column(String(128))
     detail: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    severity: Mapped[str] = mapped_column(String(16), default="watch")
+    rule_id: Mapped[str] = mapped_column(String(64), default="")

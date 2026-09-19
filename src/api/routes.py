@@ -6,11 +6,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from src.agents.graph import ANALYST_TOOLS, run_analyst
+from src.agents.graph import run_analyst
 from src.agents.llm import llm_status
 from src.agents.planner import llm_available
+from src.agents.policy import policies_public, reload_policies, tools_for
+from src.agents.queue import today_queue
 from src.agents.researcher import run_researcher, stream_researcher
-from src.agents.runner import RESEARCHER_TOOLS, iter_agent, pick_agent
+from src.agents.rules import GROUPS, metric_specs, validate_custom_spec
+from src.agents.runner import iter_agent, pick_agent
 from src.agents.sessions import (
     append_turns,
     create_session,
@@ -22,18 +25,20 @@ from src.agents.sessions import (
 from src.platform.bus import bus
 from src.platform.channels import catalog as channel_catalog
 from src.tools.loader import load_manifests
-from src.agents.watcher import ensure_jobs, run_watcher
+from src.agents.watcher import ensure_jobs, job_payload, rule_payload, run_watcher
 from src.api.deps import current_user
 from src.db import get_db
 from src.config import settings
 from src.db import SessionLocal
 from src.market.client import MarketClient, resolve_instruments
 from src.market.normalize import infer_market
-from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, User, WatchItem
+from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, MonitorPref, User, UserRule, WatchItem
 from src.platform.export_xlsx import write_query_xlsx
-from src.platform.jobs import job_payload, jobs
-from src.platform.pools import catalog, pool_label, resolve_pool
+from src.platform.jobs import job_payload as bg_job_payload, jobs
+from src.platform.monitor_prefs import pref_payload
+from src.platform.pools import catalog, resolve_pool
 from src.platform.security import issue_token, verify_password
+from src.query.cards import card_dict
 from src.query.engine import QueryEngine
 from src.query.registry import registry
 from src.tools import registry as tool_registry
@@ -101,6 +106,44 @@ class JobToggleIn(BaseModel):
     enabled: bool
 
 
+class JobPatchIn(BaseModel):
+    enabled: bool | None = None
+    params: dict | None = None
+    schedule: str | None = None
+
+
+class CardIn(BaseModel):
+    thesis: str = ""
+    cost: float | None = None
+    shares: float | None = None
+    buy_low: float | None = None
+    buy_high: float | None = None
+    reduce_price: float | None = None
+    invalid_if: str = ""
+    group: str | None = None
+
+
+class RuleIn(BaseModel):
+    name: str = ""
+    enabled: bool = True
+    spec: dict = {}
+
+
+class AlertPatchIn(BaseModel):
+    status: str
+
+
+class MonitorPrefIn(BaseModel):
+    selected: list[str] = []
+    custom: list[dict] = []
+
+
+class PreviewIn(BaseModel):
+    spec: dict | None = None
+    job_key: str | None = None
+    persist: bool = False
+
+
 @router.post("/auth/login")
 def login(body: LoginIn, db: Session = Depends(get_db)):
     user = db.query(User).filter_by(username=body.username).first()
@@ -130,15 +173,25 @@ def health():
             "llm": llm_available(),
             "llm_status": llm_status(),
             "tools": [s.id for s in tool_registry.enabled()],
-            "analyst_tools": ANALYST_TOOLS,
-            "researcher_tools": RESEARCHER_TOOLS,
+            "analyst_tools": tools_for("analyst"),
+            "researcher_tools": tools_for("researcher"),
             "channels": channel_catalog(),
+            "policies": policies_public(),
         },
     }
 
 
 def _watch_payload(item: WatchItem) -> dict:
     suffix = item.code_full.split(".")[-1] if "." in item.code_full else ""
+    card = card_dict(item)
+    filled = bool(
+        card.get("thesis")
+        or card.get("cost") is not None
+        or card.get("buy_low") is not None
+        or card.get("buy_high") is not None
+        or card.get("reduce_price") is not None
+        or card.get("invalid_if")
+    )
     return {
         "code6": item.code6,
         "code_full": item.code_full,
@@ -146,7 +199,13 @@ def _watch_payload(item: WatchItem) -> dict:
         "group": item.group_name,
         "market": infer_market(item.code6, suffix),
         "exchange": suffix.upper() if suffix else "",
+        "card": card,
+        "card_filled": filled,
     }
+
+
+def _cards_map(db: Session, user: User) -> dict[str, dict]:
+    return {i.code6: card_dict(i) for i in db.query(WatchItem).filter_by(user_id=user.id).all()}
 
 
 def _codes_from_items(items: list[dict]) -> tuple[list[str], dict[str, str]]:
@@ -163,17 +222,34 @@ def get_watchlist(user: User = Depends(current_user), db: Session = Depends(get_
 
 @router.put("/watchlist")
 def put_watchlist(body: WatchIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    previous = {i.code6: card_dict(i) | {"group": i.group_name} for i in db.query(WatchItem).filter_by(user_id=user.id).all()}
     db.query(WatchItem).filter_by(user_id=user.id).delete()
     codes, names = _codes_from_items(body.items)
     insts = resolve_instruments(codes, market)
     saved = []
     for inst in insts:
+        group = "自选"
+        for raw in body.items:
+            token = raw.get("code6") or raw.get("code") or ""
+            if token == inst.code6 or raw.get("code_full") == inst.code_full:
+                group = raw.get("group") or raw.get("group_name") or "自选"
+                break
+        old = previous.get(inst.code6) or {}
+        if group not in GROUPS:
+            group = old.get("group") or "自选"
         item = WatchItem(
             user_id=user.id,
             code6=inst.code6,
             code_full=inst.code_full,
             name=inst.name or names.get(inst.code6, ""),
-            group_name="自选",
+            group_name=group if group in GROUPS else "自选",
+            thesis=old.get("thesis") or "",
+            cost=old.get("cost"),
+            shares=old.get("shares"),
+            buy_low=old.get("buy_low"),
+            buy_high=old.get("buy_high"),
+            reduce_price=old.get("reduce_price"),
+            invalid_if=old.get("invalid_if") or "",
         )
         db.add(item)
         saved.append(_watch_payload(item))
@@ -217,6 +293,27 @@ def delete_watch_item(code6: str, user: User = Depends(current_user), db: Sessio
     remain = db.query(WatchItem).filter_by(user_id=user.id).all()
     bus.publish("universe.changed", {"user_id": user.id, "count": len(remain)}, "platform")
     return {"removed": code6, "items": [_watch_payload(i) for i in remain]}
+
+
+@router.put("/watchlist/{code6}/card")
+def put_watch_card(code6: str, body: CardIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    item = db.query(WatchItem).filter_by(user_id=user.id, code6=code6).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="自选中没有这只股票")
+    if body.group and body.group not in GROUPS:
+        raise HTTPException(status_code=400, detail="分组只支持 自选 / 观察 / 备选")
+    item.thesis = (body.thesis or "")[:2000]
+    item.cost = body.cost
+    item.shares = body.shares
+    item.buy_low = body.buy_low
+    item.buy_high = body.buy_high
+    item.reduce_price = body.reduce_price
+    item.invalid_if = (body.invalid_if or "")[:500]
+    if body.group:
+        item.group_name = body.group
+    db.commit()
+    db.refresh(item)
+    return _watch_payload(item)
 
 
 @router.get("/markets/instruments")
@@ -299,11 +396,11 @@ def _prepare_query(body: QueryIn, user: User, db: Session):
     if not insts:
         raise HTTPException(status_code=400, detail="当前池为空")
     name = body.pool_name or meta["label"]
-    return insts, fields, name, meta
+    return insts, fields, name, meta, _cards_map(db, user)
 
 
-def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, user_id: int) -> dict:
-    rows = engine.run(insts, fields)
+def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, user_id: int, cards: dict | None = None) -> dict:
+    rows = engine.run(insts, fields, cards=cards)
     codes = [i.code_full for i in insts]
     out = {
         "fields": _field_view(fields),
@@ -336,10 +433,10 @@ def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, us
 
 
 def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
-    insts, fields, pool_name, meta = _prepare_query(body, user, db)
+    insts, fields, pool_name, meta, cards = _prepare_query(body, user, db)
     use_job = body.async_mode or len(insts) > settings.query_sync_limit
     if not use_job:
-        result = _execute_query(insts, fields, do_export, pool_name, user.id)
+        result = _execute_query(insts, fields, do_export, pool_name, user.id, cards)
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
         result["pool_id"] = meta.get("id")
@@ -349,7 +446,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
 
     def worker():
         try:
-            result = _execute_query(snapshot, fields, do_export, pool_name, user.id)
+            result = _execute_query(snapshot, fields, do_export, pool_name, user.id, cards)
             result["sample"] = meta.get("sample", False)
             result["note"] = meta.get("note") or ""
             result["pool_id"] = meta.get("id")
@@ -358,7 +455,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
             jobs.fail(job.id, str(exc))
 
     jobs.spawn(worker)
-    return job_payload(job)
+    return bg_job_payload(job)
 
 
 @router.post("/query/run")
@@ -376,7 +473,7 @@ def query_job(job_id: str, user: User = Depends(current_user)):
     job = jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return job_payload(job)
+    return bg_job_payload(job)
 
 
 @router.post("/artifacts/diff")
@@ -490,7 +587,14 @@ def agent_tools():
 
 @router.post("/agent/tools/reload")
 def reload_tools():
-    return {"loaded": load_manifests()}
+    loaded = load_manifests()
+    names = reload_policies()
+    return {"loaded": loaded, "policies": names}
+
+
+@router.get("/agent/policy")
+def agent_policy():
+    return policies_public()
 
 
 @router.get("/agent/sessions")
@@ -615,16 +719,7 @@ def put_prefs(body: PrefsIn, user: User = Depends(current_user), db: Session = D
 @router.get("/monitor/jobs")
 def list_jobs(user: User = Depends(current_user), db: Session = Depends(get_db)):
     jobs_list = ensure_jobs(db, user)
-    return [
-        {
-            "id": j.id,
-            "job_key": j.job_key,
-            "name": j.name,
-            "enabled": bool(j.enabled),
-            "reason": j.reason,
-        }
-        for j in jobs_list
-    ]
+    return [job_payload(j) for j in jobs_list]
 
 
 @router.post("/monitor/jobs/{job_key}/toggle")
@@ -637,7 +732,32 @@ def toggle_job(job_key: str, body: JobToggleIn, user: User = Depends(current_use
         raise HTTPException(status_code=409, detail=job.reason)
     job.enabled = 1 if body.enabled else 0
     db.commit()
-    return {"job_key": job.job_key, "enabled": bool(job.enabled)}
+    return job_payload(job)
+
+
+@router.put("/monitor/jobs/{job_key}")
+def patch_job(job_key: str, body: JobPatchIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    ensure_jobs(db, user)
+    job = db.query(MonitorJob).filter_by(user_id=user.id, job_key=job_key).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="没有这个监控项")
+    if body.enabled is not None:
+        if job.reason and body.enabled:
+            raise HTTPException(status_code=409, detail=job.reason)
+        job.enabled = 1 if body.enabled else 0
+    if body.params is not None:
+        current = json.loads(job.params or "{}") if job.params else {}
+        if not isinstance(current, dict):
+            current = {}
+        current.update(body.params)
+        job.params = json.dumps(current, ensure_ascii=False)
+    if body.schedule:
+        if body.schedule not in {"session", "eod"}:
+            raise HTTPException(status_code=400, detail="扫描时点只支持盘中或日终")
+        job.schedule = body.schedule
+    db.commit()
+    db.refresh(job)
+    return job_payload(job)
 
 
 @router.post("/monitor/jobs/{job_key}/run")
@@ -651,17 +771,126 @@ def run_all_jobs(user: User = Depends(current_user), db: Session = Depends(get_d
     return run_watcher(db, user, market)
 
 
+@router.get("/monitor/metrics")
+def monitor_metrics():
+    return metric_specs()
+
+
+@router.get("/monitor/queue")
+def monitor_queue(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return today_queue(db, user.id)
+
+
+@router.get("/monitor/rules")
+def list_rules(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rows = db.query(UserRule).filter_by(user_id=user.id).order_by(UserRule.id.desc()).all()
+    return [rule_payload(r) for r in rows]
+
+
+@router.post("/monitor/rules")
+def create_rule(body: RuleIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    try:
+        spec = validate_custom_spec({**body.spec, "name": body.name or body.spec.get("name")})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    row = UserRule(
+        user_id=user.id,
+        name=spec["name"],
+        enabled=1 if body.enabled else 0,
+        spec=json.dumps(spec, ensure_ascii=False),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return rule_payload(row)
+
+
+@router.put("/monitor/rules/{rule_id}")
+def update_rule(rule_id: int, body: RuleIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    row = db.query(UserRule).filter_by(id=rule_id, user_id=user.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="没有这条规则")
+    try:
+        spec = validate_custom_spec({**body.spec, "name": body.name or body.spec.get("name") or row.name})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    row.name = spec["name"]
+    row.enabled = 1 if body.enabled else 0
+    row.spec = json.dumps(spec, ensure_ascii=False)
+    db.commit()
+    db.refresh(row)
+    return rule_payload(row)
+
+
+@router.delete("/monitor/rules/{rule_id}")
+def delete_rule(rule_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    row = db.query(UserRule).filter_by(id=rule_id, user_id=user.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="没有这条规则")
+    db.delete(row)
+    db.commit()
+    return {"removed": rule_id}
+
+
+@router.post("/monitor/rules/preview")
+def preview_rule(body: PreviewIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if body.job_key:
+        return run_watcher(db, user, market, body.job_key, persist=False)
+    if not body.spec:
+        raise HTTPException(status_code=400, detail="请提供规则或选择一条模板")
+    try:
+        spec = validate_custom_spec(body.spec)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return run_watcher(db, user, market, persist=False, preview_spec=spec)
+
+
+@router.get("/monitor/prefs")
+def get_monitor_prefs(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    pref = db.query(MonitorPref).filter_by(user_id=user.id).first()
+    return pref_payload(pref)
+
+
+@router.put("/monitor/prefs")
+def put_monitor_prefs(body: MonitorPrefIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    payload = json.dumps({"selected": body.selected, "custom": body.custom}, ensure_ascii=False)
+    pref = db.query(MonitorPref).filter_by(user_id=user.id).first()
+    if pref:
+        pref.institutions = payload
+    else:
+        pref = MonitorPref(user_id=user.id, institutions=payload)
+        db.add(pref)
+    db.commit()
+    return pref_payload(pref)
+
+
 @router.get("/alerts")
 def list_alerts(user: User = Depends(current_user), db: Session = Depends(get_db)):
     items = db.query(Alert).filter_by(user_id=user.id).order_by(Alert.id.desc()).limit(50).all()
-    return [
-        {
-            "id": i.id,
-            "job_key": i.job_key,
-            "code6": i.code6,
-            "title": i.title,
-            "detail": i.detail,
-            "created_at": i.created_at.isoformat() if i.created_at else None,
-        }
-        for i in items
-    ]
+    return [_alert_payload(i) for i in items]
+
+
+@router.patch("/alerts/{alert_id}")
+def patch_alert(alert_id: int, body: AlertPatchIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rec = db.query(Alert).filter_by(id=alert_id, user_id=user.id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="没有这条提醒")
+    if body.status not in {"open", "seen", "watch", "keep", "void"}:
+        raise HTTPException(status_code=400, detail="处理动作无效")
+    rec.status = body.status
+    db.commit()
+    return _alert_payload(rec)
+
+
+def _alert_payload(i: Alert) -> dict:
+    return {
+        "id": i.id,
+        "job_key": i.job_key,
+        "rule_id": i.rule_id or i.job_key,
+        "code6": i.code6,
+        "title": i.title,
+        "detail": i.detail,
+        "status": i.status or "open",
+        "severity": i.severity or "watch",
+        "created_at": i.created_at.isoformat() if i.created_at else None,
+    }

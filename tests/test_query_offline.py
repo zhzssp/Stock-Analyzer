@@ -12,8 +12,8 @@ def test_offline_query_has_figure1_fields():
     assert len(rows) == 2
     assert rows[0]["name"] == "中直股份"
     assert rows[0]["price"] == 26.86
-    keys = {s.key for s in registry.all()}
-    assert keys.issubset(rows[0].keys())
+    assert {s.key for s in registry.all() if s.default}.issubset(rows[0].keys())
+    assert "buy_low" not in rows[0]
     assert rows[0]["low1y"] == 24.6
     assert rows[0]["low_long"] == 24.6
     assert rows[0]["high"] == 36.9

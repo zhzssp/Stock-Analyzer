@@ -33,6 +33,11 @@ def test_workbench_exposes_landed_backend_entries():
     assert 'id="shareUpload"' in html
     assert "/export-share" in html
     assert "只跑这条" in html
+    assert "添加规则" in html
+    assert "决策卡" in html
+    assert 'data-monitor="today"' in html
+    assert "本轮守则" in html
+    assert "/watchlist/" in html and "/card" in html
     assert "对照上一份" in html
     assert "历史对话" in html
 

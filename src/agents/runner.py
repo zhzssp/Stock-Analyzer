@@ -3,57 +3,21 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from src.agents.planner import plan, write_answer, write_answer_iter
+from src.agents.policy import load_policy, research_hints, tools_for
 from src.tools.base import ToolContext
 from src.tools.registry import registry
 
-ANALYST_TOOLS = [
-    "excel_parse",
-    "warehouse_get",
-    "market_fetch",
-    "quote",
-    "company_profile",
-    "holders_flow",
-    "finance_snapshot",
-    "universe",
-    "query_run",
-    "excel_list",
-    "excel_read",
-    "excel_diff",
-    "capital_flow",
-    "corp_events",
-    "bottom",
-    "taxonomy_lookup",
-    "fund_holding",
-    "futures_map",
-    "export_share",
-]
-
-RESEARCHER_TOOLS = [
-    "universe",
-    "quote",
-    "company_profile",
-    "capital_flow",
-    "corp_events",
-    "bottom",
-    "excel_list",
-    "market_fetch",
-    "warehouse_get",
-    "web_finance_search",
-    "futures_quote",
-    "futures_map",
-    "policy_news",
-    "fund_holding",
-    "taxonomy_lookup",
-]
+ANALYST_TOOLS = tools_for("analyst")
+RESEARCHER_TOOLS = tools_for("researcher")
 
 
 def pick_agent(question: str, requested: str = "auto") -> str:
     name = (requested or "auto").strip().lower()
     if name in {"researcher", "analyst"}:
         return name
-    from src.agents.planner import RESEARCH_HINTS, _has
+    from src.agents.planner import _has
 
-    return "researcher" if _has(question, RESEARCH_HINTS) else "analyst"
+    return "researcher" if _has(question, research_hints()) else "analyst"
 
 
 def _run_one(call: dict, ctx: ToolContext, allowed: set[str]) -> tuple[dict, dict]:
@@ -83,19 +47,22 @@ def iter_agent(
     attachments: list[dict] | None = None,
     history: list[dict] | None = None,
     stream_tokens: bool = False,
-    max_rounds: int = 3,
+    max_rounds: int | None = None,
 ) -> Iterator[dict]:
     if attachments:
         ctx.attachments = attachments
     if history:
         ctx.history = history
-    tools = RESEARCHER_TOOLS if agent == "researcher" else ANALYST_TOOLS
-    ctx.allowed_tools = list(tools)
+    policy = load_policy(agent)
+    tools = list(policy.tools)
+    ctx.allowed_tools = tools
+    ctx.agent_name = agent
     allowed = set(tools)
     observations: list[dict] = []
     traces: list[dict] = []
+    rounds = max_rounds if max_rounds is not None else policy.max_rounds
 
-    for _ in range(max_rounds):
+    for _ in range(rounds):
         calls = plan(question, observations, ctx)
         if not calls:
             break
@@ -104,18 +71,16 @@ def iter_agent(
             observations.append(payload)
             traces.append(trace)
             yield {"type": "tool", **trace, "agent": agent}
-        if not calls:
-            break
 
     if stream_tokens:
         chunks: list[str] = []
         cites: list[dict] = []
-        for piece, cites in write_answer_iter(question, observations):
+        for piece, cites in write_answer_iter(question, observations, agent=agent):
             chunks.append(piece)
             yield {"type": "token", "text": piece, "agent": agent}
-        answer = "".join(chunks) if chunks else write_answer(question, observations)[0]
+        answer = "".join(chunks) if chunks else write_answer(question, observations, agent=agent)[0]
     else:
-        answer, cites = write_answer(question, observations)
+        answer, cites = write_answer(question, observations, agent=agent)
         yield {"type": "token", "text": answer, "agent": agent}
 
     yield {

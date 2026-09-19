@@ -19,6 +19,7 @@ class ToolContext:
     attachments: list[dict] = field(default_factory=list)
     allowed_tools: list[str] | None = None
     history: list[dict] = field(default_factory=list)
+    agent_name: str = "analyst"
 
 
 @dataclass

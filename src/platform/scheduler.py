@@ -14,16 +14,16 @@ def start_scheduler():
     from src.agents.watcher import run_watcher
     from src.api.routes import market
 
-    def _tick(job_key: str | None = None) -> None:
+    def _tick(schedule: str | None = None) -> None:
         db = SessionLocal()
         try:
             for user in db.query(User).all():
-                run_watcher(db, user, market, job_key)
+                run_watcher(db, user, market, schedule=schedule)
         finally:
             db.close()
 
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
-    sched.add_job(_tick, CronTrigger(minute="*/5", hour="9-15", day_of_week="mon-fri"), args=["near-bottom"], id="session-tick")
-    sched.add_job(_tick, CronTrigger(hour=20, minute=20, day_of_week="mon-fri"), id="eod-scan")
+    sched.add_job(_tick, CronTrigger(minute="*/5", hour="9-15", day_of_week="mon-fri"), kwargs={"schedule": "session"}, id="session-tick")
+    sched.add_job(_tick, CronTrigger(hour=20, minute=20, day_of_week="mon-fri"), kwargs={"schedule": "eod"}, id="eod-scan")
     sched.start()
     return sched

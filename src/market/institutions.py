@@ -44,14 +44,15 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in (text or "").lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
 
 
-def match_institution(name: str) -> dict | None:
+def match_institution(name: str, catalog: list[dict] | None = None) -> dict | None:
     folded = _fold(name)
     if not folded:
         return None
     best = None
     best_len = 0
-    for item in INSTITUTIONS:
-        for alias in item["aliases"]:
+    for item in catalog if catalog is not None else INSTITUTIONS:
+        aliases = item.get("aliases") or (item.get("name"),)
+        for alias in aliases:
             key = _fold(alias)
             if not key:
                 continue
@@ -62,11 +63,11 @@ def match_institution(name: str) -> dict | None:
     return best
 
 
-def match_many(names: list[str], kinds: tuple[str, ...] | None = None) -> list[dict]:
+def match_many(names: list[str], kinds: tuple[str, ...] | None = None, catalog: list[dict] | None = None) -> list[dict]:
     hits = []
     seen = set()
     for raw in names:
-        item = match_institution(raw)
+        item = match_institution(raw, catalog)
         if not item:
             continue
         if kinds and item["kind"] not in kinds:

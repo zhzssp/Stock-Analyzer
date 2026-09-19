@@ -391,6 +391,50 @@
     .side-modes .chip-btn { flex: 1; min-width: 0; }
     .chip-btn.off { opacity: 0.55; cursor: not-allowed; }
     .monitor-body { border: 0; flex: 1; min-height: 0; overflow: auto; }
+    .subtabs { display: flex; gap: 4px; }
+    .subtabs .tab { padding: 6px 10px 8px; }
+    .monitor-pane { display: none; }
+    .monitor-pane.on { display: block; }
+    .policy-bar {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #faf9f6;
+      margin-bottom: 10px;
+    }
+    .rule-card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin: 8px 0;
+      background: var(--paper);
+    }
+    .rule-card h3 { margin: 0 0 4px; font-size: 15px; }
+    .rule-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+      margin: 8px 0;
+    }
+    .rule-grid label { color: var(--muted); font-size: 13px; display: block; }
+    .drawer-mask {
+      position: fixed; inset: 0; background: rgba(28,27,24,.28);
+      display: flex; justify-content: flex-end;
+    }
+    .drawer {
+      width: min(420px, 100vw);
+      height: 100%;
+      background: var(--paper);
+      border-left: 1px solid var(--line);
+      padding: 18px;
+      overflow: auto;
+    }
+    .drawer h2 { margin: 0 0 8px; font-size: 18px; }
+    .watch li.filled .code::after { content: " · 卡"; color: var(--teal); }
+    .alert-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -468,6 +512,7 @@
         <div id="agent" class="view">
           <div class="split">
             <div class="chat">
+              <div id="agentRules" class="policy-bar">本轮守则加载中。问答走 analyst；盯盘在监控中心。</div>
               <div id="chatLog">
                 <div class="bubble bot">
                   可以问现价、股东、财务、离底；也可粘贴 Excel。多轮对话会记住上下文。问「看市场」走 researcher。未配置 DeepSeek key 时走确定性编排。
@@ -513,28 +558,113 @@
 
         <div id="monitor" class="view">
           <div class="toolbar">
+            <div class="subtabs">
+              <button class="tab on" data-monitor="today" type="button">今日</button>
+              <button class="tab" data-monitor="rules" type="button">规则</button>
+              <button class="tab" data-monitor="prefs" type="button">偏好</button>
+            </div>
             <button class="btn primary" id="monitorRun" type="button">立刻跑一轮</button>
-            <span class="hint">交易日 09:00–15:00 每 5 分钟扫接近底部；20:20 跑已开启规则。期货行情、彭博检索未接则保持未启用。</span>
+            <span class="hint">交易日 09:00–15:00 每 5 分钟扫盘中实时规则；20:20 跑日终规则。期货行情、彭博检索未接则保持未启用。</span>
           </div>
           <div class="panel monitor-body">
-            <div id="monitorJobs"></div>
-            <div class="side-title" style="margin:16px 0 8px;">提醒</div>
-            <div id="monitorAlerts" class="meta">尚未跑过</div>
-            <div class="side-title" style="margin:16px 0 8px;">关注机构白名单</div>
-            <p class="pane-note">监控对照用的名字表，不是持仓实况。</p>
-            <div id="instList" class="meta-list">尚未加载</div>
-            <div class="side-title" style="margin:16px 0 8px;">关联期货品种</div>
-            <p class="pane-note">只有品种名字，没有期货价格。</p>
-            <div id="futuresList" class="meta-list">尚未加载</div>
-            <div class="side-title" style="margin:16px 0 8px;">出口占比手工表</div>
-            <p class="pane-note">只认本机 data/export_share.csv。没有表就是空的，不会编。</p>
-            <div class="composer-row" style="margin:8px 0;">
-              <input id="shareCode" placeholder="代码查询，如 600038" style="flex:1;" />
-              <button class="btn sm" id="shareLookup" type="button">查询</button>
-              <input id="shareFile" type="file" accept=".csv,text/csv" hidden />
-              <button class="btn sm" id="shareUpload" type="button">上传 csv</button>
+            <div id="monitorToday" class="monitor-pane on">
+              <div class="side-title">该看</div>
+              <p class="pane-note">未处理提醒会排在这里。researcher「看市场」也读同一队列。</p>
+              <div id="monitorQueue" class="meta">尚未跑过</div>
+              <div class="side-title" style="margin:16px 0 8px;">提醒</div>
+              <div id="monitorAlerts" class="meta">尚未跑过</div>
             </div>
-            <div id="shareBox" class="meta-list">尚未查询</div>
+            <div id="monitorRules" class="monitor-pane">
+              <div class="side-title">模板规则</div>
+              <p class="pane-note">改阈值和范围后保存。未就绪的数据源不能打开。</p>
+              <div id="monitorJobs"></div>
+              <div class="side-title" style="margin:16px 0 8px;">我的规则 <button class="btn sm" id="ruleAdd" type="button">添加规则</button></div>
+              <div id="customRules" class="meta">还没有自定义规则</div>
+              <form id="ruleBuilder" class="rule-card" style="display:none;">
+                <h3 id="ruleBuilderTitle">添加规则</h3>
+                <div class="rule-grid">
+                  <label>名称<input id="ruleName" placeholder="例如：离底小于 5%" /></label>
+                  <label>指标<select id="ruleMetric"></select></label>
+                  <label>比较
+                    <select id="ruleCompare">
+                      <option value="threshold">阈值</option>
+                      <option value="card">相对决策卡</option>
+                    </select>
+                  </label>
+                  <label>运算符
+                    <select id="ruleOp">
+                      <option value="lte">≤</option>
+                      <option value="gte">≥</option>
+                      <option value="eq">=</option>
+                    </select>
+                  </label>
+                  <label id="ruleValueWrap">阈值<input id="ruleValue" type="number" step="any" /></label>
+                  <label id="ruleCardWrap" style="display:none;">决策卡字段
+                    <select id="ruleCardField">
+                      <option value="buy_high">买区高</option>
+                      <option value="buy_low">买区低</option>
+                      <option value="reduce_at">减仓价</option>
+                      <option value="cost">成本</option>
+                    </select>
+                  </label>
+                  <label>范围
+                    <select id="ruleScope">
+                      <option value="all">全部自选</option>
+                      <option value="group">分组</option>
+                    </select>
+                  </label>
+                  <label id="ruleGroupWrap" style="display:none;">分组
+                    <select id="ruleGroup">
+                      <option value="自选">自选</option>
+                      <option value="观察">观察</option>
+                      <option value="备选">备选</option>
+                    </select>
+                  </label>
+                  <label>何时
+                    <select id="ruleWhen">
+                      <option value="eod">日终 20:20</option>
+                      <option value="session">盘中</option>
+                    </select>
+                  </label>
+                  <label>严重度
+                    <select id="ruleSeverity">
+                      <option value="watch">观察</option>
+                      <option value="act">行动</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="composer-row">
+                  <button class="btn primary" id="ruleSave" type="submit">保存</button>
+                  <button class="btn" id="rulePreviewBtn" type="button">预览命中</button>
+                  <button class="btn ghost" id="ruleCancel" type="button">取消</button>
+                </div>
+                <div id="rulePreview" class="meta-list" style="margin-top:8px;"></div>
+              </form>
+            </div>
+            <div id="monitorPrefs" class="monitor-pane">
+              <div class="side-title">关注机构白名单</div>
+              <p class="pane-note">监控对照用的名字表，不是持仓实况。可取消勾选，也可追加名字。</p>
+              <div id="instList" class="meta-list">尚未加载</div>
+              <div class="composer-row" style="margin:8px 0;">
+                <input id="instCustom" placeholder="追加机构名，如 某某基金" style="flex:1;" />
+                <button class="btn sm" id="instAdd" type="button">追加</button>
+                <button class="btn sm primary" id="instSave" type="button">保存白名单</button>
+              </div>
+              <div class="side-title" style="margin:16px 0 8px;">提醒通道</div>
+              <div id="channelBox" class="meta-list">尚未加载</div>
+              <details style="margin-top:16px;">
+                <summary class="side-title" style="cursor:pointer;">数据插槽</summary>
+                <p class="pane-note">关联期货只有品种名字，没有期货价格。出口占比只认本机 data/export_share.csv。</p>
+                <div id="futuresList" class="meta-list">尚未加载</div>
+                <div class="composer-row" style="margin:8px 0;">
+                  <input id="shareCode" placeholder="代码查询，如 600038" style="flex:1;" />
+                  <button class="btn sm" id="shareLookup" type="button">查询</button>
+                  <input id="shareFile" type="file" accept=".csv,text/csv" hidden />
+                  <button class="btn sm" id="shareUpload" type="button">上传 csv</button>
+                </div>
+                <div id="shareBox" class="meta-list">尚未查询</div>
+              </details>
+            </div>
           </div>
         </div>
       </section>
@@ -606,6 +736,32 @@
         <button class="btn ghost" id="closeArchive" type="button">关闭</button>
       </div>
     </div>
+  </div>
+  <div class="drawer-mask" id="cardMask" style="display:none;">
+    <form class="drawer" id="cardForm">
+      <h2 id="cardTitle">决策卡</h2>
+      <p class="pane-note" id="cardHint">未填时监控仍用统计底 / 默认目标卖价。</p>
+      <label>分组
+        <select id="cardGroup">
+          <option value="自选">自选</option>
+          <option value="观察">观察</option>
+          <option value="备选">备选</option>
+        </select>
+      </label>
+      <label>持有逻辑<input id="cardThesis" placeholder="为什么拿这只" /></label>
+      <div class="rule-grid">
+        <label>成本<input id="cardCost" type="number" step="any" /></label>
+        <label>股数<input id="cardShares" type="number" step="any" /></label>
+        <label>买区低<input id="cardBuyLow" type="number" step="any" /></label>
+        <label>买区高<input id="cardBuyHigh" type="number" step="any" /></label>
+        <label>减仓价<input id="cardReduce" type="number" step="any" /></label>
+      </div>
+      <label>作废条件<input id="cardInvalid" placeholder="纯文本，暂不执行公式" /></label>
+      <div class="pick-actions" style="margin-top:12px;">
+        <button class="btn primary" type="submit">保存决策卡</button>
+        <button class="btn ghost" id="closeCard" type="button">关闭</button>
+      </div>
+    </form>
   </div>
   <div class="login-mask" id="loginMask">
     <form class="login-card" id="loginForm">
@@ -681,6 +837,12 @@
       rowsRaw: [],
       sortKey: "pct",
       sortDir: "desc",
+      monitorTab: "today",
+      metrics: [],
+      customRules: [],
+      monitorPrefs: null,
+      editingRuleId: null,
+      cardCode: "",
     };
 
     function toast(text) {
@@ -705,6 +867,24 @@
       const chText = channels.length ? channels.join("、") : "无提醒通道";
       document.getElementById("healthBar").textContent = marketText + " · " + llmText + " · " + chText;
       document.getElementById("healthBar").title = JSON.stringify({ market: m, llm: st, channels: a.channels || [] });
+      renderPolicy(a.policies || {});
+      const chBox = document.getElementById("channelBox");
+      if (chBox) {
+        const all = a.channels || [];
+        chBox.innerHTML = all.length
+          ? all.map((c) => `<div><b>${esc(c.name)}</b> · ${c.enabled ? "已开" : "未开"}<div class="sub">${esc(c.reason || "")}</div></div>`).join("")
+          : "无通道";
+      }
+    }
+
+    function renderPolicy(policies) {
+      const el = document.getElementById("agentRules");
+      if (!el) return;
+      const a = policies.analyst || {};
+      const r = policies.researcher || {};
+      const aRules = (a.rules || []).slice(0, 3).join(" ");
+      const rRules = (r.rules || []).slice(0, 2).join(" ");
+      el.innerHTML = `<b>本轮守则</b>（只读）analyst：${esc(aRules || "只引用 Tool 数字，禁止荐股。")} researcher：${esc(rRules || "先看今日该看；未启用 Tool 跳过。")}`;
     }
 
     function renderBoard(items) {
@@ -895,8 +1075,8 @@
         return;
       }
       ul.innerHTML = shown.map((it, i) =>
-        `<li class="${i === 0 ? "active" : ""}" data-code="${it.code6}">
-          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || marketLabel[it.market] || it.market || ""}</span></span>
+        `<li class="${i === 0 ? "active" : ""} ${it.card_filled ? "filled" : ""}" data-code="${it.code6}">
+          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || marketLabel[it.market] || it.market || ""} · ${esc(it.group || "自选")}</span></span>
           <button class="rm" type="button" data-rm="${it.code6}" title="移出自选">×</button>
         </li>`
       ).join("");
@@ -1120,7 +1300,7 @@
       toast("已写入档案库，并下载 " + data.filename + "（" + (data.pool || payload.pool || "筛选一次") + "）");
     }
 
-    const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", flow: "资金", bottom: "底/顶" };
+    const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", flow: "资金", bottom: "底/顶", card: "决策卡" };
 
     async function openCols() {
       const data = await api("/query/prefs");
@@ -1150,6 +1330,32 @@
       await runQuery();
     }
 
+    function paramInput(job, field) {
+      const val = (job.params || {})[field.key];
+      if (field.type === "bool") {
+        return `<label>${esc(field.label)}<select data-param="${field.key}" data-type="${field.type}">
+          <option value="1" ${val ? "selected" : ""}>是</option>
+          <option value="0" ${!val ? "selected" : ""}>否</option>
+        </select></label>`;
+      }
+      if (field.type === "select") {
+        const opts = (field.options || []).map((o) =>
+          `<option value="${o.id}" ${val === o.id ? "selected" : ""}>${esc(o.label)}</option>`
+        ).join("");
+        return `<label>${esc(field.label)}<select data-param="${field.key}" data-type="select">${opts}</select></label>`;
+      }
+      if (field.type === "scope") {
+        const kind = (typeof val === "object" && val ? (val.group || val.type) : val) || "all";
+        return `<label>${esc(field.label)}<select data-param="scope" data-type="scope">
+          <option value="all" ${kind === "all" || kind === "watch" ? "selected" : ""}>全部自选</option>
+          <option value="自选" ${kind === "自选" ? "selected" : ""}>分组：自选</option>
+          <option value="观察" ${kind === "观察" ? "selected" : ""}>分组：观察</option>
+          <option value="备选" ${kind === "备选" ? "selected" : ""}>分组：备选</option>
+        </select></label>`;
+      }
+      return `<label>${esc(field.label)}<input data-param="${field.key}" data-type="number" type="number" step="any" value="${val == null ? "" : val}" /></label>`;
+    }
+
     function renderJobs(jobs) {
       const box = document.getElementById("monitorJobs");
       if (!jobs || !jobs.length) {
@@ -1157,18 +1363,55 @@
         return;
       }
       box.innerHTML = jobs.map((j) => {
-        const status = j.reason
-          ? `<span class="off">${j.reason}</span>`
-          : (j.enabled ? `<span>已开启</span>` : `<span class="off">已关闭</span>`);
         const canToggle = !j.reason;
-        return `<div class="job">
-          <span>${j.name}</span>
-          <span class="job-actions">
-            ${j.enabled && !j.reason ? `<button class="btn sm" type="button" data-run="${j.job_key}">只跑这条</button>` : ""}
-            ${canToggle ? `<button class="btn sm ghost" type="button" data-job="${j.job_key}" data-on="${j.enabled ? 1 : 0}">${j.enabled ? "已开启" : "已关闭"}</button>` : status}
-          </span>
+        const schema = j.schema || [];
+        const fields = schema.map((f) => paramInput(j, f)).join("");
+        const status = j.reason
+          ? `<span class="off">${esc(j.reason)}</span>`
+          : "";
+        return `<div class="rule-card" data-job-card="${j.job_key}">
+          <h3>${esc(j.name)}</h3>
+          <div class="meta">${esc(j.blurb || "")} · ${j.schedule === "session" ? "盘中" : "日终"}</div>
+          ${status}
+          ${canToggle && fields ? `<div class="rule-grid">${fields}</div>` : ""}
+          <div class="job-actions">
+            ${j.enabled && canToggle ? `<button class="btn sm" type="button" data-run="${j.job_key}">只跑这条</button>` : ""}
+            ${canToggle ? `<button class="btn sm ghost" type="button" data-job="${j.job_key}" data-on="${j.enabled ? 1 : 0}">${j.enabled ? "已开启" : "已关闭"}</button>` : ""}
+            ${canToggle ? `<button class="btn sm" type="button" data-save-job="${j.job_key}">保存参数</button>` : ""}
+          </div>
         </div>`;
       }).join("");
+    }
+
+    function renderCustomRules(items) {
+      const box = document.getElementById("customRules");
+      if (!items || !items.length) {
+        box.innerHTML = `<div class="meta">还没有自定义规则。用「添加规则」从已注册指标里拼一条。</div>`;
+        return;
+      }
+      box.innerHTML = items.map((r) => {
+        const s = r.spec || {};
+        return `<div class="rule-card">
+          <h3>${esc(r.name)}</h3>
+          <div class="meta">${esc(s.metric || "")} ${esc(s.op || "")} ${s.compare === "card" ? ("卡:" + (s.card_field || "")) : (s.value == null ? "" : s.value)} · ${s.schedule === "session" ? "盘中" : "日终"}</div>
+          <div class="job-actions">
+            ${r.enabled ? `<button class="btn sm" type="button" data-run="custom:${r.id}">只跑这条</button>` : ""}
+            <button class="btn sm ghost" type="button" data-edit-rule="${r.id}">编辑</button>
+            <button class="btn sm ghost" type="button" data-del-rule="${r.id}">删除</button>
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    function renderQueue(items) {
+      const box = document.getElementById("monitorQueue");
+      if (!items || !items.length) {
+        box.innerHTML = `<div class="meta">队列是空的。命中买区/减仓或未处理提醒会出现在这里。</div>`;
+        return;
+      }
+      box.innerHTML = items.map((a) =>
+        `<div class="alert"><b>${esc(a.title)}</b><div class="meta">${esc(a.detail || "")} · ${esc(a.severity === "act" ? "行动" : "观察")}</div></div>`
+      ).join("");
     }
 
     function renderAlerts(items) {
@@ -1178,16 +1421,83 @@
         return;
       }
       box.innerHTML = items.map((a) =>
-        `<div class="alert"><b>${a.title}</b><div class="meta">${a.detail || ""} · ${a.created_at || ""}</div></div>`
+        `<div class="alert">
+          <b>${esc(a.title)}</b>
+          <div class="meta">${esc(a.detail || "")} · ${esc(a.status || "open")} · ${esc(a.created_at || "")}</div>
+          <div class="alert-actions">
+            <button class="btn sm" type="button" data-alert="${a.id}" data-status="seen">已看</button>
+            <button class="btn sm" type="button" data-alert="${a.id}" data-status="watch">再观察</button>
+            <button class="btn sm" type="button" data-alert="${a.id}" data-status="keep">逻辑仍在</button>
+            <button class="btn sm ghost" type="button" data-alert="${a.id}" data-status="void">作废</button>
+          </div>
+        </div>`
+      ).join("");
+    }
+
+    function readJobParams(card) {
+      const params = {};
+      card.querySelectorAll("[data-param]").forEach((el) => {
+        const key = el.dataset.param;
+        const kind = el.dataset.type;
+        if (kind === "scope") {
+          const v = el.value;
+          params.scope = (v === "all") ? "all" : { type: "group", group: v };
+          return;
+        }
+        if (kind === "bool") {
+          params[key] = el.value === "1";
+          return;
+        }
+        if (el.type === "number") {
+          params[key] = el.value === "" ? null : Number(el.value);
+          return;
+        }
+        params[key] = el.value;
+      });
+      return params;
+    }
+
+    function builderSpec() {
+      const compare = document.getElementById("ruleCompare").value;
+      const scopeKind = document.getElementById("ruleScope").value;
+      const spec = {
+        name: document.getElementById("ruleName").value.trim(),
+        metric: document.getElementById("ruleMetric").value,
+        op: document.getElementById("ruleOp").value,
+        compare,
+        card_field: document.getElementById("ruleCardField").value,
+        value: document.getElementById("ruleValue").value === "" ? null : Number(document.getElementById("ruleValue").value),
+        scope: scopeKind === "group" ? { type: "group", group: document.getElementById("ruleGroup").value } : "all",
+        schedule: document.getElementById("ruleWhen").value,
+        severity: document.getElementById("ruleSeverity").value,
+      };
+      return spec;
+    }
+
+    function fillMetrics(metrics) {
+      const sel = document.getElementById("ruleMetric");
+      sel.innerHTML = (metrics || []).map((m) =>
+        `<option value="${m.key}" data-realtime="${m.realtime ? 1 : 0}">${esc(m.label)}（${m.key}）</option>`
       ).join("");
     }
 
     async function loadMonitor() {
-      const [jobs, alerts] = await Promise.all([api("/monitor/jobs"), api("/alerts")]);
+      const [jobs, alerts, rules, queue, metrics] = await Promise.all([
+        api("/monitor/jobs"),
+        api("/alerts"),
+        api("/monitor/rules"),
+        api("/monitor/queue"),
+        api("/monitor/metrics"),
+      ]);
+      state.customRules = rules;
+      state.metrics = metrics;
       renderJobs(jobs);
       renderAlerts(alerts);
+      renderCustomRules(rules);
+      renderQueue(queue);
+      fillMetrics(metrics);
       await loadTaxonomyData();
-      renderInstitutions();
+      await loadMonitorPrefs();
       renderFutures();
       await loadExportShare();
     }
@@ -1196,6 +1506,82 @@
       const data = await api("/monitor/run", { method: "POST", body: "{}" });
       toast(data.count ? `本轮 ${data.count} 条提醒` : "本轮没有新提醒");
       await loadMonitor();
+    }
+
+    function setMonitorTab(name) {
+      state.monitorTab = name;
+      document.querySelectorAll("[data-monitor]").forEach((t) => t.classList.toggle("on", t.dataset.monitor === name));
+      document.getElementById("monitorToday").classList.toggle("on", name === "today");
+      document.getElementById("monitorRules").classList.toggle("on", name === "rules");
+      document.getElementById("monitorPrefs").classList.toggle("on", name === "prefs");
+    }
+
+    function numOrNull(id) {
+      const v = document.getElementById(id).value;
+      if (v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function openCard(code6) {
+      const item = (state.watch || []).find((x) => x.code6 === code6);
+      if (!item) return;
+      state.cardCode = code6;
+      const card = item.card || {};
+      document.getElementById("cardTitle").textContent = (item.name || code6) + " · 决策卡";
+      document.getElementById("cardHint").textContent = item.card_filled
+        ? "规则可以用买区 / 减仓价。"
+        : "未填，监控仍用统计底 / 默认目标卖价。";
+      document.getElementById("cardGroup").value = item.group || "自选";
+      document.getElementById("cardThesis").value = card.thesis || "";
+      document.getElementById("cardCost").value = card.cost == null ? "" : card.cost;
+      document.getElementById("cardShares").value = card.shares == null ? "" : card.shares;
+      document.getElementById("cardBuyLow").value = card.buy_low == null ? "" : card.buy_low;
+      document.getElementById("cardBuyHigh").value = card.buy_high == null ? "" : card.buy_high;
+      document.getElementById("cardReduce").value = card.reduce_price == null ? "" : card.reduce_price;
+      document.getElementById("cardInvalid").value = card.invalid_if || "";
+      document.getElementById("cardMask").style.display = "flex";
+    }
+
+    function closeCard() {
+      document.getElementById("cardMask").style.display = "none";
+      state.cardCode = "";
+    }
+
+    function showBuilder(rule) {
+      document.getElementById("ruleBuilder").style.display = "block";
+      document.getElementById("ruleBuilderTitle").textContent = rule ? "编辑规则" : "添加规则";
+      state.editingRuleId = rule ? rule.id : null;
+      const spec = (rule && rule.spec) || {};
+      document.getElementById("ruleName").value = (rule && rule.name) || "";
+      if (spec.metric) document.getElementById("ruleMetric").value = spec.metric;
+      document.getElementById("ruleCompare").value = spec.compare || "threshold";
+      document.getElementById("ruleOp").value = spec.op || "lte";
+      document.getElementById("ruleValue").value = spec.value == null ? "" : spec.value;
+      document.getElementById("ruleCardField").value = spec.card_field || "buy_high";
+      const scope = spec.scope;
+      if (scope && typeof scope === "object" && scope.type === "group") {
+        document.getElementById("ruleScope").value = "group";
+        document.getElementById("ruleGroup").value = scope.group || "自选";
+      } else {
+        document.getElementById("ruleScope").value = "all";
+      }
+      document.getElementById("ruleWhen").value = spec.schedule || "eod";
+      document.getElementById("ruleSeverity").value = spec.severity || "watch";
+      syncBuilder();
+    }
+
+    function hideBuilder() {
+      document.getElementById("ruleBuilder").style.display = "none";
+      state.editingRuleId = null;
+      document.getElementById("rulePreview").textContent = "";
+    }
+
+    function syncBuilder() {
+      const compare = document.getElementById("ruleCompare").value;
+      document.getElementById("ruleValueWrap").style.display = compare === "threshold" ? "" : "none";
+      document.getElementById("ruleCardWrap").style.display = compare === "card" ? "" : "none";
+      document.getElementById("ruleGroupWrap").style.display = document.getElementById("ruleScope").value === "group" ? "" : "none";
     }
 
     async function afterLogin(username, token) {
@@ -1239,6 +1625,21 @@
     document.getElementById("saveCols").addEventListener("click", () => saveCols().catch((e) => toast(e.message)));
     document.getElementById("monitorRun").addEventListener("click", () => runMonitor().catch((e) => toast(e.message)));
     document.getElementById("monitorJobs").addEventListener("click", async (e) => {
+      const save = e.target.closest("[data-save-job]");
+      if (save) {
+        const card = save.closest("[data-job-card]");
+        try {
+          await api("/monitor/jobs/" + save.dataset.saveJob, {
+            method: "PUT",
+            body: JSON.stringify({ params: readJobParams(card) }),
+          });
+          toast("已保存参数");
+          await loadMonitor();
+        } catch (err) {
+          toast(err.message);
+        }
+        return;
+      }
       const run = e.target.closest("[data-run]");
       if (run) {
         try {
@@ -1290,15 +1691,19 @@
     document.getElementById("boardChips").addEventListener("click", onPoolChipClick);
     document.getElementById("watchList").addEventListener("click", async (e) => {
       const rm = e.target.closest("[data-rm]");
-      if (!rm) return;
-      try {
-        const data = await api("/watchlist/" + rm.dataset.rm, { method: "DELETE" });
-        renderWatch(data.items);
-        toast("已移出 " + rm.dataset.rm);
-        await runQuery();
-      } catch (err) {
-        toast(err.message);
+      if (rm) {
+        try {
+          const data = await api("/watchlist/" + rm.dataset.rm, { method: "DELETE" });
+          renderWatch(data.items);
+          toast("已移出 " + rm.dataset.rm);
+          await runQuery();
+        } catch (err) {
+          toast(err.message);
+        }
+        return;
       }
+      const li = e.target.closest("li[data-code]");
+      if (li) openCard(li.dataset.code);
     });
     async function loadTaxonomyData() {
       if (state.taxonomyLoaded) return;
@@ -1609,14 +2014,25 @@
 
     function renderInstitutions() {
       const box = document.getElementById("instList");
-      const items = state.institutions || [];
-      if (!items.length) {
+      const pref = state.monitorPrefs || { catalog: state.institutions || [], selected: [], custom: [] };
+      const selected = new Set(pref.selected || []);
+      const catalog = pref.catalog || state.institutions || [];
+      if (!catalog.length && !(pref.custom || []).length) {
         box.innerHTML = "名单为空";
         return;
       }
-      box.innerHTML = items.map((i) =>
-        `<div>${esc(i.name)}<div class="sub">${esc(kindLabel(i.kind))}${i.country ? " · " + esc(i.country) : ""}</div></div>`
+      const system = catalog.map((i) =>
+        `<label><input type="checkbox" data-inst="${esc(i.name)}" ${selected.has(i.name) ? "checked" : ""} /><span>${esc(i.name)}<div class="sub">${esc(kindLabel(i.kind))}</div></span></label>`
       ).join("");
+      const custom = (pref.custom || []).map((i, idx) =>
+        `<label><input type="checkbox" checked disabled /><span>${esc(i.name)}<div class="sub">自定义 <button class="btn sm ghost" type="button" data-drop-inst="${idx}">移除</button></div></span></label>`
+      ).join("");
+      box.innerHTML = system + custom;
+    }
+
+    async function loadMonitorPrefs() {
+      state.monitorPrefs = await api("/monitor/prefs");
+      renderInstitutions();
     }
 
     function renderFutures() {
@@ -1829,6 +2245,150 @@
       openSession(Number(btn.dataset.session)).catch((err) => toast(err.message));
     });
     document.getElementById("barsBtn").addEventListener("click", () => loadBars().catch((e) => toast(e.message)));
+    document.querySelectorAll("[data-monitor]").forEach((btn) => {
+      btn.addEventListener("click", () => setMonitorTab(btn.dataset.monitor));
+    });
+    document.getElementById("monitorAlerts").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-alert]");
+      if (!btn) return;
+      try {
+        await api("/alerts/" + btn.dataset.alert, {
+          method: "PATCH",
+          body: JSON.stringify({ status: btn.dataset.status }),
+        });
+        await loadMonitor();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("customRules").addEventListener("click", async (e) => {
+      const run = e.target.closest("[data-run]");
+      if (run) {
+        try {
+          const data = await api("/monitor/jobs/" + run.dataset.run + "/run", { method: "POST" });
+          toast(data.count ? `本条 ${data.count} 条提醒` : "这条没有新提醒");
+          await loadMonitor();
+        } catch (err) {
+          toast(err.message);
+        }
+        return;
+      }
+      const edit = e.target.closest("[data-edit-rule]");
+      if (edit) {
+        const row = (state.customRules || []).find((r) => String(r.id) === edit.dataset.editRule);
+        showBuilder(row);
+        return;
+      }
+      const del = e.target.closest("[data-del-rule]");
+      if (!del) return;
+      try {
+        await api("/monitor/rules/" + del.dataset.delRule, { method: "DELETE" });
+        toast("已删除规则");
+        await loadMonitor();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("ruleAdd").addEventListener("click", () => showBuilder(null));
+    document.getElementById("ruleCancel").addEventListener("click", hideBuilder);
+    document.getElementById("ruleCompare").addEventListener("change", syncBuilder);
+    document.getElementById("ruleScope").addEventListener("change", syncBuilder);
+    document.getElementById("ruleBuilder").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const spec = builderSpec();
+      try {
+        if (state.editingRuleId) {
+          await api("/monitor/rules/" + state.editingRuleId, {
+            method: "PUT",
+            body: JSON.stringify({ name: spec.name, enabled: true, spec }),
+          });
+          toast("已更新规则");
+        } else {
+          await api("/monitor/rules", {
+            method: "POST",
+            body: JSON.stringify({ name: spec.name, enabled: true, spec }),
+          });
+          toast("已添加规则");
+        }
+        hideBuilder();
+        await loadMonitor();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("rulePreviewBtn").addEventListener("click", async () => {
+      try {
+        const data = await api("/monitor/rules/preview", {
+          method: "POST",
+          body: JSON.stringify({ spec: builderSpec() }),
+        });
+        const box = document.getElementById("rulePreview");
+        if (!data.count) {
+          box.textContent = "当前自选不会命中（不写库）。";
+          return;
+        }
+        box.innerHTML = data.hits.map((h) => `<div>${esc(h.title)} · ${esc(h.detail || "")}</div>`).join("");
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("cardForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!state.cardCode) return;
+      try {
+        const saved = await api("/watchlist/" + state.cardCode + "/card", {
+          method: "PUT",
+          body: JSON.stringify({
+            group: document.getElementById("cardGroup").value,
+            thesis: document.getElementById("cardThesis").value,
+            cost: numOrNull("cardCost"),
+            shares: numOrNull("cardShares"),
+            buy_low: numOrNull("cardBuyLow"),
+            buy_high: numOrNull("cardBuyHigh"),
+            reduce_price: numOrNull("cardReduce"),
+            invalid_if: document.getElementById("cardInvalid").value,
+          }),
+        });
+        state.watch = (state.watch || []).map((it) => (it.code6 === saved.code6 ? saved : it));
+        renderWatch(state.watch);
+        closeCard();
+        toast("已保存决策卡");
+        await runQuery();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("closeCard").addEventListener("click", closeCard);
+    document.getElementById("instSave").addEventListener("click", async () => {
+      const selected = [...document.querySelectorAll("#instList [data-inst]:checked")].map((el) => el.dataset.inst);
+      const custom = (state.monitorPrefs && state.monitorPrefs.custom) || [];
+      try {
+        state.monitorPrefs = await api("/monitor/prefs", {
+          method: "PUT",
+          body: JSON.stringify({ selected, custom }),
+        });
+        renderInstitutions();
+        toast("已保存白名单");
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("instAdd").addEventListener("click", () => {
+      const name = (document.getElementById("instCustom").value || "").trim();
+      if (!name) return toast("先填机构名");
+      state.monitorPrefs = state.monitorPrefs || { selected: [], custom: [], catalog: [] };
+      state.monitorPrefs.custom = (state.monitorPrefs.custom || []).concat([{ name, aliases: [name] }]);
+      document.getElementById("instCustom").value = "";
+      renderInstitutions();
+    });
+    document.getElementById("instList").addEventListener("click", (e) => {
+      const drop = e.target.closest("[data-drop-inst]");
+      if (!drop) return;
+      const idx = Number(drop.dataset.dropInst);
+      if (!state.monitorPrefs) return;
+      state.monitorPrefs.custom = (state.monitorPrefs.custom || []).filter((_, i) => i !== idx);
+      renderInstitutions();
+    });
     document.getElementById("shareLookup").addEventListener("click", () => loadExportShare().catch((e) => toast(e.message)));
     document.getElementById("shareUpload").addEventListener("click", () => document.getElementById("shareFile").click());
     document.getElementById("shareFile").addEventListener("change", async (e) => {

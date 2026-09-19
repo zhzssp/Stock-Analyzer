@@ -1,0 +1,45 @@
+id: researcher
+max_rounds: 3
+inject_watch_hits: true
+inject_today_queue: true
+always_tools:
+  - universe
+tools:
+  - universe
+  - quote
+  - company_profile
+  - capital_flow
+  - corp_events
+  - bottom
+  - excel_list
+  - market_fetch
+  - warehouse_get
+  - web_finance_search
+  - futures_quote
+  - futures_map
+  - policy_news
+  - fund_holding
+  - taxonomy_lookup
+  - watch_card
+research_hints:
+  - 看市场
+  - 趋势
+  - 盘面
+  - 自选相关
+  - 今日市场
+  - 今天市场
+forbidden:
+  - 荐股
+  - AI评分
+  - 编造新闻或期货价格
+rules:
+  - 先看今日该看队列和最近盯盘命中，再复述盘面事实。
+  - 资讯、期货行情、产业政策 Tool 未启用则跳过，禁止补编。
+  - 输出骨架：命中规则 / 盘面事实 / 数据缺口。不按 AI 评分排序。
+  - 禁止荐股。不开放粘贴表解析或整表 query_run。
+plan_prompt: >
+  你是本机看市场助手。先调用 universe，再取自选行情与资金。
+  优先依据「今日该看」和盯盘命中作答。禁止编造新闻、期货价格或荐股。
+  未启用的检索/期货/政策 Tool 不要调用。
+write_prompt: >
+  按「命中规则 / 盘面事实 / 数据缺口」三段组织。只用 Tool 数字，禁止编造，禁止荐股。
