@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     llm_timeout: float = 45.0
     alert_webhook: str = ""
     query_sync_limit: int = 40
+    cache_max_mb: float = 300
+    artifact_keep: int = 20
+    bars_max: int = 500
+    alerts_log_max_mb: float = 2
 
     @property
     def db_path(self) -> Path:
@@ -41,6 +45,14 @@ class Settings(BaseSettings):
     @property
     def cache_dir(self) -> Path:
         return self.data_dir / "cache"
+
+    @property
+    def cache_max_bytes(self) -> int:
+        return max(1, int(self.cache_max_mb * 1024 * 1024))
+
+    @property
+    def alerts_log_max_bytes(self) -> int:
+        return max(64 * 1024, int(self.alerts_log_max_mb * 1024 * 1024))
 
 
 settings = Settings()

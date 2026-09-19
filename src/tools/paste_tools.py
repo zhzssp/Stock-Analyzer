@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import base64
-import json
 
-from src.models import Artifact
 from src.platform.export_xlsx import write_table_xlsx
+from src.platform.storage import record_artifact
 from src.tools.base import ToolContext, ToolResult, ToolSpec
 from src.tools.registry import registry
 from src.tools.table_parse import looks_like_table, parse_table_text, parse_xlsx_bytes
@@ -62,16 +61,14 @@ def excel_parse(args: dict, ctx: ToolContext) -> ToolResult:
         return ToolResult(ok=False, error="表格是空的", source="excel_parse", cite=name)
 
     path = write_table_xlsx(sheet["headers"], sheet["rows"], "pasted")
-    rec = Artifact(
+    rec = record_artifact(
+        ctx.db,
         user_id=ctx.user_id,
-        path=str(path),
-        filename=path.name,
+        path=path,
         pool_name="pasted",
-        field_keys=json.dumps(sheet["headers"], ensure_ascii=False),
-        codes=json.dumps(sheet.get("codes") or [], ensure_ascii=False),
+        field_keys=sheet["headers"],
+        codes=sheet.get("codes") or [],
     )
-    ctx.db.add(rec)
-    ctx.db.commit()
     data = {
         **sheet,
         "id": rec.id,

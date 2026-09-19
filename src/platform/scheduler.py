@@ -14,6 +14,7 @@ def start_scheduler():
     from src.agents.reviewer import run_reviewer
     from src.agents.watcher import run_watcher
     from src.api.routes import market
+    from src.platform.storage import enforce_all
 
     def _tick(schedule: str | None = None) -> None:
         db = SessionLocal()
@@ -22,6 +23,8 @@ def start_scheduler():
                 run_watcher(db, user, market, schedule=schedule)
                 if schedule == "eod":
                     run_reviewer(db, user, market)
+            if schedule == "eod":
+                enforce_all(db)
         finally:
             db.close()
 

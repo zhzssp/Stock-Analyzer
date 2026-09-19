@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpx
 
 from src.config import settings
 from src.market import fixtures
+from src.platform.storage import read_cache_json, trim_bars, write_cache_json
 from src.market.holders_diff import normalize_holders, summarize
 from src.market.normalize import Instrument, code6_of, normalize_instrument
 from src.market.taxonomy import classify, search_needles
@@ -72,16 +72,12 @@ class MarketClient:
     def _cache_get(self, key: str) -> Any | None:
         if self.sample_only:
             return None
-        path = settings.cache_dir / f"{key}.json"
-        if not path.exists():
-            return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        return read_cache_json(key)
 
     def _cache_put(self, key: str, payload: Any) -> None:
         if self.sample_only or self.offline:
             return
-        path = settings.cache_dir / f"{key}.json"
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        write_cache_json(key, payload)
 
     def health(self) -> dict:
         return {
@@ -348,8 +344,16 @@ class MarketClient:
     ) -> list[dict]:
         if self.offline:
             out = list(fixtures.BARS.get(inst.code6) or [])
-        elif inst.market == "bj":
-            out = []
+            return _filter_bars(out, start=start, end=end, limit=limit)
+        if inst.market == "bj":
+            return []
+        key = f"bars_{inst.code6}_{adjust}"
+        cached = self._cache_get(key)
+        if isinstance(cached, list) and cached:
+            raw = [row for row in cached if isinstance(row, dict)]
+            out = trim_bars(raw, settings.bars_max)
+            if len(out) < len(raw):
+                self._cache_put(key, out)
         else:
             try:
                 data = self._get(f"/hsstock/history/{inst.code_full}/d/{adjust}")
@@ -370,6 +374,9 @@ class MarketClient:
                         "v": row.get("v"),
                     }
                 )
+            out = trim_bars(out, settings.bars_max)
+            if out:
+                self._cache_put(key, out)
         return _filter_bars(out, start=start, end=end, limit=limit)
 
     def capital_flow(self, inst: Instrument) -> list[dict]:

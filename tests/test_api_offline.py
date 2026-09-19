@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from src.main import app
@@ -119,6 +121,7 @@ def test_health_cy_export_codes_artifacts_warehouse():
         assert health.json()["ok"] is True
         assert "llm_status" in health.json()["agent"]
         assert {c["id"] for c in health.json()["agent"]["channels"]} >= {"log", "desktop", "webhook"}
+        assert "total_human" in health.json()["storage"]
 
         cy = client.get("/api/markets/instruments?market=cy")
         assert cy.status_code == 200
@@ -228,3 +231,20 @@ def test_index_quote_parser_accepts_mairui_shapes():
     assert items["上证"]["p"] == 3900.87
     assert items["深成"]["pc"] == 2.01
     assert items["科创"]["p"] == 1948.21
+
+
+def test_storage_usage_endpoint():
+    with TestClient(app) as client:
+        denied = client.get("/api/storage")
+        assert denied.status_code == 401
+        login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        data = client.get("/api/storage", headers=headers)
+        assert data.status_code == 200, data.text
+        body = data.json()
+        assert "data_dir" in body
+        assert Path(body["data_dir"]).name == "data"
+        assert "cache_bytes" in body
+        assert body["limits"]["artifact_keep"] >= 1
+        assert body["limits"]["bars_max"] >= 1
+        assert body["limits"]["cache_max_bytes"] >= 1

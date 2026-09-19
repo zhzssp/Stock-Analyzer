@@ -40,7 +40,13 @@ async def lifespan(_app: FastAPI):
     sched = None
     if "pytest" not in __import__("sys").modules:
         from src.platform.scheduler import start_scheduler
+        from src.platform.storage import enforce_all
 
+        db = SessionLocal()
+        try:
+            enforce_all(db)
+        finally:
+            db.close()
         sched = start_scheduler()
     yield
     if sched:

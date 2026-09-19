@@ -39,6 +39,7 @@ from src.platform.jobs import job_payload as bg_job_payload, jobs
 from src.platform.monitor_prefs import pref_payload
 from src.platform.pools import catalog, resolve_pool
 from src.platform.security import issue_token, verify_password
+from src.platform.storage import clear_cache, enforce_all, health_storage, prune_artifacts, record_artifact, usage
 from src.query.cards import card_dict
 from src.query.engine import QueryEngine
 from src.query.registry import registry
@@ -179,6 +180,7 @@ def health():
             "channels": channel_catalog(),
             "policies": policies_public(),
         },
+        "storage": health_storage(),
     }
 
 
@@ -414,16 +416,14 @@ def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, us
         path = write_query_xlsx(rows, fields, pool_name)
         db = SessionLocal()
         try:
-            rec = Artifact(
+            rec = record_artifact(
+                db,
                 user_id=user_id,
-                path=str(path),
-                filename=path.name,
+                path=path,
                 pool_name=pool_name,
-                field_keys=json.dumps(fields, ensure_ascii=False),
-                codes=json.dumps(codes, ensure_ascii=False),
+                field_keys=fields,
+                codes=codes,
             )
-            db.add(rec)
-            db.commit()
             out["id"] = rec.id
             out["filename"] = rec.filename
             out["path"] = rec.path
@@ -513,6 +513,32 @@ def warehouse(
     if id:
         args["id"] = id
     return _tool_http(warehouse_get(args, _tool_ctx(user, db)))
+
+
+@router.get("/storage")
+def get_storage(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    snap = usage()
+    count = db.query(Artifact).filter_by(user_id=user.id).count()
+    snap["artifact_records"] = count
+    return snap
+
+
+@router.post("/storage/cache/clear")
+def storage_clear_cache(user: User = Depends(current_user)):
+    return clear_cache()
+
+
+@router.post("/storage/artifacts/prune")
+def storage_prune_artifacts(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    result = prune_artifacts(db, user_id=user.id)
+    result["usage"] = usage()
+    result["artifact_records"] = db.query(Artifact).filter_by(user_id=user.id).count()
+    return result
+
+
+@router.post("/storage/enforce")
+def storage_enforce(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return enforce_all(db, user_id=user.id)
 
 
 @router.get("/export-share")

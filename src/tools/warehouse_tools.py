@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.config import settings
 from src.models import Artifact
+from src.platform.storage import cache_file, usage
 from src.tools.base import ToolContext, ToolResult, ToolSpec
 from src.tools.excel_tools import excel_read
 from src.tools.registry import registry
@@ -58,7 +59,12 @@ def warehouse_get(args: dict, ctx: ToolContext) -> ToolResult:
         ]
         return ToolResult(
             ok=True,
-            data={"artifacts": arts, "cache": _cache_index(), "watch_count": len(extras)},
+            data={
+                "artifacts": arts,
+                "cache": _cache_index(),
+                "watch_count": len(extras),
+                "storage": usage(),
+            },
             source="warehouse_get",
             cite="仓库目录 · warehouse_get",
         )
@@ -70,7 +76,7 @@ def warehouse_get(args: dict, ctx: ToolContext) -> ToolResult:
         key = (args.get("key") or "").strip()
         if not key:
             return ToolResult(ok=True, data=_cache_index(), source="warehouse_get", cite="缓存目录")
-        path = settings.cache_dir / f"{key}.json"
+        path = cache_file(key)
         if not path.exists():
             return ToolResult(ok=False, error=f"缓存没有 {key}", source="warehouse_get", cite="缓存")
         text = path.read_text(encoding="utf-8")

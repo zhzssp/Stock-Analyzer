@@ -444,6 +444,16 @@
     .drawer h2 { margin: 0 0 8px; font-size: 18px; }
     .watch li.filled .code::after { content: " · 卡"; color: var(--teal); }
     .alert-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    .storage-grid { max-width: 720px; }
+    .storage-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .storage-row span { color: var(--muted); }
+    .storage-path { font-family: ui-monospace, Consolas, monospace; font-size: 13px; word-break: break-all; }
   </style>
 </head>
 <body>
@@ -496,6 +506,7 @@
           <button class="tab on" data-view="query" type="button">传统查询</button>
           <button class="tab" data-view="agent" type="button">Agent 问答</button>
           <button class="tab" data-view="monitor" type="button">监控中心</button>
+          <button class="tab" data-view="local" type="button">本机数据</button>
         </nav>
 
         <div id="query" class="view on">
@@ -554,7 +565,7 @@
               <div class="side-title" style="margin:14px 0 10px;">Tool 轨迹</div>
               <div id="chatTools" class="meta">问答走 analyst；盯盘在监控中心。</div>
               <div class="side-title" style="margin:14px 0 8px;">本机仓库</div>
-              <p class="pane-note">导出档案、行情缓存、日线。日线来自本机缓存或离线切片，不是编造。</p>
+              <p class="pane-note">导出档案、行情缓存、日线。日线只缓存你查过的票，超过上限会先清最久未用的。占用与清理在「本机数据」。</p>
               <div id="warehouseBox" class="meta-list">尚未加载</div>
               <div class="composer-row" style="margin-top:8px;">
                 <input id="barsCode" placeholder="代码，如 600038" style="flex:1;" />
@@ -686,6 +697,19 @@
             </div>
           </div>
         </div>
+
+        <div id="local" class="view">
+          <div class="toolbar">
+            <button class="btn" id="storageRefresh" type="button">刷新占用</button>
+            <button class="btn" id="cacheClear" type="button">清空行情缓存</button>
+            <button class="btn" id="artifactPrune" type="button">只留最近导出</button>
+            <span class="hint">数据在软件根目录的 data/。缓存可删；自选、对话、提醒在 app.db，不要手删整个文件夹。</span>
+          </div>
+          <div class="panel" style="flex:1; overflow:auto;">
+            <p class="pane-note">日线只缓存你查过的股票，同一文件覆盖写，默认最多 500 根。缓存超过上限会先删最久未用的日线，名单缓存尽量留到最后。每人默认最多留 20 份 Excel。</p>
+            <div id="storageBox" class="storage-grid meta-list">尚未加载</div>
+          </div>
+        </div>
       </section>
     </div>
   </div>
@@ -805,6 +829,7 @@
         const view = document.getElementById(tab.dataset.view);
         if (view) view.classList.add("on");
         if (tab.dataset.view === "monitor") loadMonitor().catch((e) => toast(e.message));
+        if (tab.dataset.view === "local") loadStorage().catch((e) => toast(e.message));
         if (tab.dataset.view === "agent") {
           loadSessions().catch((e) => toast(e.message));
           loadWarehouse().catch((e) => toast(e.message));
@@ -885,7 +910,10 @@
       const llmText = a.llm ? ((st.provider || "模型") + " 已配置") : "无模型 key · 确定性编排";
       const channels = (a.channels || []).filter((c) => c.enabled).map((c) => c.name);
       const chText = channels.length ? channels.join("、") : "无提醒通道";
-      document.getElementById("healthBar").textContent = marketText + " · " + llmText + " · " + chText;
+      const sto = data.storage || {};
+      const diskText = sto.total_human ? ("本机 " + sto.total_human) : "";
+      document.getElementById("healthBar").textContent =
+        [marketText, llmText, chText, diskText].filter(Boolean).join(" · ");
       document.getElementById("healthBar").title = JSON.stringify({ market: m, llm: st, channels: a.channels || [] });
       renderPolicy(a.policies || {});
       const chBox = document.getElementById("channelBox");
@@ -1688,6 +1716,28 @@
     document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
     document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
+    document.getElementById("storageRefresh").addEventListener("click", () => loadStorage().catch((e) => toast(e.message)));
+    document.getElementById("cacheClear").addEventListener("click", async () => {
+      if (!confirm("清空行情缓存？自选、对话和导出的 Excel 不受影响，下次查日线会重新拉。")) return;
+      try {
+        const data = await api("/storage/cache/clear", { method: "POST", body: "{}" });
+        toast("已清空缓存 " + (data.deleted || 0) + " 个文件");
+        await loadStorage();
+        await loadHealth();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("artifactPrune").addEventListener("click", async () => {
+      if (!confirm("只保留最近若干份导出，更早的 Excel 会从本机删掉。")) return;
+      try {
+        const data = await api("/storage/artifacts/prune", { method: "POST", body: "{}" });
+        toast("已删 " + (data.removed || 0) + " 份旧导出");
+        await loadStorage();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
     document.getElementById("diffBtn").addEventListener("click", () => openArchive({ diffLatest: true }).catch((e) => toast(e.message)));
     document.getElementById("closeCols").addEventListener("click", closeCols);
     document.getElementById("saveCols").addEventListener("click", () => saveCols().catch((e) => toast(e.message)));
@@ -2145,9 +2195,36 @@
       const d = data.data || {};
       const arts = d.artifacts || [];
       const cache = d.cache || [];
+      const disk = d.storage || {};
       document.getElementById("warehouseBox").innerHTML =
-        `档案 ${arts.length} 份 · 缓存 ${cache.length} 个 · 自选 ${d.watch_count || 0} 只` +
-        (arts.length ? `<div class="sub">最近：${esc(arts[0].filename)}</div>` : "");
+        `档案 ${arts.length} 份 · 缓存 ${cache.length} 个` +
+        (disk.cache_human ? `（${esc(disk.cache_human)}）` : "") +
+        ` · 自选 ${d.watch_count || 0} 只` +
+        (arts.length ? `<div class="sub">最近：${esc(arts[0].filename)}</div>` : "") +
+        (disk.total_human ? `<div class="sub">data/ 合计 ${esc(disk.total_human)}</div>` : "");
+    }
+
+    function renderStorage(data) {
+      const lim = data.limits || {};
+      const keep = lim.artifact_keep || 20;
+      const rows = [
+        ["路径", data.data_dir || ""],
+        ["合计", data.total_human || "0 B"],
+        ["库 app.db", data.db_human || "0 B"],
+        ["行情缓存", (data.cache_human || "0 B") + " / 上限 " + (lim.cache_max_human || "") + " · " + (data.cache_files || 0) + " 个文件" + (data.cache_over_budget ? " · 已超上限" : "")],
+        ["导出 Excel", (data.artifact_human || "0 B") + " · " + (data.artifact_records != null ? data.artifact_records : data.artifact_files || 0) + " 份（每人最多留 " + keep + "）"],
+        ["提醒日志", data.log_human || "0 B"],
+        ["日线窗口", "每只最多 " + (lim.bars_max || 500) + " 根，覆盖写"],
+      ];
+      document.getElementById("storageBox").innerHTML = rows.map((row) =>
+        `<div class="storage-row"><b>${esc(row[0])}</b>${row[0] === "路径" ? `<span class="storage-path">${esc(row[1])}</span>` : `<span>${esc(row[1])}</span>`}</div>`
+      ).join("");
+    }
+
+    async function loadStorage() {
+      const data = await api("/storage");
+      renderStorage(data);
+      return data;
     }
 
     async function loadBars() {

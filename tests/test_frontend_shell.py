@@ -28,6 +28,14 @@ def test_workbench_exposes_landed_backend_entries():
     assert 'id="swChips"' in html
     assert 'id="healthBar"' in html
     assert 'id="warehouseBox"' in html
+    assert 'id="storageBox"' in html
+    assert 'data-view="local"' in html
+    assert 'id="cacheClear"' in html
+    assert 'id="artifactPrune"' in html
+    assert "/storage/cache/clear" in html
+    assert "/storage/artifacts/prune" in html
+    assert "只留最近导出" in html
+    assert "本机数据" in html
     assert 'id="instList"' in html
     assert 'id="futuresList"' in html
     assert 'id="shareUpload"' in html

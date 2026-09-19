@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 
 from src.models import Artifact
 from src.platform.export_xlsx import write_agent_xlsx
+from src.platform.storage import record_artifact
 from src.tools.base import ToolContext, ToolResult, ToolSpec
 from src.tools.registry import registry
 
@@ -135,16 +136,14 @@ def excel_export(args: dict, ctx: ToolContext) -> ToolResult:
         cites=args.get("cites") or [],
         tools=args.get("tools") or [],
     )
-    rec = Artifact(
+    rec = record_artifact(
+        ctx.db,
         user_id=ctx.user_id,
-        path=str(path),
-        filename=path.name,
+        path=path,
         pool_name="agent",
-        field_keys="[]",
-        codes="[]",
+        field_keys=[],
+        codes=[],
     )
-    ctx.db.add(rec)
-    ctx.db.commit()
     return ToolResult(ok=True, data=_payload(rec), source="excel_export", cite=f"Excel · {path.name}")
 
 
