@@ -17,7 +17,7 @@ try:
 except Exception:  # pragma: no cover
     SHANGHAI = timezone(timedelta(hours=8))
 
-QUOTE_FIELDS = ("p", "pc", "pe", "sjl", "o", "h", "l", "v", "c")
+QUOTE_FIELDS = ("p", "pc", "pe", "sjl", "o", "h", "l", "v", "c", "hs", "sz", "lt", "zdf60", "zdfnc")
 _SAFE_LOGIN = re.compile(r"[^A-Za-z0-9._-]+")
 _SLOT_NAME = re.compile(r"^(\d{4})")
 POINTER_NAME = "clock_pointer.txt"

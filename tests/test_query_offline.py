@@ -20,6 +20,18 @@ def test_offline_query_has_figure1_fields():
     assert rows[0]["target"] == 36.9
     assert rows[0]["off_low"] == 9.19
     assert rows[0]["pb"] == 1.25
+    assert "turnover" not in rows[0]
+    extra = engine.run(insts, field_keys=["name", "turnover", "mcap", "fcap", "pct60", "pct_ytd"])
+    assert extra[0]["turnover"] == 0.86
+    assert extra[0]["mcap"] == 412.5
+    assert extra[0]["fcap"] == 318.2
+    assert extra[0]["pct60"] == 8.4
+    assert extra[0]["pct_ytd"] == 12.1
+    assert extra[0]["code6"] == "600038"
+    assert extra[1]["code6"] == "000725"
+    extra_keys = {s.key for s in registry.all() if s.key in {"turnover", "mcap", "fcap", "pct60", "pct_ytd"}}
+    assert extra_keys
+    assert not any(registry.get(k).default for k in extra_keys)
 
 
 def test_code_normalizer_keeps_suffix():

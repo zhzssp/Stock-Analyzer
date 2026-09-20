@@ -72,6 +72,10 @@ class WatchIn(BaseModel):
     items: list[dict]
 
 
+class WatchOrderIn(BaseModel):
+    codes: list[str]
+
+
 class QueryIn(BaseModel):
     codes: list[str] | None = None
     fields: list[str] | None = None
@@ -218,6 +222,7 @@ def _watch_payload(item: WatchItem) -> dict:
         "exchange": suffix.upper() if suffix else "",
         "card": card,
         "card_filled": filled,
+        "sort_order": int(getattr(item, "sort_order", 0) or 0),
     }
 
 
@@ -233,6 +238,15 @@ def _sync_clock_universe(user: User, db: Session) -> None:
     write_universe(root, user.username, codes)
 
 
+def _watch_ordered(db: Session, user: User) -> list[WatchItem]:
+    return (
+        db.query(WatchItem)
+        .filter_by(user_id=user.id)
+        .order_by(WatchItem.sort_order.asc(), WatchItem.id.asc())
+        .all()
+    )
+
+
 def _codes_from_items(items: list[dict]) -> tuple[list[str], dict[str, str]]:
     codes = [x.get("code_full") or x.get("code6") or x.get("code") for x in items]
     names = {x.get("code6") or x.get("code"): x.get("name", "") for x in items}
@@ -241,8 +255,7 @@ def _codes_from_items(items: list[dict]) -> tuple[list[str], dict[str, str]]:
 
 @router.get("/watchlist")
 def get_watchlist(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    items = db.query(WatchItem).filter_by(user_id=user.id).all()
-    return [_watch_payload(i) for i in items]
+    return [_watch_payload(i) for i in _watch_ordered(db, user)]
 
 
 @router.put("/watchlist")
@@ -275,6 +288,7 @@ def put_watchlist(body: WatchIn, user: User = Depends(current_user), db: Session
             buy_high=old.get("buy_high"),
             reduce_price=old.get("reduce_price"),
             invalid_if=old.get("invalid_if") or "",
+            sort_order=len(saved),
         )
         db.add(item)
         saved.append(_watch_payload(item))
@@ -288,7 +302,9 @@ def put_watchlist(body: WatchIn, user: User = Depends(current_user), db: Session
 def add_watch_items(body: WatchIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     codes, names = _codes_from_items(body.items)
     insts = resolve_instruments(codes, market)
-    existing = {i.code6: i for i in db.query(WatchItem).filter_by(user_id=user.id).all()}
+    existing_rows = _watch_ordered(db, user)
+    existing = {i.code6: i for i in existing_rows}
+    nxt = (existing_rows[-1].sort_order + 1) if existing_rows else 0
     added = []
     for inst in insts:
         if inst.code6 in existing:
@@ -299,12 +315,14 @@ def add_watch_items(body: WatchIn, user: User = Depends(current_user), db: Sessi
             code_full=inst.code_full,
             name=inst.name or names.get(inst.code6, ""),
             group_name="自选",
+            sort_order=nxt,
         )
+        nxt += 1
         db.add(item)
         existing[inst.code6] = item
         added.append(_watch_payload(item))
     db.commit()
-    items = [_watch_payload(i) for i in existing.values()]
+    items = [_watch_payload(i) for i in _watch_ordered(db, user)]
     _sync_clock_universe(user, db)
     bus.publish("universe.changed", {"user_id": user.id, "count": len(items)}, "platform")
     return {"added": added, "items": items}
@@ -317,10 +335,33 @@ def delete_watch_item(code6: str, user: User = Depends(current_user), db: Sessio
         raise HTTPException(status_code=404, detail="自选中没有这只股票")
     db.delete(item)
     db.commit()
-    remain = db.query(WatchItem).filter_by(user_id=user.id).all()
+    remain = _watch_ordered(db, user)
     _sync_clock_universe(user, db)
     bus.publish("universe.changed", {"user_id": user.id, "count": len(remain)}, "platform")
     return {"removed": code6, "items": [_watch_payload(i) for i in remain]}
+
+
+@router.put("/watchlist/order")
+def put_watch_order(body: WatchOrderIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    items = {i.code6: i for i in db.query(WatchItem).filter_by(user_id=user.id).all()}
+    if not items:
+        return []
+    ordered: list[WatchItem] = []
+    seen: set[str] = set()
+    for raw in body.codes or []:
+        code = str(raw or "").split(".")[0].strip()
+        row = items.get(code)
+        if row is None or code in seen:
+            continue
+        ordered.append(row)
+        seen.add(code)
+    for row in _watch_ordered(db, user):
+        if row.code6 not in seen:
+            ordered.append(row)
+    for idx, row in enumerate(ordered):
+        row.sort_order = idx
+    db.commit()
+    return [_watch_payload(i) for i in _watch_ordered(db, user)]
 
 
 @router.put("/watchlist/{code6}/card")

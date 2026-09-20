@@ -179,3 +179,49 @@ def test_alert_status_and_session_skips_eod_jobs():
         assert "near-bottom" in out["ran"]
         assert "holders-change" not in out["ran"]
         assert "corp-events" not in out["ran"]
+
+
+def test_custom_rule_scope_one_code():
+    from types import SimpleNamespace
+
+    from src.agents.rules import in_scope, normalize_scope, validate_custom_spec
+
+    scoped = normalize_scope({"type": "code", "code": "600038.SH"})
+    assert scoped == {"type": "codes", "codes": ["600038"]}
+    try:
+        normalize_scope({"type": "codes", "codes": []})
+        raise AssertionError("empty codes should fail")
+    except ValueError as exc:
+        assert "一只" in str(exc)
+    item = SimpleNamespace(code6="600038", code_full="600038.SH", group_name="自选")
+    other = SimpleNamespace(code6="000725", code_full="000725.SZ", group_name="自选")
+    assert in_scope(item, {"scope": scoped})
+    assert not in_scope(other, {"scope": scoped})
+
+    with TestClient(app) as client:
+        headers = _auth(client)
+        reset = client.put(
+            "/api/watchlist",
+            json={"items": [{"code": "600038.SH"}, {"code": "000725.SZ"}]},
+            headers=headers,
+        )
+        assert reset.status_code == 200, reset.text
+        spec = {
+            "name": "只盯中直",
+            "metric": "off_low",
+            "op": "lte",
+            "compare": "threshold",
+            "value": 20,
+            "schedule": "eod",
+            "scope": {"type": "codes", "codes": ["600038"]},
+        }
+        preview = client.post("/api/monitor/rules/preview", json={"spec": spec}, headers=headers)
+        assert preview.status_code == 200, preview.text
+        body = preview.json()
+        assert body["count"] == 1
+        assert body["hits"][0]["code6"] == "600038"
+        created = client.post("/api/monitor/rules", json={"name": "只盯中直", "enabled": True, "spec": spec}, headers=headers)
+        assert created.status_code == 200, created.text
+        saved = created.json()
+        assert validate_custom_spec(saved["spec"])["scope"] == {"type": "codes", "codes": ["600038"]}
+        client.delete(f"/api/monitor/rules/{saved['id']}", headers=headers)

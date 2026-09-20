@@ -49,6 +49,7 @@ def bootstrap(db: Session) -> None:
                 code_full=inst.code_full,
                 name=inst.name,
                 group_name="自选",
+                sort_order=len(existing),
             )
             db.add(item)
             db.flush()

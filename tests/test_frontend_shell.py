@@ -47,6 +47,9 @@ def test_workbench_exposes_landed_backend_entries():
     assert "/export-share" in html
     assert "只跑这条" in html
     assert "添加规则" in html
+    assert 'id="ruleMask"' in html
+    assert 'id="ruleBuilder"' in html
+    assert "data-del-rule" in html
     assert "规则定义 / 监控需求" in html
     assert 'id="ruleDefinition"' in html
     assert 'id="ruleNeed"' in html
@@ -93,9 +96,15 @@ def test_workbench_pct_column_sorts_index_constituents():
     assert "sortedRows" in html
     assert "bindPctSort" in html
     assert 'th[data-key="pct"]' in html
-    assert "点击切换正序/反序" in html
-    assert 'sortKey: "pct"' in html
+    assert "点击按涨跌幅排序" in html
+    assert 'sortKey: ""' in html
     assert 'sortDir: "desc"' in html
+    assert 'state.sortKey = "pct"' in html
+    assert "/watchlist/order" in html
+    assert 'id="ruleCode"' in html
+    assert "一只" in html
+    assert "data-watch-up" in html
+    assert "换手和市值默认不勾" in html
 
 
 def test_workbench_picker_dialog_is_wide_and_short():

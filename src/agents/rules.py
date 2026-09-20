@@ -209,18 +209,57 @@ def in_scope(item, params: dict) -> bool:
     if isinstance(scope, dict):
         kind = scope.get("type") or "all"
         group = scope.get("group")
-        codes = {str(c) for c in (scope.get("codes") or [])}
+        codes = {str(c).split(".")[0] for c in (scope.get("codes") or []) if str(c).strip()}
+        extra = str(scope.get("code") or "").split(".")[0].strip()
+        if extra:
+            codes.add(extra)
     else:
         kind = str(scope)
         group = params.get("group")
-        codes = {str(c) for c in (params.get("codes") or [])}
+        codes = {str(c).split(".")[0] for c in (params.get("codes") or []) if str(c).strip()}
     if kind in {"", "all", "watch"}:
         return True
     if kind == "group":
         return (item.group_name or "自选") == (group or "自选")
-    if kind == "codes":
-        return item.code6 in codes or item.code_full in codes
+    if kind in {"codes", "code"}:
+        return item.code6 in codes or str(item.code_full).split(".")[0] in codes
     return True
+
+
+def normalize_scope(scope: Any) -> str | dict:
+    if scope in (None, "", "all", "watch"):
+        return "all"
+    if isinstance(scope, str):
+        if scope in GROUPS:
+            return {"type": "group", "group": scope}
+        if scope not in SCOPES:
+            raise ValueError("范围只支持全部自选 / 分组 / 指定代码")
+        if scope == "codes":
+            raise ValueError("指定代码时请选择一只自选")
+        return scope
+    if not isinstance(scope, dict):
+        raise ValueError("范围只支持全部自选 / 分组 / 指定代码")
+    kind = str(scope.get("type") or "all")
+    if kind in {"", "all", "watch"}:
+        return "all"
+    if kind == "group":
+        group = scope.get("group") or "自选"
+        if group not in GROUPS:
+            raise ValueError("分组只支持 自选 / 观察 / 备选")
+        return {"type": "group", "group": group}
+    if kind in {"codes", "code"}:
+        raw = scope.get("codes") if scope.get("codes") is not None else scope.get("code")
+        if isinstance(raw, str) or isinstance(raw, int):
+            raw = [raw]
+        codes: list[str] = []
+        for item in raw or []:
+            token = str(item).split(".")[0].strip()
+            if token and token not in codes:
+                codes.append(token)
+        if not codes:
+            raise ValueError("指定代码时请选择一只自选")
+        return {"type": "codes", "codes": codes[:8]}
+    raise ValueError("范围只支持全部自选 / 分组 / 指定代码")
 
 
 def is_scannable(spec: dict | None) -> bool:
@@ -240,9 +279,7 @@ def validate_custom_spec(spec: dict) -> dict:
         raise ValueError("扫描时点只支持盘中或日终")
     if severity not in SEVERITIES:
         raise ValueError("严重度只支持观察或行动")
-    scope = spec.get("scope") or "all"
-    if isinstance(scope, str) and scope not in SCOPES:
-        raise ValueError("范围只支持全部自选 / 分组 / 指定代码")
+    scope = normalize_scope(spec.get("scope") or "all")
     notes = {
         "definition": definition,
         "need": need,

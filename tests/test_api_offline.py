@@ -284,3 +284,32 @@ def test_clock_dir_rejects_data_folder_and_lists_slots(tmp_path):
                 pointer.unlink()
         else:
             pointer.write_text(backup, encoding="utf-8")
+
+
+def test_watchlist_order_drives_query_rows():
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        reset = client.put(
+            "/api/watchlist",
+            json={"items": [{"code": i.code_full} for i in WATCH_SEED]},
+            headers=headers,
+        )
+        assert reset.status_code == 200
+        original = [x["code6"] for x in reset.json()]
+        assert original[0] == WATCH_SEED[0].code6
+        reversed_codes = list(reversed(original))
+        ordered = client.put("/api/watchlist/order", json={"codes": reversed_codes}, headers=headers)
+        assert ordered.status_code == 200, ordered.text
+        assert [x["code6"] for x in ordered.json()] == reversed_codes
+        listed = client.get("/api/watchlist", headers=headers)
+        assert [x["code6"] for x in listed.json()] == reversed_codes
+        query = client.post("/api/query/run", json={}, headers=headers)
+        assert query.status_code == 200
+        assert [r["code6"] for r in query.json()["rows"]] == reversed_codes
+        prefs = client.get("/api/query/prefs", headers=headers)
+        keys = {x["key"]: x for x in prefs.json()["all"]}
+        assert keys["turnover"]["default"] is False
+        assert keys["mcap"]["default"] is False
+        assert keys["pct60"]["default"] is False
+        client.put("/api/watchlist/order", json={"codes": original}, headers=headers)

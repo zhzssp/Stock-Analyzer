@@ -32,6 +32,7 @@ class WatchItem(Base):
     buy_high: Mapped[float | None] = mapped_column(Float, nullable=True)
     reduce_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     invalid_if: Mapped[str] = mapped_column(Text, default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Artifact(Base):

@@ -237,7 +237,7 @@ class MarketClient:
             return fixtures.QUOTE.get(inst.code6, {"source": "offline"})
         data = self._get(f"/hsrl/ssjy/{inst.code6}")
         row = data[0] if isinstance(data, list) else data
-        return {"p": row.get("p"), "pc": row.get("pc"), "pe": row.get("pe"), "sjl": row.get("sjl"), "source": "live"}
+        return _ssjy_quote(row, "live")
 
     def profile(self, inst: Instrument) -> dict:
         if self.offline:
@@ -330,13 +330,7 @@ class MarketClient:
             for inst in insts:
                 row = by_code.get(inst.code6)
                 if row:
-                    mapped[inst.code6] = {
-                        "p": row.get("p"),
-                        "pc": row.get("pc"),
-                        "pe": row.get("pe"),
-                        "sjl": row.get("sjl"),
-                        "source": "live",
-                    }
+                    mapped[inst.code6] = _ssjy_quote(row, "live")
                 else:
                     mapped[inst.code6] = self.quote(inst)
             return mapped
@@ -497,6 +491,26 @@ def _as_float(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _ssjy_quote(row: Any, source: str) -> dict:
+    if not isinstance(row, dict):
+        return {"source": source}
+    hs = row.get("hs")
+    if hs is None:
+        hs = row.get("tr")
+    return {
+        "p": row.get("p"),
+        "pc": row.get("pc"),
+        "pe": row.get("pe"),
+        "sjl": row.get("sjl"),
+        "hs": hs,
+        "sz": row.get("sz"),
+        "lt": row.get("lt"),
+        "zdf60": row.get("zdf60"),
+        "zdfnc": row.get("zdfnc"),
+        "source": source,
+    }
 
 
 def _parse_index_quote(data: Any) -> dict | None:

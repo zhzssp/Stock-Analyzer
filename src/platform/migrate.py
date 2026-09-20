@@ -14,6 +14,7 @@ _COLUMNS = {
         ("buy_high", "FLOAT"),
         ("reduce_price", "FLOAT"),
         ("invalid_if", "TEXT DEFAULT ''"),
+        ("sort_order", "INTEGER DEFAULT 0"),
     ],
     "monitor_jobs": [
         ("params", "TEXT DEFAULT '{}'"),

@@ -61,7 +61,7 @@ def resolve_pool(
     if pid == "watch":
         if user is None or db is None:
             raise HTTPException(status_code=400, detail="自选池需要登录")
-        codes = [i.code_full for i in db.query(WatchItem).filter_by(user_id=user.id).all()]
+        codes = [i.code_full for i in db.query(WatchItem).filter_by(user_id=user.id).order_by(WatchItem.sort_order.asc(), WatchItem.id.asc()).all()]
         insts = resolve_instruments(codes, market)
         meta["label"] = "自选"
         return insts, meta

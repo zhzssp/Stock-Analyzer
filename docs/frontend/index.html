@@ -120,6 +120,7 @@
     }
     .btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
     .btn.ghost { background: transparent; }
+    .btn.danger { color: var(--down); border-color: #e8c4c0; background: #fff8f7; }
     .btn.sm { padding: 5px 10px; font-size: 13px; }
     input, textarea {
       width: 100%;
@@ -133,9 +134,13 @@
       list-style: none;
       display: flex;
       justify-content: space-between;
+      align-items: center;
+      gap: 6px;
       padding: 8px 8px;
       border-radius: 8px;
     }
+    .watch .rank { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
+    .watch .rank .btn { padding: 0 6px; font-size: 11px; line-height: 1.15; min-width: 22px; }
     .watch { margin: 0; padding: 0; flex: 1; min-height: 0; overflow: auto; }
     .watch li:hover, .watch li.active { background: var(--paper); }
     .watch .code { color: var(--muted); font-size: 13px; }
@@ -505,7 +510,7 @@
         </div>
         <div class="side-pane" id="watchPane">
           <div class="side-title">自选池 <button class="btn sm ghost" id="openPicker" type="button">+ 添加 / 筛选</button></div>
-          <p class="pane-note">查询和导出只含你勾过的票。自选里若同时有沪、深、北，会在同一张表。</p>
+          <p class="pane-note">查询和导出只含你勾过的票。左侧可上下移动排序；点名称打开决策卡。自选里若同时有沪、深、北，会在同一张表。</p>
           <input id="watchFilter" placeholder="搜索当前自选" />
           <ul class="watch" id="watchList"></ul>
         </div>
@@ -623,85 +628,11 @@
             </div>
             <div id="monitorRules" class="monitor-pane">
               <div class="side-title">模板规则</div>
-              <p class="pane-note">开关和阈值仍管自动扫描。规则定义 / 监控需求点开才显示，写给问答助手当守则，不会让盯盘按一段话自由发挥。</p>
+              <p class="pane-note">开关和阈值仍管自动扫描。决策卡只存这只票的买区 / 减仓价等数字；真响铃在「今日」。规则定义 / 监控需求点开才显示，写给问答助手当守则。</p>
               <div id="monitorJobs"></div>
               <div class="side-title" style="margin:16px 0 8px;">我的规则 <button class="btn sm" id="ruleAdd" type="button">添加规则</button></div>
-              <p class="pane-note">可以增删。可以只写文字给问答用，也可以再配指标阈值让盘中/日终扫描。</p>
+              <p class="pane-note">可以增删，范围可限定全部、某一分组或一只自选。可以只写文字给问答用，也可以再配指标阈值让盘中/日终扫描。</p>
               <div id="customRules" class="meta">还没有自定义规则</div>
-              <form id="ruleBuilder" class="rule-card" style="display:none;">
-                <h3 id="ruleBuilderTitle">添加规则</h3>
-                <div class="rule-grid">
-                  <label>名称<input id="ruleName" placeholder="例如：离底小于 5%" /></label>
-                  <label>启用
-                    <select id="ruleEnabled">
-                      <option value="1">开启</option>
-                      <option value="0">关闭</option>
-                    </select>
-                  </label>
-                  <label>指标<select id="ruleMetric"></select></label>
-                </div>
-                <div id="ruleScanFields" class="rule-grid">
-                  <label>比较
-                    <select id="ruleCompare">
-                      <option value="threshold">阈值</option>
-                      <option value="card">相对决策卡</option>
-                    </select>
-                  </label>
-                  <label>运算符
-                    <select id="ruleOp">
-                      <option value="lte">≤</option>
-                      <option value="gte">≥</option>
-                      <option value="eq">=</option>
-                    </select>
-                  </label>
-                  <label id="ruleValueWrap">阈值<input id="ruleValue" type="number" step="any" /></label>
-                  <label id="ruleCardWrap" style="display:none;">决策卡字段
-                    <select id="ruleCardField">
-                      <option value="buy_high">买区高</option>
-                      <option value="buy_low">买区低</option>
-                      <option value="reduce_at">减仓价</option>
-                      <option value="cost">成本</option>
-                    </select>
-                  </label>
-                  <label>范围
-                    <select id="ruleScope">
-                      <option value="all">全部自选</option>
-                      <option value="group">分组</option>
-                    </select>
-                  </label>
-                  <label id="ruleGroupWrap" style="display:none;">分组
-                    <select id="ruleGroup">
-                      <option value="自选">自选</option>
-                      <option value="观察">观察</option>
-                      <option value="备选">备选</option>
-                    </select>
-                  </label>
-                  <label>何时
-                    <select id="ruleWhen">
-                      <option value="eod">日终 20:20</option>
-                      <option value="session">盘中</option>
-                    </select>
-                  </label>
-                  <label>严重度
-                    <select id="ruleSeverity">
-                      <option value="watch">观察</option>
-                      <option value="act">行动</option>
-                    </select>
-                  </label>
-                </div>
-                <details class="rule-notes" id="ruleNoteBox">
-                  <summary>规则定义 / 监控需求<span class="note-flag" id="ruleNoteFlag">点开填写</span></summary>
-                  <p class="pane-note">默认收起。定义说明这条规则在盯什么；监控需求是问答必须遵守的要求。不要写「帮我买」。自动扫描仍只认上面的数字。</p>
-                  <label>规则定义<textarea id="ruleDefinition" rows="3" placeholder="例如：只把离长窗底 8% 以内当成值得看一眼，不是买入信号。"></textarea></label>
-                  <label>监控需求<textarea id="ruleNeed" rows="3" placeholder="例如：问这只票时先核对着这条规则；没有命中就直说没有，不要补故事。"></textarea></label>
-                </details>
-                <div class="composer-row">
-                  <button class="btn primary" id="ruleSave" type="submit">保存</button>
-                  <button class="btn" id="rulePreviewBtn" type="button">预览命中</button>
-                  <button class="btn ghost" id="ruleCancel" type="button">取消</button>
-                </div>
-              <div id="rulePreview" class="meta-list" style="margin-top:8px;"></div>
-              </form>
             </div>
             <div id="monitorReview" class="monitor-pane">
               <div class="side-title">次日复盘 <button class="btn sm primary" id="reviewRun" type="button">立刻复盘</button></div>
@@ -812,7 +743,7 @@
   <div class="login-mask" id="colMask" style="display:none;">
     <div class="login-card pick-card col-card">
       <h2>列设置</h2>
-      <p>勾选后写入本机偏好，查询和导出都按这个清单。</p>
+      <p>勾选后写入本机偏好，查询和导出都按这个清单。决策卡那一组、换手和市值默认不勾，要用再勾。</p>
       <div class="pick-list" id="colList"></div>
       <div class="pick-actions">
         <button class="btn primary" id="saveCols" type="button">保存并查询</button>
@@ -837,10 +768,91 @@
       </div>
     </div>
   </div>
+  <div class="login-mask" id="ruleMask" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="ruleBuilderTitle">
+    <form id="ruleBuilder" class="login-card col-card">
+      <h2 id="ruleBuilderTitle">添加规则</h2>
+      <p class="pane-note">从已注册指标拼一条，也可以只写文字给问答用。</p>
+      <div class="rule-grid">
+        <label>名称<input id="ruleName" placeholder="例如：离底小于 5%" /></label>
+        <label>启用
+          <select id="ruleEnabled">
+            <option value="1">开启</option>
+            <option value="0">关闭</option>
+          </select>
+        </label>
+        <label>指标<select id="ruleMetric"></select></label>
+      </div>
+      <div id="ruleScanFields" class="rule-grid">
+        <label>比较
+          <select id="ruleCompare">
+            <option value="threshold">阈值</option>
+            <option value="card">相对决策卡</option>
+          </select>
+        </label>
+        <label>运算符
+          <select id="ruleOp">
+            <option value="lte">≤</option>
+            <option value="gte">≥</option>
+            <option value="eq">=</option>
+          </select>
+        </label>
+        <label id="ruleValueWrap">阈值<input id="ruleValue" type="number" step="any" /></label>
+        <label id="ruleCardWrap" style="display:none;">决策卡字段
+          <select id="ruleCardField">
+            <option value="buy_high">买区高</option>
+            <option value="buy_low">买区低</option>
+            <option value="reduce_at">减仓价</option>
+            <option value="cost">成本</option>
+          </select>
+        </label>
+                  <label>范围
+                    <select id="ruleScope">
+                      <option value="all">全部自选</option>
+                      <option value="group">分组</option>
+                      <option value="code">一只</option>
+                    </select>
+                  </label>
+                  <label id="ruleGroupWrap" style="display:none;">分组
+                    <select id="ruleGroup">
+                      <option value="自选">自选</option>
+                      <option value="观察">观察</option>
+                      <option value="备选">备选</option>
+                    </select>
+                  </label>
+                  <label id="ruleCodeWrap" style="display:none;">自选
+                    <select id="ruleCode"></select>
+                  </label>
+        <label>何时
+          <select id="ruleWhen">
+            <option value="eod">日终 20:20</option>
+            <option value="session">盘中</option>
+          </select>
+        </label>
+        <label>严重度
+          <select id="ruleSeverity">
+            <option value="watch">观察</option>
+            <option value="act">行动</option>
+          </select>
+        </label>
+      </div>
+      <details class="rule-notes" id="ruleNoteBox">
+        <summary>规则定义 / 监控需求<span class="note-flag" id="ruleNoteFlag">点开填写</span></summary>
+        <p class="pane-note">默认收起。定义说明这条规则在盯什么；监控需求是问答必须遵守的要求。不要写「帮我买」。自动扫描仍只认上面的数字。</p>
+        <label>规则定义<textarea id="ruleDefinition" rows="3" placeholder="例如：只把离长窗底 8% 以内当成值得看一眼，不是买入信号。"></textarea></label>
+        <label>监控需求<textarea id="ruleNeed" rows="3" placeholder="例如：问这只票时先核对着这条规则；没有命中就直说没有，不要补故事。"></textarea></label>
+      </details>
+      <div class="composer-row" style="margin-top:12px;">
+        <button class="btn primary" id="ruleSave" type="submit">保存</button>
+        <button class="btn" id="rulePreviewBtn" type="button">预览命中</button>
+        <button class="btn ghost" id="ruleCancel" type="button">取消</button>
+      </div>
+      <div id="rulePreview" class="meta-list" style="margin-top:8px;"></div>
+    </form>
+  </div>
   <div class="drawer-mask" id="cardMask" style="display:none;">
     <form class="drawer" id="cardForm">
       <h2 id="cardTitle">决策卡</h2>
-      <p class="pane-note" id="cardHint">未填时监控仍用统计底 / 默认目标卖价。</p>
+      <p class="pane-note" id="cardHint">这是这只票的参数，不会自己响铃。接近减仓看监控中心「今日」；表上要看到距买区 / 距减仓，请在列设置勾选决策卡那一组。</p>
       <label>分组
         <select id="cardGroup">
           <option value="自选">自选</option>
@@ -903,7 +915,7 @@
       zgb: 96, ltgb: 96, mgwfplr: 120, yffy: 96, mgjzc: 104, eps: 96,
       gross: 80, net: 80, flow_in: 96, flow_out: 96, flow_net: 88,
       northbound: 96, low1y: 96, low_long: 88, high: 72, off_low: 80,
-      multiple: 80, target: 96,
+      multiple: 80, target: 96, turnover: 80, mcap: 96, fcap: 96, pct60: 104, pct_ytd: 112,
     };
     function loadColWidths() {
       try {
@@ -937,7 +949,7 @@
       lastQueryCodes: null,
       boardTimer: null,
       rowsRaw: [],
-      sortKey: "pct",
+      sortKey: "",
       sortDir: "desc",
       monitorTab: "today",
       metrics: [],
@@ -1081,8 +1093,8 @@
 
     function fmt(key, value) {
       if (value === null || value === undefined || value === "") return "—";
-      if ((key === "pct" || key === "off_low") && typeof value === "number") {
-        const sign = key === "pct" && value > 0 ? "+" : "";
+      if ((key === "pct" || key === "off_low" || key === "turnover" || key === "pct60" || key === "pct_ytd" || key === "vs_cost" || key === "dist_buy" || key === "dist_reduce") && typeof value === "number") {
+        const sign = (key === "pct" || key === "pct60" || key === "pct_ytd") && value > 0 ? "+" : "";
         return sign + value.toFixed(2) + "%";
       }
       return value;
@@ -1170,7 +1182,8 @@
     }
 
     function sortedRows(rows) {
-      const key = state.sortKey || "pct";
+      const key = state.sortKey;
+      if (!key) return (rows || []).slice();
       const dir = state.sortDir === "asc" ? 1 : -1;
       return (rows || []).slice().sort((a, b) => {
         const av = sortValue(a, key);
@@ -1188,16 +1201,32 @@
         if (e.target.closest(".col-resizer")) return;
         const th = e.target.closest('th[data-key="pct"]');
         if (!th) return;
-        state.sortKey = "pct";
-        state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
+        if (state.sortKey !== "pct") {
+          state.sortKey = "pct";
+          state.sortDir = "desc";
+        } else {
+          state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
+        }
         renderTable(state.fields, state.rowsRaw);
       });
     }
 
+    function fillRuleCodes() {
+      const sel = document.getElementById("ruleCode");
+      if (!sel) return;
+      const current = sel.value;
+      const items = state.watch || [];
+      sel.innerHTML = items.map((it) =>
+        `<option value="${esc(it.code6)}">${esc(it.name)} ${esc(it.code6)}</option>`
+      ).join("");
+      if (current && items.some((it) => it.code6 === current)) sel.value = current;
+    }
+
     function renderWatch(items) {
-      state.watch = items;
+      state.watch = items || [];
+      fillRuleCodes();
       const needle = (document.getElementById("watchFilter").value || "").trim().toLowerCase();
-      const shown = items.filter((it) => {
+      const shown = state.watch.filter((it) => {
         if (!needle) return true;
         return `${it.name} ${it.code6} ${it.code_full}`.toLowerCase().includes(needle);
       });
@@ -1208,7 +1237,11 @@
       }
       ul.innerHTML = shown.map((it, i) =>
         `<li class="${i === 0 ? "active" : ""} ${it.card_filled ? "filled" : ""}" data-code="${it.code6}">
-          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || marketLabel[it.market] || it.market || ""} · ${esc(it.group || "自选")}</span></span>
+          <div class="rank">
+            <button class="btn sm ghost" type="button" data-watch-up="${it.code6}" title="上移">↑</button>
+            <button class="btn sm ghost" type="button" data-watch-down="${it.code6}" title="下移">↓</button>
+          </div>
+          <span class="meta" style="flex:1;min-width:0;"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || marketLabel[it.market] || it.market || ""} · ${esc(it.group || "自选")}</span></span>
           <button class="rm" type="button" data-rm="${it.code6}" title="移出自选">×</button>
         </li>`
       ).join("");
@@ -1282,7 +1315,7 @@
 
     async function selectPool(poolId) {
       state.pool = poolId;
-      if (String(poolId).startsWith("index:")) {
+      if (poolId !== "watch") {
         state.sortKey = "pct";
         state.sortDir = "desc";
       }
@@ -1304,10 +1337,11 @@
       document.getElementById("exchangePane").style.display = side === "exchange" ? "flex" : "none";
       if (side === "watch") {
         state.pool = "watch";
+        state.sortKey = "";
         updateExportScope("自选");
         document.getElementById("poolHint").textContent = poolHintText("watch");
       }
-      if (side === "quote") {
+      if (side === "quote" || side === "exchange") {
         state.sortKey = "pct";
         state.sortDir = "desc";
       }
@@ -1351,9 +1385,10 @@
           const w = colWidth(f);
           const sortable = f.key === "pct";
           const cls = sortable ? "sortable" : "";
-          const aria = sortable ? ` aria-sort="${state.sortDir === "asc" ? "ascending" : "descending"}"` : "";
-          const mark = sortable ? `<span class="sort-ind">${state.sortDir === "asc" ? "▲" : "▼"}</span>` : "";
-          const tip = sortable ? `${f.label} · 点击切换正序/反序` : f.label;
+          const sorted = sortable && state.sortKey === "pct";
+          const aria = sorted ? ` aria-sort="${state.sortDir === "asc" ? "ascending" : "descending"}"` : "";
+          const mark = sorted ? `<span class="sort-ind">${state.sortDir === "asc" ? "▲" : "▼"}</span>` : "";
+          const tip = sortable ? `${f.label} · 点击按涨跌幅排序` : f.label;
           return `<th class="${cls}" data-key="${escAttr(f.key)}" style="width:${w}px" title="${escAttr(tip)}"${aria}><span class="col-label">${escHtml(f.label)}${mark}</span><span class="col-resizer" data-key="${escAttr(f.key)}"></span></th>`;
         }).join("") + "</tr>";
       document.getElementById("tableBody").innerHTML = shown.map((row) => {
@@ -1526,21 +1561,28 @@
       }
       box.innerHTML = items.map((r) => {
         const s = r.spec || {};
+        const scope = s.scope;
+        let where = "全部自选";
+        if (scope && typeof scope === "object" && scope.type === "group") where = "分组 " + (scope.group || "");
+        if (scope && typeof scope === "object" && (scope.type === "codes" || scope.type === "code")) {
+          const code = (scope.codes && scope.codes[0]) || scope.code || "";
+          where = "仅 " + code;
+        }
         const scan = r.scannable
-          ? `${esc(s.metric || "")} ${esc(s.op || "")} ${s.compare === "card" ? ("卡:" + (s.card_field || "")) : (s.value == null ? "" : s.value)} · ${s.schedule === "session" ? "盘中" : "日终"}`
+          ? `${esc(s.metric || "")} ${esc(s.op || "")} ${s.compare === "card" ? ("卡:" + (s.card_field || "")) : (s.value == null ? "" : s.value)} · ${s.schedule === "session" ? "盘中" : "日终"} · ${esc(where)}`
           : "不自动扫描，只给问答用";
         return `<div class="rule-card">
           <div class="rule-head">
             <h3>${esc(r.name)}</h3>
-            <button class="btn sm ghost" type="button" data-toggle-rule="${r.id}" data-on="${r.enabled ? 1 : 0}">${r.enabled ? "已开启" : "已关闭"}</button>
+            <div class="job-actions">
+              <button class="btn sm ghost" type="button" data-toggle-rule="${r.id}" data-on="${r.enabled ? 1 : 0}">${r.enabled ? "已开启" : "已关闭"}</button>
+              <button class="btn sm" type="button" data-edit-rule="${r.id}">编辑</button>
+              <button class="btn sm danger" type="button" data-del-rule="${r.id}">删除</button>
+            </div>
           </div>
           <div class="meta">${scan}</div>
           ${notesPreview(r.definition || s.definition, r.need || s.need)}
-          <div class="job-actions">
-            ${r.enabled && r.scannable ? `<button class="btn sm" type="button" data-run="custom:${r.id}">只跑这条</button>` : ""}
-            <button class="btn sm ghost" type="button" data-edit-rule="${r.id}">编辑</button>
-            <button class="btn sm ghost" type="button" data-del-rule="${r.id}">删除</button>
-          </div>
+          ${r.enabled && r.scannable ? `<div class="job-actions"><button class="btn sm" type="button" data-run="custom:${r.id}">只跑这条</button></div>` : ""}
         </div>`;
       }).join("");
     }
@@ -1651,7 +1693,11 @@
         compare,
         card_field: document.getElementById("ruleCardField").value,
         value: document.getElementById("ruleValue").value === "" ? null : Number(document.getElementById("ruleValue").value),
-        scope: scopeKind === "group" ? { type: "group", group: document.getElementById("ruleGroup").value } : "all",
+        scope: scopeKind === "group"
+          ? { type: "group", group: document.getElementById("ruleGroup").value }
+          : (scopeKind === "code"
+            ? { type: "codes", codes: [document.getElementById("ruleCode").value].filter(Boolean) }
+            : "all"),
         schedule: document.getElementById("ruleWhen").value,
         severity: document.getElementById("ruleSeverity").value,
         definition: document.getElementById("ruleDefinition").value.trim(),
@@ -1725,8 +1771,8 @@
       const card = item.card || {};
       document.getElementById("cardTitle").textContent = (item.name || code6) + " · 决策卡";
       document.getElementById("cardHint").textContent = item.card_filled
-        ? "规则可以用买区 / 减仓价。"
-        : "未填，监控仍用统计底 / 默认目标卖价。";
+        ? "已填。接近减仓由监控「接近减仓」写入今日列表；表上要看距买区 / 距减仓请勾列设置里的决策卡列。"
+        : "未填时监控仍用统计底 / 默认目标卖价。填了也不会在卡上弹窗，命中去监控中心「今日」。";
       document.getElementById("cardGroup").value = item.group || "自选";
       document.getElementById("cardThesis").value = card.thesis || "";
       document.getElementById("cardCost").value = card.cost == null ? "" : card.cost;
@@ -1744,7 +1790,8 @@
     }
 
     function showBuilder(rule) {
-      document.getElementById("ruleBuilder").style.display = "block";
+      const mask = document.getElementById("ruleMask");
+      mask.style.display = "flex";
       document.getElementById("ruleBuilderTitle").textContent = rule ? "编辑规则" : "添加规则";
       state.editingRuleId = rule ? rule.id : null;
       const spec = (rule && rule.spec) || {};
@@ -1756,9 +1803,14 @@
       document.getElementById("ruleValue").value = spec.value == null ? "" : spec.value;
       document.getElementById("ruleCardField").value = spec.card_field || "buy_high";
       const scope = spec.scope;
+      fillRuleCodes();
       if (scope && typeof scope === "object" && scope.type === "group") {
         document.getElementById("ruleScope").value = "group";
         document.getElementById("ruleGroup").value = scope.group || "自选";
+      } else if (scope && typeof scope === "object" && (scope.type === "codes" || scope.type === "code")) {
+        document.getElementById("ruleScope").value = "code";
+        const code = (scope.codes && scope.codes[0]) || scope.code || "";
+        if (code) document.getElementById("ruleCode").value = String(code).split(".")[0];
       } else {
         document.getElementById("ruleScope").value = "all";
       }
@@ -1771,11 +1823,13 @@
         document.getElementById("ruleNeed").value
       );
       document.getElementById("ruleNoteBox").open = false;
+      document.getElementById("rulePreview").textContent = "";
       syncBuilder();
+      document.getElementById("ruleName").focus();
     }
 
     function hideBuilder() {
-      document.getElementById("ruleBuilder").style.display = "none";
+      document.getElementById("ruleMask").style.display = "none";
       state.editingRuleId = null;
       document.getElementById("rulePreview").textContent = "";
     }
@@ -1787,6 +1841,7 @@
       document.getElementById("ruleValueWrap").style.display = compare === "threshold" ? "" : "none";
       document.getElementById("ruleCardWrap").style.display = compare === "card" ? "" : "none";
       document.getElementById("ruleGroupWrap").style.display = document.getElementById("ruleScope").value === "group" ? "" : "none";
+      document.getElementById("ruleCodeWrap").style.display = document.getElementById("ruleScope").value === "code" ? "" : "none";
       document.getElementById("ruleNoteFlag").textContent = noteFlag(
         document.getElementById("ruleDefinition").value,
         document.getElementById("ruleNeed").value
@@ -1931,6 +1986,31 @@
           renderWatch(data.items);
           toast("已移出 " + rm.dataset.rm);
           await runQuery();
+        } catch (err) {
+          toast(err.message);
+        }
+        return;
+      }
+      const up = e.target.closest("[data-watch-up]");
+      const down = e.target.closest("[data-watch-down]");
+      if (up || down) {
+        e.preventDefault();
+        e.stopPropagation();
+        const code = (up || down).dataset.watchUp || (up || down).dataset.watchDown;
+        const codes = (state.watch || []).map((it) => it.code6);
+        const idx = codes.indexOf(code);
+        if (idx < 0) return;
+        const next = idx + (up ? -1 : 1);
+        if (next < 0 || next >= codes.length) return;
+        const swapped = codes.slice();
+        const tmp = swapped[idx];
+        swapped[idx] = swapped[next];
+        swapped[next] = tmp;
+        try {
+          const items = await api("/watchlist/order", { method: "PUT", body: JSON.stringify({ codes: swapped }) });
+          renderWatch(items);
+          state.sortKey = "";
+          if (state.side === "watch" && !state.lastQueryCodes) await runQuery();
         } catch (err) {
           toast(err.message);
         }
@@ -2661,6 +2741,14 @@
     });
     document.getElementById("ruleAdd").addEventListener("click", () => showBuilder(null));
     document.getElementById("ruleCancel").addEventListener("click", hideBuilder);
+    document.getElementById("ruleMask").addEventListener("click", (e) => {
+      if (e.target.id === "ruleMask") hideBuilder();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (document.getElementById("ruleMask").style.display === "none") return;
+      hideBuilder();
+    });
     document.getElementById("ruleCompare").addEventListener("change", syncBuilder);
     document.getElementById("ruleScope").addEventListener("change", syncBuilder);
     document.getElementById("ruleMetric").addEventListener("change", syncBuilder);
