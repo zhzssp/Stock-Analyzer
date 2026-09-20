@@ -8,6 +8,8 @@ def test_policies_load_from_yaml():
     researcher = load_policy("researcher")
     assert "watch_card" in analyst.tools
     assert "watch_review" in analyst.tools
+    assert "watch_rules" in analyst.tools
+    assert "watch_rules" in researcher.tools
     assert "watch_review" in researcher.tools
     assert "query_run" in analyst.tools
     assert "excel_parse" in analyst.tools

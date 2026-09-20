@@ -75,12 +75,12 @@ def iter_agent(
     if stream_tokens:
         chunks: list[str] = []
         cites: list[dict] = []
-        for piece, cites in write_answer_iter(question, observations, agent=agent):
+        for piece, cites in write_answer_iter(question, observations, agent=agent, ctx=ctx):
             chunks.append(piece)
             yield {"type": "token", "text": piece, "agent": agent}
-        answer = "".join(chunks) if chunks else write_answer(question, observations, agent=agent)[0]
+        answer = "".join(chunks) if chunks else write_answer(question, observations, agent=agent, ctx=ctx)[0]
     else:
-        answer, cites = write_answer(question, observations, agent=agent)
+        answer, cites = write_answer(question, observations, agent=agent, ctx=ctx)
         yield {"type": "token", "text": answer, "agent": agent}
 
     yield {

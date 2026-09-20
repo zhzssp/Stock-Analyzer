@@ -13,7 +13,7 @@ from src.agents.policy import policies_public, reload_policies, tools_for
 from src.agents.queue import today_queue
 from src.agents.reviewer import REVIEW_LABELS, reviews_payload, run_reviewer
 from src.agents.researcher import run_researcher, stream_researcher
-from src.agents.rules import GROUPS, metric_specs, validate_custom_spec
+from src.agents.rules import GROUPS, clip_note, metric_specs, validate_custom_spec
 from src.agents.runner import iter_agent, pick_agent
 from src.agents.sessions import (
     append_turns,
@@ -777,6 +777,10 @@ def patch_job(job_key: str, body: JobPatchIn, user: User = Depends(current_user)
         if not isinstance(current, dict):
             current = {}
         current.update(body.params)
+        if "definition" in current:
+            current["definition"] = clip_note(current.get("definition"))
+        if "need" in current:
+            current["need"] = clip_note(current.get("need"))
         job.params = json.dumps(current, ensure_ascii=False)
     if body.schedule:
         if body.schedule not in {"session", "eod"}:

@@ -12,6 +12,7 @@ from src.agents.rules import (
     eval_near_bottom,
     eval_near_target,
     in_scope,
+    is_scannable,
     merge_params,
     parse_json,
     validate_custom_spec,
@@ -62,6 +63,8 @@ def ensure_jobs(db: Session, user: User) -> list[MonitorJob]:
 def job_payload(job: MonitorJob) -> dict:
     spec = TEMPLATE_SPECS.get(job.job_key) or {}
     params = merge_params(job.job_key, job.params)
+    definition = str(params.get("definition") or "")
+    need = str(params.get("need") or "")
     return {
         "id": job.id,
         "job_key": job.job_key,
@@ -74,20 +77,27 @@ def job_payload(job: MonitorJob) -> dict:
         "params": params,
         "schema": spec.get("schema") or [],
         "blurb": spec.get("blurb") or "",
+        "definition": definition,
+        "need": need,
     }
 
 
 def rule_payload(row: UserRule) -> dict:
     spec = parse_json(row.spec, {})
+    if not isinstance(spec, dict):
+        spec = {}
     return {
         "id": row.id,
         "job_key": f"custom:{row.id}",
         "name": row.name,
         "enabled": bool(row.enabled),
-        "kind": "custom",
+        "kind": spec.get("kind") or "custom",
         "spec": spec,
         "schedule": spec.get("schedule") or "eod",
         "severity": spec.get("severity") or "watch",
+        "definition": spec.get("definition") or "",
+        "need": spec.get("need") or "",
+        "scannable": is_scannable(spec),
     }
 
 
@@ -239,12 +249,12 @@ def run_watcher(
     needed = {"price", "off_low", "target", "low_note", "reduce_at", "buy_low", "buy_high", "dist_buy", "dist_reduce", "vs_cost", "cost"}
     custom_specs: list[tuple[UserRule | None, dict]] = []
     if preview_spec is not None:
-        custom_specs.append((None, validate_custom_spec(preview_spec)))
-        needed.add(custom_specs[0][1]["metric"])
+        spec = validate_custom_spec(preview_spec)
+        custom_specs.append((None, spec))
+        if spec.get("metric"):
+            needed.add(spec["metric"])
     else:
         for row in customs:
-            if not row.enabled and job_key is None:
-                continue
             if not row.enabled:
                 continue
             try:
@@ -252,7 +262,8 @@ def run_watcher(
             except ValueError:
                 continue
             custom_specs.append((row, spec))
-            needed.add(spec["metric"])
+            if spec.get("metric"):
+                needed.add(spec["metric"])
 
     query_keys = [k for k in needed if k in {s.key for s in field_registry.all()}]
     if "low_note" not in query_keys:
@@ -313,6 +324,8 @@ def run_watcher(
                 hits.append(hit)
 
     for row, spec in custom_specs:
+        if not spec.get("metric"):
+            continue
         job_key_custom = f"custom:{row.id}" if row else "custom:preview"
         name = (row.name if row else spec.get("name")) or "自定义规则"
         severity = spec.get("severity") or "watch"

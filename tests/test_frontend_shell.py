@@ -42,6 +42,12 @@ def test_workbench_exposes_landed_backend_entries():
     assert "/export-share" in html
     assert "只跑这条" in html
     assert "添加规则" in html
+    assert "规则定义 / 监控需求" in html
+    assert 'id="ruleDefinition"' in html
+    assert 'id="ruleNeed"' in html
+    assert "不自动扫描（只给问答用）" in html
+    assert "data-toggle-rule" in html
+    assert "watch_rules" in html or "data-note=\"definition\"" in html
     assert "决策卡" in html
     assert 'data-monitor="today"' in html
     assert 'data-monitor="review"' in html

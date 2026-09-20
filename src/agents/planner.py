@@ -26,6 +26,7 @@ WAREHOUSE_HINTS = ("仓库", "日线", "K线", "k线", "历史行情", "历史�
 API_HINTS = ("接口", "实时", "实盘", "查一下", "按代码")
 ACTION_HINTS = ("该不该", "减仓", "买入", "买区", "决策卡", "成本", "作废", "持有逻辑")
 REVIEW_HINTS = ("复盘", "次日", "假信号", "规则有效", "同向", "反向")
+RULE_HINTS = ("监控规则", "监控需求", "盯盘规则", "我的规则", "守则")
 RESEARCH_HINTS = research_hints()
 
 
@@ -93,6 +94,7 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
     wants_export = _has(question, EXPORT_HINTS)
     wants_action = _has(question, ACTION_HINTS)
     wants_review = _has(question, REVIEW_HINTS)
+    wants_rules = _has(question, RULE_HINTS)
 
     if not any(
         (
@@ -115,6 +117,7 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
             wants_export,
             wants_action,
             wants_review,
+            wants_rules,
         )
     ):
         if insts:
@@ -145,8 +148,12 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
         add("company_profile")
         add("capital_flow")
         add("watch_card")
+        add("watch_rules")
     if wants_action:
         add("watch_card")
+        add("watch_rules")
+    if wants_rules:
+        add("watch_rules")
     if wants_review:
         add("watch_review")
     if wants_paste:
@@ -214,6 +221,11 @@ def llm_plan(question: str, observations: list[dict], called: set[str], ctx) -> 
     extra = ""
     if ctx.attachments:
         extra = f"\n用户附带了 {len(ctx.attachments)} 个表格/文件，优先调用 excel_parse。"
+    from src.agents.user_context import format_monitor_prompt
+
+    rules = format_monitor_prompt(getattr(ctx, "db", None), getattr(ctx, "user_id", None))
+    if rules:
+        extra = extra + "\n" + rules
     messages = [
         {
             "role": "system",
@@ -267,26 +279,26 @@ def _cites(observations: list[dict]) -> list[dict]:
     return cites
 
 
-def write_answer(question: str, observations: list[dict], agent: str = "analyst") -> tuple[str, list[dict]]:
+def write_answer(question: str, observations: list[dict], agent: str = "analyst", ctx=None) -> tuple[str, list[dict]]:
     cites = _cites(observations)
     if not observations:
         return "没有调用到可用 Tool，也没有现成数字可报。请点名自选里的股票，或先导出一张表。", cites
     drafted = _draft_lines(observations)
     if llm_available():
-        prose = _llm_write(question, drafted, agent)
+        prose = _llm_write(question, drafted, agent, ctx)
         if prose:
             return prose, cites
     return "\n".join(drafted) if drafted else "Tool 已执行，但没有可展示的字段。", cites
 
 
-def write_answer_iter(question: str, observations: list[dict], agent: str = "analyst"):
+def write_answer_iter(question: str, observations: list[dict], agent: str = "analyst", ctx=None):
     cites = _cites(observations)
     if not observations:
         yield "没有调用到可用 Tool，也没有现成数字可报。请点名自选里的股票，或先导出一张表。", cites
         return
     drafted = _draft_lines(observations)
     fallback = "\n".join(drafted) if drafted else "Tool 已执行，但没有可展示的字段。"
-    prompt = load_policy(agent).write_prompt
+    prompt = _write_prompt(agent, ctx)
     if llm_available():
         acc = []
         for chunk in chat_completions_stream(
@@ -299,17 +311,27 @@ def write_answer_iter(question: str, observations: list[dict], agent: str = "ana
             yield chunk, cites
         if acc and "".join(acc).strip():
             return
-        prose = _llm_write(question, drafted, agent)
+        prose = _llm_write(question, drafted, agent, ctx)
         if prose:
             yield prose, cites
             return
     yield fallback, cites
 
 
-def _llm_write(question: str, drafted: list[str], agent: str = "analyst") -> str | None:
+def _write_prompt(agent: str, ctx=None) -> str:
+    prompt = load_policy(agent).write_prompt
+    if ctx is None:
+        return prompt
+    from src.agents.user_context import format_monitor_prompt
+
+    extra = format_monitor_prompt(getattr(ctx, "db", None), getattr(ctx, "user_id", None))
+    return prompt + ("\n" + extra if extra else "")
+
+
+def _llm_write(question: str, drafted: list[str], agent: str = "analyst", ctx=None) -> str | None:
     msg = chat_completions(
         [
-            {"role": "system", "content": load_policy(agent).write_prompt},
+            {"role": "system", "content": _write_prompt(agent, ctx)},
             {"role": "user", "content": question + "\n\n已取到：\n" + "\n".join(drafted)},
         ]
     )
@@ -429,6 +451,19 @@ def _draft_lines(observations: list[dict]) -> list[str]:
                     f"{row.get('name') or row.get('code6')} {row.get('job_key')} "
                     f"{row.get('review_label') or row.get('review_status')} 次日 {ret_s}。"
                 )
+        elif tool == "watch_rules" and isinstance(data, list):
+            if not data:
+                lines.append("还没有已开启的监控规则。")
+            for row in data:
+                scan = "自动扫描" if row.get("scan") else "仅问答"
+                bits = [scan]
+                if row.get("summary"):
+                    bits.append(str(row["summary"]))
+                if row.get("definition"):
+                    bits.append("定义 " + str(row["definition"]))
+                if row.get("need"):
+                    bits.append("需求 " + str(row["need"]))
+                lines.append(f"{row.get('name')}：{'；'.join(bits)}。")
         elif tool == "bottom" and isinstance(data, list):
             for row in data:
                 if row.get("low_long") is None:

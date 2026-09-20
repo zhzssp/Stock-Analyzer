@@ -47,6 +47,18 @@ def watch_card(args: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(ok=True, data=rows, source="watch_card", cite="决策卡")
 
 
+def watch_rules(args: dict, ctx: ToolContext) -> ToolResult:
+    if ctx.db is None:
+        return ToolResult(ok=False, error="没有数据库", source="watch_rules", cite="监控守则")
+    from src.agents.user_context import list_monitor_briefs
+
+    enabled_only = args.get("enabled_only")
+    if enabled_only is None:
+        enabled_only = True
+    items = list_monitor_briefs(ctx.db, ctx.user_id, enabled_only=bool(enabled_only))
+    return ToolResult(ok=True, data=items, source="watch_rules", cite="监控守则 · watch_rules")
+
+
 registry.register(
     ToolSpec(
         "watch_card",
@@ -63,4 +75,20 @@ registry.register(
         },
     ),
     watch_card,
+)
+registry.register(
+    ToolSpec(
+        "watch_rules",
+        "监控守则",
+        "compute",
+        "读取用户在监控中心保存的规则定义和监控需求。数字阈值仍由 watcher 执行；文字守则给问答遵守。",
+        {
+            "type": "object",
+            "properties": {
+                "enabled_only": {"type": "boolean"},
+                "question": {"type": "string"},
+            },
+        },
+    ),
+    watch_rules,
 )

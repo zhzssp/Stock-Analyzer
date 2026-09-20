@@ -32,6 +32,11 @@ def _with_context(question: str, ctx: ToolContext | None = None) -> str:
         reviews = recent_review_lines(ctx.db, ctx.user_id)
         if reviews:
             extra.append("次日复盘：" + "；".join(reviews))
+    from src.agents.user_context import format_monitor_prompt
+
+    rules = format_monitor_prompt(getattr(ctx, "db", None) if ctx else None, getattr(ctx, "user_id", None) if ctx else None)
+    if rules:
+        extra.append(rules)
     if not extra:
         return question
     return question + "\n\n" + "\n".join(extra)

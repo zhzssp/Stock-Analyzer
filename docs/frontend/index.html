@@ -431,6 +431,25 @@
       margin: 8px 0;
     }
     .rule-grid label { color: var(--muted); font-size: 13px; display: block; }
+    .rule-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+    .rule-notes {
+      margin-top: 8px;
+      border-top: 1px dashed var(--line);
+      padding-top: 6px;
+    }
+    .rule-notes summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 13px;
+      user-select: none;
+    }
+    .rule-notes .note-flag { color: var(--teal); margin-left: 6px; font-size: 12px; }
+    .rule-notes textarea {
+      min-height: 72px;
+      resize: vertical;
+      margin-top: 4px;
+    }
+    .rule-notes .pane-note { margin: 6px 0 8px; }
     .drawer-mask {
       position: fixed; inset: 0; background: rgba(28,27,24,.28);
       display: flex; justify-content: flex-end;
@@ -602,15 +621,24 @@
             </div>
             <div id="monitorRules" class="monitor-pane">
               <div class="side-title">模板规则</div>
-              <p class="pane-note">改阈值和范围后保存。未就绪的数据源不能打开。</p>
+              <p class="pane-note">开关和阈值仍管自动扫描。规则定义 / 监控需求点开才显示，写给问答助手当守则，不会让盯盘按一段话自由发挥。</p>
               <div id="monitorJobs"></div>
               <div class="side-title" style="margin:16px 0 8px;">我的规则 <button class="btn sm" id="ruleAdd" type="button">添加规则</button></div>
+              <p class="pane-note">可以增删。可以只写文字给问答用，也可以再配指标阈值让盘中/日终扫描。</p>
               <div id="customRules" class="meta">还没有自定义规则</div>
               <form id="ruleBuilder" class="rule-card" style="display:none;">
                 <h3 id="ruleBuilderTitle">添加规则</h3>
                 <div class="rule-grid">
                   <label>名称<input id="ruleName" placeholder="例如：离底小于 5%" /></label>
+                  <label>启用
+                    <select id="ruleEnabled">
+                      <option value="1">开启</option>
+                      <option value="0">关闭</option>
+                    </select>
+                  </label>
                   <label>指标<select id="ruleMetric"></select></label>
+                </div>
+                <div id="ruleScanFields" class="rule-grid">
                   <label>比较
                     <select id="ruleCompare">
                       <option value="threshold">阈值</option>
@@ -659,6 +687,12 @@
                     </select>
                   </label>
                 </div>
+                <details class="rule-notes" id="ruleNoteBox">
+                  <summary>规则定义 / 监控需求<span class="note-flag" id="ruleNoteFlag">点开填写</span></summary>
+                  <p class="pane-note">默认收起。定义说明这条规则在盯什么；监控需求是问答必须遵守的要求。不要写「帮我买」。自动扫描仍只认上面的数字。</p>
+                  <label>规则定义<textarea id="ruleDefinition" rows="3" placeholder="例如：只把离长窗底 8% 以内当成值得看一眼，不是买入信号。"></textarea></label>
+                  <label>监控需求<textarea id="ruleNeed" rows="3" placeholder="例如：问这只票时先核对着这条规则；没有命中就直说没有，不要补故事。"></textarea></label>
+                </details>
                 <div class="composer-row">
                   <button class="btn primary" id="ruleSave" type="submit">保存</button>
                   <button class="btn" id="rulePreviewBtn" type="button">预览命中</button>
@@ -904,6 +938,31 @@
 
     function esc(text) {
       return String(text == null ? "" : text).replace(/</g, "&lt;").replace(/\n/g, "<br>");
+    }
+
+    function escArea(text) {
+      return String(text == null ? "" : text).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    }
+
+    function noteFlag(definition, need) {
+      return ((definition || "").trim() || (need || "").trim()) ? "已写" : "未写";
+    }
+
+    function notesEditor(definition, need) {
+      return `<details class="rule-notes">
+        <summary>规则定义 / 监控需求<span class="note-flag">${noteFlag(definition, need)}</span></summary>
+        <p class="pane-note">点开才展开。保存后问答助手会当作守则；自动扫描仍只认开关和数字。</p>
+        <label>规则定义<textarea data-note="definition" rows="3" placeholder="这条规则在盯什么">${escArea(definition || "")}</textarea></label>
+        <label>监控需求<textarea data-note="need" rows="3" placeholder="问答时必须遵守的要求">${escArea(need || "")}</textarea></label>
+      </details>`;
+    }
+
+    function notesPreview(definition, need) {
+      return `<details class="rule-notes">
+        <summary>规则定义 / 监控需求<span class="note-flag">${noteFlag(definition, need)}</span></summary>
+        <div class="sub">${definition ? ("<b>定义</b> " + esc(definition)) : "还没有定义"}</div>
+        <div class="sub">${need ? ("<b>需求</b> " + esc(need)) : "还没有监控需求"}</div>
+      </details>`;
     }
 
     async function loadHealth() {
@@ -1423,10 +1482,11 @@
           ? `<span class="off">${esc(j.reason)}</span>`
           : "";
         return `<div class="rule-card" data-job-card="${j.job_key}">
-          <h3>${esc(j.name)}</h3>
+          <div class="rule-head"><h3>${esc(j.name)}</h3></div>
           <div class="meta">${esc(j.blurb || "")} · ${j.schedule === "session" ? "盘中" : "日终"}</div>
           ${status}
           ${canToggle && fields ? `<div class="rule-grid">${fields}</div>` : ""}
+          ${canToggle ? notesEditor(j.definition || (j.params || {}).definition, j.need || (j.params || {}).need) : ""}
           <div class="job-actions">
             ${j.enabled && canToggle ? `<button class="btn sm" type="button" data-run="${j.job_key}">只跑这条</button>` : ""}
             ${canToggle ? `<button class="btn sm ghost" type="button" data-job="${j.job_key}" data-on="${j.enabled ? 1 : 0}">${j.enabled ? "已开启" : "已关闭"}</button>` : ""}
@@ -1444,11 +1504,18 @@
       }
       box.innerHTML = items.map((r) => {
         const s = r.spec || {};
+        const scan = r.scannable
+          ? `${esc(s.metric || "")} ${esc(s.op || "")} ${s.compare === "card" ? ("卡:" + (s.card_field || "")) : (s.value == null ? "" : s.value)} · ${s.schedule === "session" ? "盘中" : "日终"}`
+          : "不自动扫描，只给问答用";
         return `<div class="rule-card">
-          <h3>${esc(r.name)}</h3>
-          <div class="meta">${esc(s.metric || "")} ${esc(s.op || "")} ${s.compare === "card" ? ("卡:" + (s.card_field || "")) : (s.value == null ? "" : s.value)} · ${s.schedule === "session" ? "盘中" : "日终"}</div>
+          <div class="rule-head">
+            <h3>${esc(r.name)}</h3>
+            <button class="btn sm ghost" type="button" data-toggle-rule="${r.id}" data-on="${r.enabled ? 1 : 0}">${r.enabled ? "已开启" : "已关闭"}</button>
+          </div>
+          <div class="meta">${scan}</div>
+          ${notesPreview(r.definition || s.definition, r.need || s.need)}
           <div class="job-actions">
-            ${r.enabled ? `<button class="btn sm" type="button" data-run="custom:${r.id}">只跑这条</button>` : ""}
+            ${r.enabled && r.scannable ? `<button class="btn sm" type="button" data-run="custom:${r.id}">只跑这条</button>` : ""}
             <button class="btn sm ghost" type="button" data-edit-rule="${r.id}">编辑</button>
             <button class="btn sm ghost" type="button" data-del-rule="${r.id}">删除</button>
           </div>
@@ -1546,6 +1613,9 @@
         }
         params[key] = el.value;
       });
+      card.querySelectorAll("[data-note]").forEach((el) => {
+        params[el.dataset.note] = el.value;
+      });
       return params;
     }
 
@@ -1562,13 +1632,15 @@
         scope: scopeKind === "group" ? { type: "group", group: document.getElementById("ruleGroup").value } : "all",
         schedule: document.getElementById("ruleWhen").value,
         severity: document.getElementById("ruleSeverity").value,
+        definition: document.getElementById("ruleDefinition").value.trim(),
+        need: document.getElementById("ruleNeed").value.trim(),
       };
       return spec;
     }
 
     function fillMetrics(metrics) {
       const sel = document.getElementById("ruleMetric");
-      sel.innerHTML = (metrics || []).map((m) =>
+      sel.innerHTML = `<option value="">不自动扫描（只给问答用）</option>` + (metrics || []).map((m) =>
         `<option value="${m.key}" data-realtime="${m.realtime ? 1 : 0}">${esc(m.label)}（${m.key}）</option>`
       ).join("");
     }
@@ -1655,7 +1727,8 @@
       state.editingRuleId = rule ? rule.id : null;
       const spec = (rule && rule.spec) || {};
       document.getElementById("ruleName").value = (rule && rule.name) || "";
-      if (spec.metric) document.getElementById("ruleMetric").value = spec.metric;
+      document.getElementById("ruleEnabled").value = !rule || rule.enabled ? "1" : "0";
+      document.getElementById("ruleMetric").value = spec.metric || "";
       document.getElementById("ruleCompare").value = spec.compare || "threshold";
       document.getElementById("ruleOp").value = spec.op || "lte";
       document.getElementById("ruleValue").value = spec.value == null ? "" : spec.value;
@@ -1669,6 +1742,13 @@
       }
       document.getElementById("ruleWhen").value = spec.schedule || "eod";
       document.getElementById("ruleSeverity").value = spec.severity || "watch";
+      document.getElementById("ruleDefinition").value = spec.definition || (rule && rule.definition) || "";
+      document.getElementById("ruleNeed").value = spec.need || (rule && rule.need) || "";
+      document.getElementById("ruleNoteFlag").textContent = noteFlag(
+        document.getElementById("ruleDefinition").value,
+        document.getElementById("ruleNeed").value
+      );
+      document.getElementById("ruleNoteBox").open = false;
       syncBuilder();
     }
 
@@ -1680,9 +1760,15 @@
 
     function syncBuilder() {
       const compare = document.getElementById("ruleCompare").value;
+      const hasMetric = Boolean(document.getElementById("ruleMetric").value);
+      document.getElementById("ruleScanFields").style.display = hasMetric ? "" : "none";
       document.getElementById("ruleValueWrap").style.display = compare === "threshold" ? "" : "none";
       document.getElementById("ruleCardWrap").style.display = compare === "card" ? "" : "none";
       document.getElementById("ruleGroupWrap").style.display = document.getElementById("ruleScope").value === "group" ? "" : "none";
+      document.getElementById("ruleNoteFlag").textContent = noteFlag(
+        document.getElementById("ruleDefinition").value,
+        document.getElementById("ruleNeed").value
+      );
     }
 
     async function afterLogin(username, token) {
@@ -2430,8 +2516,24 @@
         showBuilder(row);
         return;
       }
+      const tog = e.target.closest("[data-toggle-rule]");
+      if (tog) {
+        const row = (state.customRules || []).find((r) => String(r.id) === tog.dataset.toggleRule);
+        if (!row) return;
+        try {
+          await api("/monitor/rules/" + row.id, {
+            method: "PUT",
+            body: JSON.stringify({ name: row.name, enabled: tog.dataset.on !== "1", spec: row.spec || {} }),
+          });
+          await loadMonitor();
+        } catch (err) {
+          toast(err.message);
+        }
+        return;
+      }
       const del = e.target.closest("[data-del-rule]");
       if (!del) return;
+      if (!confirm("删除这条规则？问答守则和自动扫描都会去掉。")) return;
       try {
         await api("/monitor/rules/" + del.dataset.delRule, { method: "DELETE" });
         toast("已删除规则");
@@ -2444,20 +2546,24 @@
     document.getElementById("ruleCancel").addEventListener("click", hideBuilder);
     document.getElementById("ruleCompare").addEventListener("change", syncBuilder);
     document.getElementById("ruleScope").addEventListener("change", syncBuilder);
+    document.getElementById("ruleMetric").addEventListener("change", syncBuilder);
+    document.getElementById("ruleDefinition").addEventListener("input", syncBuilder);
+    document.getElementById("ruleNeed").addEventListener("input", syncBuilder);
     document.getElementById("ruleBuilder").addEventListener("submit", async (e) => {
       e.preventDefault();
       const spec = builderSpec();
+      const enabled = document.getElementById("ruleEnabled").value !== "0";
       try {
         if (state.editingRuleId) {
           await api("/monitor/rules/" + state.editingRuleId, {
             method: "PUT",
-            body: JSON.stringify({ name: spec.name, enabled: true, spec }),
+            body: JSON.stringify({ name: spec.name, enabled, spec }),
           });
           toast("已更新规则");
         } else {
           await api("/monitor/rules", {
             method: "POST",
-            body: JSON.stringify({ name: spec.name, enabled: true, spec }),
+            body: JSON.stringify({ name: spec.name, enabled, spec }),
           });
           toast("已添加规则");
         }
@@ -2469,11 +2575,16 @@
     });
     document.getElementById("rulePreviewBtn").addEventListener("click", async () => {
       try {
+        const spec = builderSpec();
+        const box = document.getElementById("rulePreview");
+        if (!spec.metric) {
+          box.textContent = "这条没有自动扫描指标，保存后只作为问答守则。";
+          return;
+        }
         const data = await api("/monitor/rules/preview", {
           method: "POST",
-          body: JSON.stringify({ spec: builderSpec() }),
+          body: JSON.stringify({ spec }),
         });
-        const box = document.getElementById("rulePreview");
         if (!data.count) {
           box.textContent = "当前自选不会命中（不写库）。";
           return;

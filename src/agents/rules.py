@@ -12,6 +12,11 @@ SCOPES = ("all", "group", "codes")
 SCHEDULES = ("session", "eod")
 SEVERITIES = ("watch", "act")
 GROUPS = ("自选", "观察", "备选")
+NOTE_MAX = 2000
+
+
+def clip_note(value: Any, limit: int = NOTE_MAX) -> str:
+    return str(value or "").strip()[: max(0, int(limit))]
 
 TEMPLATE_SPECS: dict[str, dict] = {
     "holders-change": {
@@ -166,6 +171,10 @@ def merge_params(job_key: str, raw: str | None) -> dict:
     extra = parse_json(raw, {})
     if isinstance(extra, dict):
         base.update(extra)
+    if "definition" in base:
+        base["definition"] = clip_note(base.get("definition"))
+    if "need" in base:
+        base["need"] = clip_note(base.get("need"))
     return base
 
 
@@ -214,21 +223,51 @@ def in_scope(item, params: dict) -> bool:
     return True
 
 
+def is_scannable(spec: dict | None) -> bool:
+    return bool(str((spec or {}).get("metric") or "").strip())
+
+
 def validate_custom_spec(spec: dict) -> dict:
     name = str(spec.get("name") or "").strip() or "自定义规则"
+    definition = clip_note(spec.get("definition"))
+    need = clip_note(spec.get("need") or spec.get("intent") or spec.get("requirements"))
     metric = str(spec.get("metric") or "").strip()
     op = str(spec.get("op") or "lte").strip()
     compare = str(spec.get("compare") or "threshold").strip()
     schedule = str(spec.get("schedule") or "eod").strip()
     severity = str(spec.get("severity") or "watch").strip()
-    if op not in OPS:
-        raise ValueError("运算符只支持 <= / >= / =")
-    if compare not in COMPARES:
-        raise ValueError("比较方式只支持阈值或相对决策卡")
     if schedule not in SCHEDULES:
         raise ValueError("扫描时点只支持盘中或日终")
     if severity not in SEVERITIES:
         raise ValueError("严重度只支持观察或行动")
+    scope = spec.get("scope") or "all"
+    if isinstance(scope, str) and scope not in SCOPES:
+        raise ValueError("范围只支持全部自选 / 分组 / 指定代码")
+    notes = {
+        "definition": definition,
+        "need": need,
+        "title_template": str(spec.get("title_template") or "")[:80],
+    }
+    if not metric:
+        if not definition and not need:
+            raise ValueError("请填写规则定义或监控需求，或选择一个可计算的指标")
+        return {
+            "name": name[:64],
+            "kind": "intent",
+            "metric": "",
+            "op": "lte",
+            "compare": "threshold",
+            "card_field": "",
+            "value": None,
+            "scope": scope,
+            "schedule": schedule,
+            "severity": severity,
+            **notes,
+        }
+    if op not in OPS:
+        raise ValueError("运算符只支持 <= / >= / =")
+    if compare not in COMPARES:
+        raise ValueError("比较方式只支持阈值或相对决策卡")
     field = registry.get(metric) if metric in {s.key for s in registry.all()} else None
     if field is None or not field.alertable:
         raise ValueError("指标不在可监控清单里")
@@ -243,11 +282,9 @@ def validate_custom_spec(spec: dict) -> dict:
     value = spec.get("value")
     if compare == "threshold" and _num(value) is None:
         raise ValueError("阈值规则需要一个数字")
-    scope = spec.get("scope") or "all"
-    if isinstance(scope, str) and scope not in SCOPES:
-        raise ValueError("范围只支持全部自选 / 分组 / 指定代码")
     return {
         "name": name[:64],
+        "kind": "card" if compare == "card" else "threshold",
         "metric": metric,
         "op": op,
         "compare": compare,
@@ -256,12 +293,14 @@ def validate_custom_spec(spec: dict) -> dict:
         "scope": scope,
         "schedule": schedule,
         "severity": severity,
-        "title_template": str(spec.get("title_template") or "")[:80],
+        **notes,
     }
 
 
 def eval_custom(row: dict, spec: dict) -> tuple[bool, str]:
-    metric = spec["metric"]
+    metric = spec.get("metric") or ""
+    if not metric:
+        return False, ""
     left = _num(row.get(metric))
     if spec["compare"] == "card":
         right = _num(row.get(spec["card_field"]))

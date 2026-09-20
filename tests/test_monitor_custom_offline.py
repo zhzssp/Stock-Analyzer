@@ -19,6 +19,8 @@ def test_policy_endpoint_and_health():
         policies = health.json()["agent"]["policies"]
         assert "watch_card" in policies["analyst"]["tools"]
         assert "watch_review" in policies["analyst"]["tools"]
+        assert "watch_rules" in policies["analyst"]["tools"]
+        assert "watch_rules" in policies["researcher"]["tools"]
         assert policies["researcher"]["inject_today_queue"] is True
         listed = client.get("/api/agent/policy")
         assert listed.status_code == 200
@@ -80,6 +82,79 @@ def test_custom_rule_preview_and_persist():
             headers=headers,
         )
         assert blocked.status_code == 400
+
+
+def test_rule_notes_and_intent_only_for_agents():
+    with TestClient(app) as client:
+        headers = _auth(client)
+        created = client.post(
+            "/api/monitor/rules",
+            json={
+                "name": "大金融只看政策",
+                "enabled": True,
+                "spec": {
+                    "definition": "只关心大金融里有政策催化的票。",
+                    "need": "问盘面时先核对着条守则，没有命中就直说没有。",
+                },
+            },
+            headers=headers,
+        )
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["scannable"] is False
+        assert body["definition"].startswith("只关心大金融")
+        assert body["need"].startswith("问盘面")
+        rule_id = body["id"]
+
+        listed = client.get("/api/monitor/rules", headers=headers)
+        assert any(x["id"] == rule_id and x["definition"] for x in listed.json())
+
+        ran = client.post(f"/api/monitor/jobs/custom:{rule_id}/run", headers=headers)
+        assert ran.status_code == 200
+        assert ran.json()["count"] == 0
+
+        numeric = client.post(
+            "/api/monitor/rules",
+            json={
+                "name": "离底较近带说明",
+                "enabled": True,
+                "spec": {
+                    "metric": "off_low",
+                    "op": "lte",
+                    "compare": "threshold",
+                    "value": 20,
+                    "schedule": "eod",
+                    "definition": "离底近只表示值得看一眼。",
+                    "need": "不要把离底近说成买入信号。",
+                },
+            },
+            headers=headers,
+        )
+        assert numeric.status_code == 200, numeric.text
+        assert numeric.json()["scannable"] is True
+        assert "不要把离底近" in numeric.json()["need"]
+
+        saved = client.put(
+            "/api/monitor/jobs/near-bottom",
+            json={"params": {"definition": "模板也写定义", "need": "问答时提一句离底阈值"}},
+            headers=headers,
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["definition"] == "模板也写定义"
+        assert saved.json()["params"]["off_low_max"] == 8
+
+        chat = client.post(
+            "/api/agent/chat",
+            json={"question": "我的监控规则写了什么需求"},
+            headers=headers,
+        )
+        assert chat.status_code == 200, chat.text
+        assert "watch_rules" in {t["id"] for t in chat.json()["tools"]}
+        answer = chat.json()["answer"]
+        assert "大金融" in answer or "只关心" in answer or "不要把离底近" in answer
+
+        client.delete(f"/api/monitor/rules/{rule_id}", headers=headers)
+        client.delete(f"/api/monitor/rules/{numeric.json()['id']}", headers=headers)
 
 
 def test_alert_status_and_session_skips_eod_jobs():
