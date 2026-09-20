@@ -94,17 +94,21 @@ def test_workbench_shows_core_index_board():
 def test_workbench_pct_column_sorts_index_constituents():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert "sortedRows" in html
-    assert "bindPctSort" in html
-    assert 'th[data-key="pct"]' in html
-    assert "点击按涨跌幅排序" in html
-    assert 'sortKey: ""' in html
-    assert 'sortDir: "desc"' in html
-    assert 'state.sortKey = "pct"' in html
+    assert "bindColumnSort" in html
+    assert "th.sortable" in html
+    assert "SORTABLE" in html
+    assert 'pct: "desc"' in html
+    assert 'code: "asc"' in html
+    assert "点击按${f.label}排序" in html
     assert "/watchlist/order" in html
     assert 'id="ruleCode"' in html
     assert "一只" in html
     assert "data-watch-up" in html
     assert "换手和市值默认不勾" in html
+    assert "--up: #b42318" in html
+    assert "--down: #1f7a4d" in html
+    assert "function signedClass" in html
+    assert 'return "flat"' in html
 
 
 def test_workbench_picker_dialog_is_wide_and_short():

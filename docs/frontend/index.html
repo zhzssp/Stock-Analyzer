@@ -14,8 +14,9 @@
       --muted: #6f6b62;
       --teal: #2a6b63;
       --teal-soft: #e4f0ee;
-      --up: #1f7a4d;
-      --down: #b42318;
+      --up: #b42318;
+      --down: #1f7a4d;
+      --danger: #b42318;
       --warn: #9a6700;
     }
     * { box-sizing: border-box; }
@@ -80,7 +81,7 @@
       font-weight: 700;
       font-variant-numeric: tabular-nums;
     }
-    .board-item .pc.flat { color: var(--muted); font-weight: 600; }
+    .board-item .pc.flat, .board-item .px.flat { color: var(--ink); font-weight: 600; }
     .shell {
       display: grid;
       grid-template-columns: 280px 1fr;
@@ -120,7 +121,7 @@
     }
     .btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
     .btn.ghost { background: transparent; }
-    .btn.danger { color: var(--down); border-color: #e8c4c0; background: #fff8f7; }
+    .btn.danger { color: var(--danger); border-color: #e8c4c0; background: #fff8f7; }
     .btn.sm { padding: 5px 10px; font-size: 13px; }
     input, textarea {
       width: 100%;
@@ -240,6 +241,7 @@
     body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
     .up { color: var(--up); }
     .down { color: var(--down); }
+    .flat { color: var(--ink); }
     .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--teal-soft); color: var(--teal); font-size: 13px; }
     .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px; }
     .chip-btn.on { background: var(--teal); color: #fff; border-color: var(--teal); }
@@ -249,7 +251,7 @@
       border: 0; background: transparent; color: var(--muted); cursor: pointer;
       font-size: 16px; line-height: 1; padding: 0 4px;
     }
-    .watch .rm:hover { color: var(--down); }
+    .watch .rm:hover { color: var(--danger); }
     .pick-card { width: 520px; max-width: calc(100vw - 32px); }
     .col-card { width: min(640px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
     .art-card { width: min(860px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
@@ -391,7 +393,7 @@
     .login-card p { color: var(--muted); margin: 0 0 14px; }
     .login-card label { display: block; margin: 8px 0 4px; color: var(--muted); }
     .login-card .pick-list label { display: flex; margin: 0; color: inherit; }
-    .login-error { color: var(--down); min-height: 18px; font-size: 13px; }
+    .login-error { color: var(--danger); min-height: 18px; font-size: 13px; }
     .login-card.col-card { width: min(640px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
     .login-card.art-card { width: min(860px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
     .side-modes { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1046,7 +1048,7 @@
           pcText = (pcNum > 0 ? "+" : "") + pcNum.toFixed(2) + "%";
         }
         const title = [it.label || it.short || "", it.code || ""].filter(Boolean).join(" ");
-        return `<div class="board-item" title="${escAttr(title)}"><span class="name">${escHtml(it.short || "")}：</span><span class="px">${escHtml(price)}</span><span class="pc ${pcCls}">${escHtml(pcText)}</span></div>`;
+        return `<div class="board-item" title="${escAttr(title)}"><span class="name">${escHtml(it.short || "")}：</span><span class="px ${pcCls}">${escHtml(price)}</span><span class="pc ${pcCls}">${escHtml(pcText)}</span></div>`;
       }).join("");
     }
 
@@ -1173,12 +1175,28 @@
       });
     }
 
+    const SORTABLE = { pct: "desc", code: "asc" };
+    const SIGNED_KEYS = { pct: 1, pct60: 1, pct_ytd: 1 };
+
+    function signedClass(n) {
+      if (typeof n !== "number" || !Number.isFinite(n)) return "";
+      if (n > 0) return "up";
+      if (n < 0) return "down";
+      return "flat";
+    }
+
     function sortValue(row, key) {
-      const raw = row ? row[key] : null;
+      if (!row) return null;
+      if (key === "code") {
+        const token = String(row.code6 || row.code || "").split(".")[0];
+        const n = Number(token);
+        return Number.isFinite(n) ? n : (token || null);
+      }
+      const raw = row[key];
       if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
       if (raw == null || raw === "" || raw === "—") return null;
       const n = Number(raw);
-      return Number.isFinite(n) ? n : null;
+      return Number.isFinite(n) ? n : String(raw);
     }
 
     function sortedRows(rows) {
@@ -1196,14 +1214,16 @@
       });
     }
 
-    function bindPctSort() {
+    function bindColumnSort() {
       document.getElementById("tableHead").addEventListener("click", (e) => {
         if (e.target.closest(".col-resizer")) return;
-        const th = e.target.closest('th[data-key="pct"]');
+        const th = e.target.closest("th.sortable");
         if (!th) return;
-        if (state.sortKey !== "pct") {
-          state.sortKey = "pct";
-          state.sortDir = "desc";
+        const key = th.dataset.key;
+        if (!SORTABLE[key]) return;
+        if (state.sortKey !== key) {
+          state.sortKey = key;
+          state.sortDir = SORTABLE[key];
         } else {
           state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
         }
@@ -1383,12 +1403,12 @@
       document.getElementById("tableHead").innerHTML =
         "<tr>" + fields.map((f) => {
           const w = colWidth(f);
-          const sortable = f.key === "pct";
+          const sortable = Boolean(SORTABLE[f.key]);
           const cls = sortable ? "sortable" : "";
-          const sorted = sortable && state.sortKey === "pct";
+          const sorted = sortable && state.sortKey === f.key;
           const aria = sorted ? ` aria-sort="${state.sortDir === "asc" ? "ascending" : "descending"}"` : "";
           const mark = sorted ? `<span class="sort-ind">${state.sortDir === "asc" ? "▲" : "▼"}</span>` : "";
-          const tip = sortable ? `${f.label} · 点击按涨跌幅排序` : f.label;
+          const tip = sortable ? `${f.label} · 点击按${f.label}排序` : f.label;
           return `<th class="${cls}" data-key="${escAttr(f.key)}" style="width:${w}px" title="${escAttr(tip)}"${aria}><span class="col-label">${escHtml(f.label)}${mark}</span><span class="col-resizer" data-key="${escAttr(f.key)}"></span></th>`;
         }).join("") + "</tr>";
       document.getElementById("tableBody").innerHTML = shown.map((row) => {
@@ -1396,7 +1416,7 @@
           const raw = row[f.key];
           const display = String(fmt(f.key, raw));
           let cls = "";
-          if (f.key === "pct" && typeof raw === "number") cls = raw >= 0 ? "up" : "down";
+          if (SIGNED_KEYS[f.key]) cls = signedClass(raw);
           return `<td class="${cls}" title="${escAttr(display)}">${escHtml(display)}</td>`;
         }).join("");
         return `<tr>${tds}</tr>`;
@@ -1878,7 +1898,7 @@
     });
 
     bindColResize();
-    bindPctSort();
+    bindColumnSort();
     document.getElementById("queryBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
     document.getElementById("refreshBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
     document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));
