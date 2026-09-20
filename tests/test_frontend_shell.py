@@ -33,6 +33,7 @@ def test_workbench_exposes_landed_backend_entries():
     assert 'id="clockChart"' in html
     assert "/clock/series" in html
     assert "墙钟档案" in html
+    assert "档案还没备份到远程" in html
     assert 'data-view="local"' in html
     assert 'id="cacheClear"' in html
     assert 'id="artifactPrune"' in html

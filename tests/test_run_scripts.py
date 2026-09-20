@@ -45,6 +45,14 @@ def test_run_server_handles_ctrl_c_and_window_close():
     assert "data\\run\\server.pid" in body
     assert "Initialize-SaRunHost" in body
     assert "AssignPidToJob" in body
+    onctrl = body.split("public static bool OnCtrl", 1)[1].split("public static void Register", 1)[0]
+    assert "CTRL_CLOSE" in onctrl
+    assert "KillChild()" not in onctrl
+    assert "AssignPidToJob($script:JobHandle" not in body
+    assert "WindowStyle Hidden" in body
+    assert "-NoNewWindow" not in body
+    assert "src.market.clock_git" in body
+    assert "Invoke-ClockGitFlush" in body
 
 
 def test_sarunhost_compiles_and_job_kills_child(tmp_path):

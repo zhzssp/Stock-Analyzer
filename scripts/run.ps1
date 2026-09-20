@@ -20,7 +20,7 @@ Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Stock-Analyzer" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "请不要关闭本窗口。关掉它，网页就会打不开。"
+Write-Host "关掉黑窗口后助手会留在托盘；要彻底退出请点托盘里的「退出助手」。"
 Write-Host "工作目录: $root"
 Write-Host "开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "将先检查环境（已配置过就只校验），然后启动服务。"

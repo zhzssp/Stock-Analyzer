@@ -39,6 +39,7 @@ async def lifespan(_app: FastAPI):
     attach_channels()
     sched = None
     if "pytest" not in __import__("sys").modules:
+        from src.market.clock_git import schedule_flush
         from src.platform.scheduler import start_scheduler
         from src.platform.storage import enforce_all
 
@@ -48,6 +49,7 @@ async def lifespan(_app: FastAPI):
         finally:
             db.close()
         sched = start_scheduler()
+        schedule_flush()
     yield
     if sched:
         sched.shutdown(wait=False)
@@ -75,12 +77,22 @@ if web_dir.exists():
 def run() -> None:
     import uvicorn
 
-    uvicorn.run(
+    from src.platform.tray import start_tray
+
+    config = uvicorn.Config(
         "src.main:app",
         host=settings.app_host,
         port=settings.app_port,
         reload=False,
     )
+    server = uvicorn.Server(config)
+    url = f"http://{settings.app_host}:{settings.app_port}/"
+    tray = start_tray(url, on_exit=lambda: setattr(server, "should_exit", True))
+    try:
+        server.run()
+    finally:
+        if tray:
+            tray.stop()
 
 
 if __name__ == "__main__":

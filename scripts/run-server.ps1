@@ -3,7 +3,7 @@ try {
     [Console]::OutputEncoding = [Text.Encoding]::UTF8
     $OutputEncoding = [Text.Encoding]::UTF8
 } catch { }
-try { $Host.UI.RawUI.WindowTitle = "Stock-Analyzer 运行中（请勿关闭）" } catch { }
+try { $Host.UI.RawUI.WindowTitle = "Stock-Analyzer 运行中（关掉窗口会转到托盘）" } catch { }
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -57,7 +57,9 @@ function Start-RunLog {
 # Ctrl+C used to interrupt PowerShell mid-taskkill; cmd.exe then asked
 # "Terminate batch job (Y/N)?" while Quick Edit / a dying child still owned
 # stdin, so the user could not type Y. Closing the window never ran finally.
-# Native ctrl handler + job object KILL_ON_JOB_CLOSE cover both paths.
+# C6: python is started detached (hidden). CTRL_CLOSE must not KillChild and
+# the server must not join KILL_ON_JOB_CLOSE, otherwise the tray dies with the
+# black window. Ctrl+C still KillChild, then C7 git-flushes CLOCK_DIR.
 $saRunHostSrc = @"
 using System;
 using System.Diagnostics;
@@ -155,7 +157,6 @@ public static class SaRunHost {
         if (ctrlType == CTRL_CLOSE || ctrlType == CTRL_LOGOFF || ctrlType == CTRL_SHUTDOWN) {
             Closing = true;
             StopRequested = true;
-            KillChild();
             return true;
         }
         return false;
@@ -284,7 +285,9 @@ function Initialize-SaRunHost {
     } catch { }
     try {
         Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
-            try { [SaRunHost]::KillChild() } catch { }
+            try {
+                if (-not [SaRunHost]::Closing) { [SaRunHost]::KillChild() }
+            } catch { }
         } | Out-Null
     } catch { }
 }
@@ -321,6 +324,38 @@ function Wait-KeepWindow {
 function Clear-PidFile {
     if ($script:PidFile -and (Test-Path -LiteralPath $script:PidFile)) {
         try { Remove-Item -LiteralPath $script:PidFile -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
+function Invoke-ClockGitFlush {
+    if (-not $venvPy -or -not (Test-Path -LiteralPath $venvPy)) { return }
+    Write-Info "正在备份墙钟档案（若账本目录已是独立 git 仓库）..."
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $venvPy
+        $psi.Arguments = "-m src.market.clock_git"
+        $psi.WorkingDirectory = $root
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $p = New-Object System.Diagnostics.Process
+        $p.StartInfo = $psi
+        [void]$p.Start()
+        if (-not $p.WaitForExit(10000)) {
+            try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+            Write-Warn "档案备份超时，已跳过（下次打开会再试）"
+            return
+        }
+        if ($p.ExitCode -ne 0) {
+            Write-Warn "档案还没备份到远程，下次打开会再试"
+        }
+    } catch {
+        Write-Warn "档案备份未完成（不影响退出）"
+    } finally {
+        $ErrorActionPreference = $prev
     }
 }
 
@@ -454,7 +489,7 @@ Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Stock-Analyzer 启动" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "请不要关闭本窗口。关掉它，网页就会打不开。"
+Write-Host "关掉本窗口后，助手会留在右下角托盘继续跑。"
 Write-Host "工作目录: $root"
 Write-Host "开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "系统: $([Environment]::OSVersion.VersionString)　用户: $env:USERNAME"
@@ -633,14 +668,18 @@ try {
     }
 
     Write-Step "[4/4] 启动服务"
-    Write-Info "正在拉起进程，下面可能会出现一些英文日志，属于正常现象"
-    $proc = Start-Process -FilePath $venvPy -ArgumentList "-m src.main" -WorkingDirectory $root -NoNewWindow -PassThru
+    Write-Info "正在拉起后台进程（右下角会出现托盘图标）"
+    $serverOut = Join-Path $LogDir ("server-{0}.out.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    $serverErr = Join-Path $LogDir ("server-{0}.err.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    try { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null } catch { }
+    $proc = Start-Process -FilePath $venvPy -ArgumentList "-m src.main" -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr -PassThru
     if (-not $proc) {
         Write-Fail "无法启动 $venvPy -m src.main"
         Write-LogHint
         exit 1
     }
     Write-Ok "进程已启动，PID $($proc.Id)"
+    Write-Detail "服务日志：$serverOut"
     try {
         $runDir = Split-Path -Parent $script:PidFile
         New-Item -ItemType Directory -Path $runDir -Force | Out-Null
@@ -649,12 +688,6 @@ try {
     if ($script:HostReady) {
         [SaRunHost]::ChildPid = [int]$proc.Id
         [SaRunHost]::PidPath = $script:PidFile
-        $script:JobHandle = [SaRunHost]::CreateKillOnCloseJob()
-        if ($script:JobHandle -eq [IntPtr]::Zero) {
-            Write-Warn "未能创建作业对象；直接关掉窗口时，下次启动会再清理残留进程"
-        } elseif (-not [SaRunHost]::AssignPidToJob($script:JobHandle, [int]$proc.Id)) {
-            Write-Warn "未能把服务进程加入作业对象；关掉窗口时将改用强制结束"
-        }
     }
     Write-Info "正在等待端口 $port 就绪（首次启动可能要几十秒）..."
 
@@ -675,7 +708,7 @@ try {
         }
         if (((Get-Date) - $lastPing).TotalSeconds -ge 5) {
             $waited = [int]((Get-Date) - $started).TotalSeconds
-            Write-Info "仍在启动，已等待 ${waited} 秒，请不要关闭窗口..."
+            Write-Info "仍在启动，已等待 ${waited} 秒..."
             $lastPing = Get-Date
         }
         Start-Sleep -Milliseconds 300
@@ -711,9 +744,9 @@ try {
         Write-Host "  登录账号: $user"
         Write-Host "  登录密码: $pass"
         Write-Host ""
-        Write-Host "  *** 请不要关闭本窗口，不要点右上角的叉 ***" -ForegroundColor Yellow
-        Write-Host "  用完后：用鼠标点一下本窗口，按 Ctrl+C 停止（不必回答 Terminate batch job）。"
-        Write-Host "  如果直接点窗口右上角关闭，服务进程也会一并结束。"
+        Write-Host "  关掉本窗口后，助手留在右下角托盘（小图标）。点它可打开工作台。" -ForegroundColor Yellow
+        Write-Host "  彻底退出：托盘右键选「退出助手」，或点一下本窗口按 Ctrl+C。"
+        Write-Host "  不必回答 Terminate batch job。"
         Write-Host ""
         Write-LogHint
         Write-Host ""
@@ -740,13 +773,17 @@ try {
 } finally {
     $closingWindow = $false
     try { if ($script:HostReady) { $closingWindow = [bool][SaRunHost]::Closing } } catch { }
+    if ($closingWindow) {
+        try { $Host.UI.RawUI.WindowTitle = "Stock-Analyzer 已转到托盘" } catch { }
+        try { if ($script:HostReady) { [SaRunHost]::RestoreConsoleMode() } } catch { }
+        try { Stop-Transcript | Out-Null } catch { }
+        exit 0
+    }
     if ($proc) {
         try { $proc.Refresh() } catch { }
         if (-not $proc.HasExited) {
-            if (-not $closingWindow) {
-                Write-Host ""
-                Write-Warn "正在停止服务 PID $($proc.Id) ..."
-            }
+            Write-Host ""
+            Write-Warn "正在停止服务 PID $($proc.Id) ..."
             if ($script:HostReady) {
                 [SaRunHost]::ChildPid = [int]$proc.Id
                 [SaRunHost]::KillChild()
@@ -754,8 +791,8 @@ try {
                 Stop-ProcessTree $proc.Id
             }
             try { $proc.WaitForExit(4000) } catch { }
-            if (-not $closingWindow) { Write-Ok "服务已停止" }
-        } elseif (-not $closingWindow) {
+            Write-Ok "服务已停止"
+        } else {
             Write-Host ""
             Write-Info "服务已结束（退出码 $code）"
         }
@@ -767,6 +804,7 @@ try {
         try { [SaRunHost]::CloseJob($script:JobHandle) } catch { }
         $script:JobHandle = [IntPtr]::Zero
     }
+    Invoke-ClockGitFlush
     try { if ($script:HostReady) { [SaRunHost]::RestoreConsoleMode() } } catch { }
     try { $Host.UI.RawUI.WindowTitle = "Stock-Analyzer 已停止" } catch { }
     try { Stop-Transcript | Out-Null } catch { }

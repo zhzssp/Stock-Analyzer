@@ -273,6 +273,7 @@ def test_clock_dir_rejects_data_folder_and_lists_slots(tmp_path):
             body = saved.json()
             assert body["enabled"] is True
             assert "shared-clock" in body["clock_dir"]
+            assert "git" in body
             slots = client.get("/api/clock/slots", headers=headers)
             assert slots.status_code == 200
             health = client.get("/api/health")

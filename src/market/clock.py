@@ -283,6 +283,7 @@ def write_universe(root: Path, login: str, codes: list[str]) -> Path | None:
         }
         path = universe_path(root, login)
         _atomic_write(path, payload)
+        _schedule_git(root)
         return path
     except OSError:
         return None
@@ -430,6 +431,8 @@ def merge_quotes_into_slot(
         _atomic_write(slot_file(root, slot), existing)
     except OSError:
         return existing
+    if changed:
+        _schedule_git(root)
     return existing
 
 
@@ -444,6 +447,24 @@ def universe_cap() -> int:
     return max(1, int(settings.query_sync_limit or 40) * 4)
 
 
+def _git_payload() -> dict:
+    try:
+        from src.market.clock_git import git_status_payload
+
+        return git_status_payload()
+    except Exception:
+        return {"enabled": False, "ok": None, "reason": ""}
+
+
+def _schedule_git(clock_dir: Path | None = None) -> None:
+    try:
+        from src.market.clock_git import schedule_flush
+
+        schedule_flush(clock_dir)
+    except Exception:
+        return
+
+
 def status(root: Path | None = None) -> dict:
     target = root if root is not None else configured_clock_dir()
     if target is None:
@@ -454,6 +475,7 @@ def status(root: Path | None = None) -> dict:
             "as_of": "",
             "slot_count": 0,
             "reason": "未选择账本文件夹",
+            "git": _git_payload(),
         }
     err = clock_dir_error(target)
     writable = False
@@ -474,6 +496,7 @@ def status(root: Path | None = None) -> dict:
         "codes": (latest or {}).get("codes") or [],
         "reason": err or "",
         "interval_sec": interval_sec(),
+        "git": _git_payload(),
     }
 
 

@@ -2346,9 +2346,14 @@
         return;
       }
       const asOf = data.as_of ? String(data.as_of).replace("T", " ").slice(0, 19) : "还没有档";
+      const git = data.git || {};
+      const gitFail = git.enabled && git.ok === false
+        ? `<div class="sub">档案还没备份到远程，下次打开会再试</div>`
+        : "";
       box.innerHTML =
         `<div><b>目录</b> <span class="storage-path">${esc(data.clock_dir || "")}</span></div>` +
-        `<div class="sub">最近档 ${esc(asOf)} · ${data.slot_count || 0} 档 · ${data.writable ? "可写" : "只读"} ${data.reason ? " · " + esc(data.reason) : ""}</div>`;
+        `<div class="sub">最近档 ${esc(asOf)} · ${data.slot_count || 0} 档 · ${data.writable ? "可写" : "只读"} ${data.reason ? " · " + esc(data.reason) : ""}</div>` +
+        gitFail;
     }
 
     function renderClockSlots(slots) {
