@@ -33,13 +33,19 @@ class QueryEngine:
         instruments: list[Instrument],
         field_keys: list[str] | None = None,
         cards: dict[str, dict] | None = None,
+        writer: str = "",
     ) -> list[dict]:
         keys = field_keys or registry.default_keys()
         specs = [registry.get(k) for k in keys]
         need = {dep for spec in specs for dep in spec.requires}
         if any(s.group == "card" for s in specs):
             need.add("quote")
-        quotes = self.market.quotes_many(instruments) if "quote" in need else {}
+        quotes: dict[str, dict] = {}
+        clock_meta = {"as_of": "", "source": "", "enabled": False}
+        if "quote" in need:
+            from src.market.clock import align_quotes
+
+            quotes, clock_meta = align_quotes(self.market, instruments, writer=writer)
         rows = []
         for inst in instruments:
             bag: dict[str, Any] = {
@@ -68,6 +74,8 @@ class QueryEngine:
                 "code_full": inst.code_full,
                 "name": inst.name,
                 "market": inst.market,
+                "as_of": (quotes.get(inst.code6) or {}).get("as_of") or clock_meta.get("as_of") or "",
+                "quote_source": (quotes.get(inst.code6) or {}).get("source") or clock_meta.get("source") or "",
             }
             derived = derive_card_metrics(
                 (bag["quote"] or {}).get("p"),

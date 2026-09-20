@@ -32,6 +32,15 @@ from src.db import get_db
 from src.config import settings
 from src.db import SessionLocal
 from src.market.client import MarketClient, resolve_instruments
+from src.market.clock import (
+    clock_series,
+    configured_clock_dir,
+    list_slots,
+    load_slot,
+    set_clock_dir,
+    status as clock_status,
+    write_universe,
+)
 from src.market.normalize import infer_market
 from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, MonitorPref, User, UserRule, WatchItem
 from src.platform.export_xlsx import write_query_xlsx
@@ -75,6 +84,10 @@ class DiffIn(BaseModel):
     id_a: int | None = None
     id_b: int | None = None
     column: str | None = None
+
+
+class ClockDirIn(BaseModel):
+    path: str
 
 
 class ChatAttachment(BaseModel):
@@ -181,6 +194,7 @@ def health():
             "policies": policies_public(),
         },
         "storage": health_storage(),
+        "clock": clock_status(),
     }
 
 
@@ -209,6 +223,14 @@ def _watch_payload(item: WatchItem) -> dict:
 
 def _cards_map(db: Session, user: User) -> dict[str, dict]:
     return {i.code6: card_dict(i) for i in db.query(WatchItem).filter_by(user_id=user.id).all()}
+
+
+def _sync_clock_universe(user: User, db: Session) -> None:
+    root = configured_clock_dir()
+    if root is None:
+        return
+    codes = [i.code6 for i in db.query(WatchItem).filter_by(user_id=user.id).all()]
+    write_universe(root, user.username, codes)
 
 
 def _codes_from_items(items: list[dict]) -> tuple[list[str], dict[str, str]]:
@@ -257,6 +279,7 @@ def put_watchlist(body: WatchIn, user: User = Depends(current_user), db: Session
         db.add(item)
         saved.append(_watch_payload(item))
     db.commit()
+    _sync_clock_universe(user, db)
     bus.publish("universe.changed", {"user_id": user.id, "count": len(saved)}, "platform")
     return saved
 
@@ -282,6 +305,7 @@ def add_watch_items(body: WatchIn, user: User = Depends(current_user), db: Sessi
         added.append(_watch_payload(item))
     db.commit()
     items = [_watch_payload(i) for i in existing.values()]
+    _sync_clock_universe(user, db)
     bus.publish("universe.changed", {"user_id": user.id, "count": len(items)}, "platform")
     return {"added": added, "items": items}
 
@@ -294,6 +318,7 @@ def delete_watch_item(code6: str, user: User = Depends(current_user), db: Sessio
     db.delete(item)
     db.commit()
     remain = db.query(WatchItem).filter_by(user_id=user.id).all()
+    _sync_clock_universe(user, db)
     bus.publish("universe.changed", {"user_id": user.id, "count": len(remain)}, "platform")
     return {"removed": code6, "items": [_watch_payload(i) for i in remain]}
 
@@ -402,8 +427,8 @@ def _prepare_query(body: QueryIn, user: User, db: Session):
     return insts, fields, name, meta, _cards_map(db, user)
 
 
-def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, user_id: int, cards: dict | None = None) -> dict:
-    rows = engine.run(insts, fields, cards=cards)
+def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, user_id: int, cards: dict | None = None, writer: str = "") -> dict:
+    rows = engine.run(insts, fields, cards=cards, writer=writer)
     codes = [i.code_full for i in insts]
     out = {
         "fields": _field_view(fields),
@@ -411,6 +436,10 @@ def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, us
         "pool": pool_name,
         "count": len(rows),
         "market": market.health(),
+        "clock": {
+            "as_of": (rows[0].get("as_of") if rows else "") or "",
+            "source": (rows[0].get("quote_source") if rows else "") or "",
+        },
     }
     if do_export:
         path = write_query_xlsx(rows, fields, pool_name)
@@ -437,7 +466,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
     insts, fields, pool_name, meta, cards = _prepare_query(body, user, db)
     use_job = body.async_mode or len(insts) > settings.query_sync_limit
     if not use_job:
-        result = _execute_query(insts, fields, do_export, pool_name, user.id, cards)
+        result = _execute_query(insts, fields, do_export, pool_name, user.id, cards, writer=user.username)
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
         result["pool_id"] = meta.get("id")
@@ -447,7 +476,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
 
     def worker():
         try:
-            result = _execute_query(snapshot, fields, do_export, pool_name, user.id, cards)
+            result = _execute_query(snapshot, fields, do_export, pool_name, user.id, cards, writer=user.username)
             result["sample"] = meta.get("sample", False)
             result["note"] = meta.get("note") or ""
             result["pool_id"] = meta.get("id")
@@ -520,6 +549,7 @@ def get_storage(user: User = Depends(current_user), db: Session = Depends(get_db
     snap = usage()
     count = db.query(Artifact).filter_by(user_id=user.id).count()
     snap["artifact_records"] = count
+    snap["clock"] = clock_status()
     return snap
 
 
@@ -539,6 +569,52 @@ def storage_prune_artifacts(user: User = Depends(current_user), db: Session = De
 @router.post("/storage/enforce")
 def storage_enforce(user: User = Depends(current_user), db: Session = Depends(get_db)):
     return enforce_all(db, user_id=user.id)
+
+
+@router.get("/clock")
+def get_clock(user: User = Depends(current_user)):
+    return clock_status()
+
+
+@router.post("/clock/dir")
+def post_clock_dir(body: ClockDirIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    raw = (body.path or "").strip().strip('"')
+    if not raw:
+        raise HTTPException(status_code=400, detail="请填写账本文件夹路径")
+    try:
+        set_clock_dir(Path(raw))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _sync_clock_universe(user, db)
+    return clock_status()
+
+
+@router.get("/clock/slots")
+def get_clock_slots(date: str = "", user: User = Depends(current_user)):
+    root = configured_clock_dir()
+    if root is None:
+        return {"enabled": False, "slots": []}
+    return {"enabled": True, "slots": list_slots(root, date or None)}
+
+
+@router.get("/clock/slot")
+def get_clock_slot(as_of: str, user: User = Depends(current_user)):
+    root = configured_clock_dir()
+    if root is None:
+        raise HTTPException(status_code=400, detail="未选择账本文件夹")
+    payload = load_slot(root, as_of)
+    if not payload:
+        return {"as_of": as_of, "quotes": {}, "codes": [], "missing": True}
+    return {**payload, "missing": False}
+
+
+@router.get("/clock/series")
+def get_clock_series(code: str, start: str, end: str, user: User = Depends(current_user)):
+    root = configured_clock_dir()
+    if root is None:
+        return {"enabled": False, "points": [], "code": (code or "").split(".")[0]}
+    code6 = (code or "").split(".")[0]
+    return {"enabled": True, "code": code6, "points": clock_series(root, code6, start, end)}
 
 
 @router.get("/export-share")

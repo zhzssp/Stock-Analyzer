@@ -22,9 +22,15 @@ def query_run(args: dict, ctx: ToolContext) -> ToolResult:
         from src.query.cards import card_dict
 
         cards = {i.code6: card_dict(i) for i in ctx.db.query(WatchItem).filter_by(user_id=ctx.user_id).all()}
-    rows = ctx.engine.run(insts, keys, cards=cards)
+    writer = ""
+    if ctx.db is not None:
+        from src.models import User
+
+        user = ctx.db.get(User, ctx.user_id)
+        writer = user.username if user else ""
+    rows = ctx.engine.run(insts, keys, cards=cards, writer=writer)
     compact = []
-    keep = {"name", "code", "price", "pct", "industry", "holders", "yffy", "eps", "pe", "net"}
+    keep = {"name", "code", "price", "pct", "industry", "holders", "yffy", "eps", "pe", "net", "as_of"}
     for row in rows[:40]:
         compact.append({k: row.get(k) for k in keep if k in row})
     return ToolResult(

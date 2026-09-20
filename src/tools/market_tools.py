@@ -25,9 +25,17 @@ def quote(args: dict, ctx: ToolContext) -> ToolResult:
     insts = _pick(args, ctx)
     if not insts:
         return ToolResult(ok=False, error="没有可查询的标的", source="quote", cite="行情")
+    from src.market.clock import align_quotes
+    from src.models import User
+
+    writer = ""
+    if ctx.db is not None:
+        user = ctx.db.get(User, ctx.user_id)
+        writer = user.username if user else ""
+    quotes, meta = align_quotes(ctx.market, insts, writer=writer)
     rows = []
     for inst in insts:
-        q = ctx.market.quote(inst)
+        q = quotes.get(inst.code6) or {}
         rows.append(
             {
                 "name": inst.name,
@@ -36,9 +44,10 @@ def quote(args: dict, ctx: ToolContext) -> ToolResult:
                 "pct": _blank(q.get("pc")),
                 "pe": _blank(q.get("pe")),
                 "source": q.get("source", ""),
+                "as_of": q.get("as_of") or meta.get("as_of") or "",
             }
         )
-    return ToolResult(ok=True, data=rows, source="quote", cite="行情 · quote")
+    return ToolResult(ok=True, data=rows, source="quote", cite=f"行情 · quote · {meta.get('as_of') or ''}")
 
 
 def company_profile(args: dict, ctx: ToolContext) -> ToolResult:

@@ -50,6 +50,15 @@ class MarketClient:
             return None
 
     def _probe(self) -> None:
+        from src.market.clock import configured_clock_dir, latest_payload, parse_as_of, slot_start
+
+        root = configured_clock_dir()
+        if root is not None:
+            latest = latest_payload(root)
+            stamp = parse_as_of((latest or {}).get("as_of") or "")
+            if stamp is not None and slot_start() == slot_start(stamp):
+                self.status = "live"
+                return
         if self.licence == settings.demo_licence:
             self.sample_only = True
             self.status = "demo-licence"

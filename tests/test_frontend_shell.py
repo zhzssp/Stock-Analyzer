@@ -29,6 +29,10 @@ def test_workbench_exposes_landed_backend_entries():
     assert 'id="healthBar"' in html
     assert 'id="warehouseBox"' in html
     assert 'id="storageBox"' in html
+    assert 'id="clockDirSave"' in html
+    assert 'id="clockChart"' in html
+    assert "/clock/series" in html
+    assert "墙钟档案" in html
     assert 'data-view="local"' in html
     assert 'id="cacheClear"' in html
     assert 'id="artifactPrune"' in html

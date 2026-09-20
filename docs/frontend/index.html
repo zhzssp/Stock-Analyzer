@@ -478,6 +478,8 @@
     }
     .storage-row span { color: var(--muted); }
     .storage-path { font-family: ui-monospace, Consolas, monospace; font-size: 13px; word-break: break-all; }
+    .clock-box { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .clock-chart { width: 100%; height: 160px; background: var(--panel, #f6f7f8); border-radius: 8px; margin-top: 8px; }
   </style>
 </head>
 <body>
@@ -747,6 +749,22 @@
           <div class="panel" style="flex:1; overflow:auto;">
             <p class="pane-note">日线只缓存你查过的股票，同一文件覆盖写，默认最多 500 根。缓存超过上限会先删最久未用的日线，名单缓存尽量留到最后。每人默认最多留 20 份 Excel。</p>
             <div id="storageBox" class="storage-grid meta-list">尚未加载</div>
+            <div class="clock-box">
+              <p class="pane-note">墙钟档案：选网盘里已共享的文件夹（不要选整个 data/）。软件自己读写 JSON，不必用 GitHub。有档就用，没有就本机拉行情。</p>
+              <div class="composer-row" style="margin:8px 0;">
+                <input id="clockDirInput" placeholder="账本文件夹路径，例如 D:\坚果云\股市助手-墙钟账本" style="flex:1;" />
+                <button class="btn sm" id="clockDirSave" type="button">保存账本目录</button>
+              </div>
+              <div id="clockStatus" class="meta-list">尚未加载</div>
+              <div class="composer-row" style="margin:8px 0;">
+                <input id="clockCode" placeholder="代码，如 600038" style="width:120px;" />
+                <input id="clockStart" placeholder="开始 as_of" style="flex:1;" />
+                <input id="clockEnd" placeholder="结束 as_of" style="flex:1;" />
+                <button class="btn sm" id="clockSeriesBtn" type="button">画折线</button>
+              </div>
+              <svg id="clockChart" class="clock-chart" viewBox="0 0 640 160" preserveAspectRatio="none"></svg>
+              <div id="clockSlots" class="meta-list">档口列表在选择目录后出现</div>
+            </div>
           </div>
         </div>
       </section>
@@ -976,8 +994,10 @@
       const chText = channels.length ? channels.join("、") : "无提醒通道";
       const sto = data.storage || {};
       const diskText = sto.total_human ? ("本机 " + sto.total_human) : "";
+      const clock = data.clock || {};
+      const clockText = clock.as_of ? ("墙钟 " + String(clock.as_of).replace("T", " ").slice(0, 16)) : (clock.enabled ? "墙钟已选目录" : "");
       document.getElementById("healthBar").textContent =
-        [marketText, llmText, chText, diskText].filter(Boolean).join(" · ");
+        [marketText, llmText, chText, diskText, clockText].filter(Boolean).join(" · ");
       document.getElementById("healthBar").title = JSON.stringify({ market: m, llm: st, channels: a.channels || [] });
       renderPolicy(a.policies || {});
       const chBox = document.getElementById("channelBox");
@@ -1374,7 +1394,9 @@
       const mode = data.sample || (data.market && data.market.offline) ? "离线切片" : (data.market && data.market.status);
       const scope = codes && codes.length ? "筛选一次" : (data.pool || state.poolLabel || state.pool);
       const note = data.note ? ` · ${data.note}` : "";
-      document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}`;
+      const clock = data.clock || {};
+      const asOf = clock.as_of ? ` · 墙钟 ${String(clock.as_of).replace("T", " ").slice(0, 16)}` : "";
+      document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}${asOf}`;
       if (state.lastQueryCodes) updateExportScope("筛选一次");
       else updateExportScope(data.pool || scope);
     }
@@ -1808,6 +1830,8 @@
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
     document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
     document.getElementById("storageRefresh").addEventListener("click", () => loadStorage().catch((e) => toast(e.message)));
+    document.getElementById("clockDirSave").addEventListener("click", () => saveClockDir().catch((e) => toast(e.message)));
+    document.getElementById("clockSeriesBtn").addEventListener("click", () => loadClockSeries().catch((e) => toast(e.message)));
     document.getElementById("cacheClear").addEventListener("click", async () => {
       if (!confirm("清空行情缓存？自选、对话和导出的 Excel 不受影响，下次查日线会重新拉。")) return;
       try {
@@ -2312,9 +2336,97 @@
       ).join("");
     }
 
+    function renderClockStatus(data) {
+      const box = document.getElementById("clockStatus");
+      const input = document.getElementById("clockDirInput");
+      if (!box) return;
+      if (data && data.clock_dir && input && !input.value) input.value = data.clock_dir;
+      if (!data || !data.enabled) {
+        box.innerHTML = `<div class="meta">${esc((data && data.reason) || "未选择账本文件夹。四人把网盘共享目录填在上面即可。")}</div>`;
+        return;
+      }
+      const asOf = data.as_of ? String(data.as_of).replace("T", " ").slice(0, 19) : "还没有档";
+      box.innerHTML =
+        `<div><b>目录</b> <span class="storage-path">${esc(data.clock_dir || "")}</span></div>` +
+        `<div class="sub">最近档 ${esc(asOf)} · ${data.slot_count || 0} 档 · ${data.writable ? "可写" : "只读"} ${data.reason ? " · " + esc(data.reason) : ""}</div>`;
+    }
+
+    function renderClockSlots(slots) {
+      const box = document.getElementById("clockSlots");
+      if (!box) return;
+      const items = slots || [];
+      if (!items.length) {
+        box.innerHTML = `<div class="meta">还没有档口。盘中查询或盯盘会尽量写入。</div>`;
+        return;
+      }
+      box.innerHTML = items.slice(-24).reverse().map((s) =>
+        `<div><b>${esc(String(s.as_of || "").replace("T", " ").slice(0, 19))}</b> · ${s.count || 0} 只</div>`
+      ).join("");
+      if (items.length && !document.getElementById("clockStart").value) {
+        document.getElementById("clockStart").value = items[0].as_of || "";
+        document.getElementById("clockEnd").value = items[items.length - 1].as_of || "";
+      }
+    }
+
+    function drawClockSeries(points) {
+      const svg = document.getElementById("clockChart");
+      if (!svg) return;
+      const vals = (points || []).map((p) => Number(p.p)).filter((n) => Number.isFinite(n));
+      if (vals.length < 2) {
+        svg.innerHTML = `<text x="12" y="24" fill="currentColor" font-size="12">${vals.length ? "点太少，再积累几档" : "没有序列"}</text>`;
+        return;
+      }
+      const min = Math.min.apply(null, vals);
+      const max = Math.max.apply(null, vals);
+      const span = max - min || 1;
+      const w = 640;
+      const h = 160;
+      const pad = 12;
+      const coords = vals.map((v, i) => {
+        const x = pad + (i * (w - pad * 2)) / (vals.length - 1);
+        const y = h - pad - ((v - min) / span) * (h - pad * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+      svg.innerHTML =
+        `<polyline fill="none" stroke="#2f6fed" stroke-width="2" points="${coords.join(" ")}"></polyline>` +
+        `<text x="12" y="18" fill="currentColor" font-size="11">${esc(String(min.toFixed(2)))} ~ ${esc(String(max.toFixed(2)))} · ${vals.length} 档</text>`;
+    }
+
+    async function loadClock() {
+      const data = await api("/clock");
+      renderClockStatus(data);
+      if (!data.enabled) {
+        renderClockSlots([]);
+        return data;
+      }
+      const slots = await api("/clock/slots");
+      renderClockSlots(slots.slots || []);
+      return data;
+    }
+
+    async function saveClockDir() {
+      const path = (document.getElementById("clockDirInput").value || "").trim();
+      if (!path) return toast("先填写账本文件夹路径");
+      const data = await api("/clock/dir", { method: "POST", body: JSON.stringify({ path }) });
+      renderClockStatus(data);
+      toast("已保存账本目录");
+      await loadClock();
+      await loadHealth();
+    }
+
+    async function loadClockSeries() {
+      const code = (document.getElementById("clockCode").value || "").trim();
+      const start = (document.getElementById("clockStart").value || "").trim();
+      const end = (document.getElementById("clockEnd").value || "").trim();
+      if (!code || !start || !end) return toast("填写代码和起止档位");
+      const data = await api("/clock/series?code=" + encodeURIComponent(code) + "&start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end));
+      drawClockSeries(data.points || []);
+    }
+
     async function loadStorage() {
       const data = await api("/storage");
       renderStorage(data);
+      await loadClock().catch(() => {});
       return data;
     }
 

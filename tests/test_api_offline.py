@@ -31,6 +31,7 @@ def test_login_query_export():
         body = query.json()
         assert body["rows"][0]["name"]
         assert body["market"]["offline"] is True
+        assert "clock" in body
 
         exported = client.post("/api/query/export", json={"pool_name": "自选"}, headers=headers)
         assert exported.status_code == 200
@@ -251,3 +252,34 @@ def test_storage_usage_endpoint():
         assert body["limits"]["artifact_keep"] >= 1
         assert body["limits"]["bars_max"] >= 1
         assert body["limits"]["cache_max_bytes"] >= 1
+        assert "clock" in body
+
+
+def test_clock_dir_rejects_data_folder_and_lists_slots(tmp_path):
+    from src.config import settings
+    from src.market.clock import pointer_path
+
+    pointer = pointer_path()
+    backup = pointer.read_text(encoding="utf-8") if pointer.exists() else None
+    try:
+        with TestClient(app) as client:
+            login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})
+            headers = {"Authorization": f"Bearer {login.json()['token']}"}
+            denied = client.post("/api/clock/dir", json={"path": str(settings.data_dir)}, headers=headers)
+            assert denied.status_code == 400, denied.text
+            target = tmp_path / "shared-clock"
+            saved = client.post("/api/clock/dir", json={"path": str(target)}, headers=headers)
+            assert saved.status_code == 200, saved.text
+            body = saved.json()
+            assert body["enabled"] is True
+            assert "shared-clock" in body["clock_dir"]
+            slots = client.get("/api/clock/slots", headers=headers)
+            assert slots.status_code == 200
+            health = client.get("/api/health")
+            assert "clock" in health.json()
+    finally:
+        if backup is None:
+            if pointer.exists():
+                pointer.unlink()
+        else:
+            pointer.write_text(backup, encoding="utf-8")

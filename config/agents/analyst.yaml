@@ -25,6 +25,8 @@ tools:
   - watch_card
   - watch_review
   - watch_rules
+  - clock_slot
+  - clock_series
 forbidden:
   - 荐股
   - 目标收益

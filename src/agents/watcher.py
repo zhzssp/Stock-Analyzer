@@ -135,6 +135,9 @@ def _price_of(row: dict | None) -> float | None:
     return _num(row.get("price") if row.get("price") is not None else row.get("p"))
 
 
+_CURRENT_AS_OF = ""
+
+
 def _alert(
     db: Session,
     user_id: int,
@@ -147,8 +150,12 @@ def _alert(
     severity: str = "watch",
     rule_id: str = "",
     hit_price: float | None = None,
+    as_of: str = "",
 ) -> dict | None:
     hit_date = date.today().isoformat()
+    stamp = as_of or _CURRENT_AS_OF
+    if stamp and stamp not in detail:
+        detail = f"{detail}\n档位 {stamp}"
     payload = {
         "job_key": job_key,
         "rule_id": rule_id or job_key,
@@ -158,6 +165,7 @@ def _alert(
         "severity": severity,
         "hit_price": hit_price,
         "hit_date": hit_date,
+        "as_of": stamp,
         "review_status": "pending",
     }
     if not persist:
@@ -204,8 +212,8 @@ def _cards(items: list[WatchItem]) -> dict[str, dict]:
     return {i.code6: card_dict(i) for i in items}
 
 
-def _query_rows(ctx: ToolContext, insts, items: list[WatchItem], keys: list[str]) -> dict[str, dict]:
-    rows = ctx.engine.run(insts, keys, cards=_cards(items))
+def _query_rows(ctx: ToolContext, insts, items: list[WatchItem], keys: list[str], writer: str = "") -> dict[str, dict]:
+    rows = ctx.engine.run(insts, keys, cards=_cards(items), writer=writer)
     return {r["code6"]: r for r in rows}
 
 
@@ -268,8 +276,31 @@ def run_watcher(
     query_keys = [k for k in needed if k in {s.key for s in field_registry.all()}]
     if "low_note" not in query_keys:
         query_keys.append("low_note")
-    rows_by_code = _query_rows(ctx, insts, items, query_keys) if insts else {}
+    from src.market.clock import configured_clock_dir, write_universe
 
+    root = configured_clock_dir()
+    if root is not None:
+        write_universe(root, user.username, [i.code6 for i in items])
+    rows_by_code = _query_rows(ctx, insts, items, query_keys, writer=user.username) if insts else {}
+    global _CURRENT_AS_OF
+    clock_as_of = ""
+    for row in rows_by_code.values():
+        if row.get("as_of"):
+            clock_as_of = str(row["as_of"])
+            break
+    previous_as_of = _CURRENT_AS_OF
+    _CURRENT_AS_OF = clock_as_of
+    try:
+        return _finish_watcher(
+            db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits
+        )
+    finally:
+        _CURRENT_AS_OF = previous_as_of
+
+
+def _finish_watcher(
+    db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits
+):
     for job in jobs:
         if job.reason:
             continue

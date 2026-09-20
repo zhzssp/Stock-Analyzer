@@ -23,6 +23,8 @@ tools:
   - watch_card
   - watch_review
   - watch_rules
+  - clock_slot
+  - clock_series
 research_hints:
   - 看市场
   - 趋势

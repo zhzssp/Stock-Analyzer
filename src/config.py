@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     artifact_keep: int = 20
     bars_max: int = 500
     alerts_log_max_mb: float = 2
+    clock_dir: str = ""
+    clock_interval_sec: int = 300
 
     @property
     def db_path(self) -> Path:
