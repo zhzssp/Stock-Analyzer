@@ -38,10 +38,20 @@ class MarketClient:
         key = (licence or self.licence or (self._pool.active() if self._pool else "")).strip()
         return f"{settings.mairui_base}{path}/{key}"
 
+    def refresh_pool(self) -> None:
+        if self.offline or not self._pool:
+            return
+        if self._pool.repair():
+            self.licence = self._pool.active()
+            if self.status in ("unchecked", "offline"):
+                self._probe()
+
     def _get(self, path: str) -> Any:
         if self.offline:
             raise MarketError("offline mode: live API disabled")
         pool = self._pool
+        if pool and not pool.active():
+            self.refresh_pool()
         attempts = len(pool.available()) if pool else 1
         last_error = "麦蕊证书池今日已全部用尽"
         for _ in range(max(attempts, 1)):

@@ -37,3 +37,21 @@ def test_pool_resets_next_day(tmp_path):
     )
     pool = LicencePool(["KEY-A", "KEY-B"], state_path=state)
     assert pool.active() == "KEY-A"
+
+
+def test_pool_repair_recovers_corrupt_empty_queue(tmp_path):
+    state = tmp_path / "licence_pool.json"
+    state.write_text(
+        json.dumps(
+            {
+                "date": date.today().isoformat(),
+                "exhausted": ["KEY-B"],
+                "queue": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    pool = LicencePool(["KEY-A", "KEY-B"], state_path=state)
+    assert pool.active() == "KEY-A"
+    assert pool.repair() is True
+    assert pool.active() == "KEY-A"

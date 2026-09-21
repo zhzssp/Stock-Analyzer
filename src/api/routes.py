@@ -32,6 +32,7 @@ from src.db import get_db
 from src.config import settings
 from src.db import SessionLocal
 from src.market.client import MarketClient, resolve_instruments
+from src.market.licence_pool import LicencePool
 from src.market.clock import (
     clock_series,
     configured_clock_dir,
@@ -61,6 +62,19 @@ from src.tools.warehouse_tools import warehouse_get
 router = APIRouter()
 market = MarketClient()
 engine = QueryEngine(market)
+
+
+def ensure_market() -> MarketClient:
+    """Recreate client when .env toggles offline/live; repair licence pool in long-running workers."""
+    global market, engine
+    want_offline = settings.mairui_offline or not settings.licence_chain
+    if market.offline != want_offline:
+        LicencePool.reset_shared()
+        market = MarketClient()
+        engine = QueryEngine(market)
+        return market
+    market.refresh_pool()
+    return market
 
 
 class LoginIn(BaseModel):
@@ -190,6 +204,7 @@ def _tool_http(result: ToolResult) -> dict:
 
 @router.get("/health")
 def health():
+    ensure_market()
     return {
         "ok": True,
         "market": market.health(),
@@ -531,6 +546,7 @@ def _execute_query(
     x_date: str | None = None,
     force_live: bool = False,
 ) -> dict:
+    ensure_market()
     rows = engine.run(
         insts,
         fields,
@@ -541,6 +557,7 @@ def _execute_query(
         force_live=force_live,
     )
     codes = [i.code_full for i in insts]
+    clock_meta = engine.last_clock_meta or {}
     out = {
         "fields": _field_view(fields),
         "rows": rows,
@@ -548,8 +565,10 @@ def _execute_query(
         "count": len(rows),
         "market": market.health(),
         "clock": {
-            "as_of": (rows[0].get("as_of") if rows else "") or "",
-            "source": (rows[0].get("quote_source") if rows else "") or "",
+            "as_of": clock_meta.get("as_of") or ((rows[0].get("as_of") if rows else "") or ""),
+            "source": clock_meta.get("source") or ((rows[0].get("quote_source") if rows else "") or ""),
+            "reason": clock_meta.get("reason") or "",
+            "enabled": bool(clock_meta.get("enabled")),
         },
     }
     if do_export:

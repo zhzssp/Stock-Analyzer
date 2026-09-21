@@ -14,6 +14,7 @@ class QueryEngine:
 
     def __init__(self, market: MarketClient) -> None:
         self.market = market
+        self.last_clock_meta: dict = {}
 
     def fields(self) -> list[dict]:
         out: list[dict] = []
@@ -49,11 +50,12 @@ class QueryEngine:
         if "x_price" in keys and x_date:
             need.add("bars")
         quotes: dict[str, dict] = {}
-        clock_meta = {"as_of": "", "source": "", "enabled": False}
+        clock_meta = {"as_of": "", "source": "", "enabled": False, "reason": ""}
         if "quote" in need:
             from src.market.clock import align_quotes
 
             quotes, clock_meta = align_quotes(self.market, instruments, writer=writer, force_live=force_live)
+        self.last_clock_meta = clock_meta
         rows = []
         for inst in instruments:
             bag: dict[str, Any] = {

@@ -65,10 +65,11 @@ class LicencePool:
             return
         if data.get("date") != self._today:
             return
-        if data.get("licences") != self._all:
+        saved = data.get("licences")
+        if saved is not None and list(saved) != list(self._all):
             return
         raw = data.get("exhausted") or []
-        self._exhausted = {str(x).strip() for x in raw if str(x).strip()}
+        self._exhausted = {str(x).strip() for x in raw if str(x).strip()} & set(self._all)
 
     def _save(self) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +100,27 @@ class LicencePool:
 
     def exhausted_today(self) -> bool:
         return not self._queue
+
+    def repair(self) -> bool:
+        """Rebuild queue after date roll, config change, or corrupt persisted state."""
+        today = date.today().isoformat()
+        if self._today != today:
+            self._today = today
+            self._exhausted.clear()
+        self._load()
+        self._rebuild_queue()
+        if self._queue:
+            self._save()
+            return True
+        if len(self._exhausted) >= len(self._all):
+            return False
+        # Stale file had queue=[] but not every licence is exhausted — recover.
+        self._exhausted = {x for x in self._exhausted if x in self._all}
+        self._rebuild_queue()
+        if self._queue:
+            self._save()
+            return True
+        return False
 
     def status(self) -> dict:
         return {

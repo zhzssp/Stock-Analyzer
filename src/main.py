@@ -37,6 +37,9 @@ def init_db() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    from src.api.routes import ensure_market
+
+    ensure_market()
     attach_channels()
     sched = None
     if "pytest" not in __import__("sys").modules:
