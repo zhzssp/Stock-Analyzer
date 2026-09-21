@@ -26,7 +26,7 @@ def test_workbench_exposes_landed_backend_entries():
     assert 'method: "PUT"' in html
     assert 'data-market="cy"' in html
     assert 'id="swChips"' in html
-    assert 'id="healthBar"' in html
+    assert 'id="userLabel"' in html
     assert 'id="warehouseBox"' in html
     assert 'id="storageBox"' in html
     assert 'id="clockDirSave"' in html

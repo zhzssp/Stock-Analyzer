@@ -47,7 +47,6 @@
     .brand span { color: var(--teal); font-weight: 500; margin-left: 8px; font-size: 13px; }
     .user { color: var(--muted); white-space: nowrap; }
     .top-meta { display: flex; gap: 14px; align-items: center; min-width: 0; justify-self: end; }
-    .status { color: var(--muted); font-size: 13px; max-width: min(36vw, 420px); overflow-x: auto; white-space: nowrap; }
     .board {
       display: flex;
       align-items: stretch;
@@ -504,7 +503,6 @@
         <div class="board-item"><span class="name">科创：</span><span class="px">—</span><span class="pc">—</span></div>
       </div>
       <div class="top-meta">
-        <div class="status" id="healthBar">未检查</div>
         <div class="user" id="userLabel">未登录</div>
       </div>
     </header>
@@ -1033,20 +1031,7 @@
 
     async function loadHealth() {
       const data = await api("/health");
-      const m = data.market || {};
       const a = data.agent || {};
-      const st = a.llm_status || {};
-      const marketText = m.offline ? "离线切片" : (m.sample_only ? "演示证样本" : (m.status || "行情在线"));
-      const llmText = a.llm ? ((st.provider || "模型") + " 已配置") : "无模型 key · 确定性编排";
-      const channels = (a.channels || []).filter((c) => c.enabled).map((c) => c.name);
-      const chText = channels.length ? channels.join("、") : "无提醒通道";
-      const sto = data.storage || {};
-      const diskText = sto.total_human ? ("本机 " + sto.total_human) : "";
-      const clock = data.clock || {};
-      const clockText = clock.as_of ? ("墙钟 " + String(clock.as_of).replace("T", " ").slice(0, 16)) : (clock.enabled ? "墙钟已选目录" : "");
-      document.getElementById("healthBar").textContent =
-        [marketText, llmText, chText, diskText, clockText].filter(Boolean).join(" · ");
-      document.getElementById("healthBar").title = JSON.stringify({ market: m, llm: st, channels: a.channels || [] });
       renderPolicy(a.policies || {});
       const chBox = document.getElementById("channelBox");
       if (chBox) {
