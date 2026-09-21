@@ -42,6 +42,9 @@ def test_workbench_exposes_landed_backend_entries():
     assert "只留最近导出" in html
     assert "本机数据" in html
     assert 'id="instList"' in html
+    assert 'id="sourceList"' in html
+    assert 'id="srcSave"' in html
+    assert "检索源" in html
     assert 'id="futuresList"' in html
     assert 'id="shareUpload"' in html
     assert "/export-share" in html

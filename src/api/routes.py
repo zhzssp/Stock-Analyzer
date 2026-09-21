@@ -45,7 +45,7 @@ from src.market.normalize import infer_market
 from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, MonitorPref, User, UserRule, WatchItem
 from src.platform.export_xlsx import write_query_xlsx
 from src.platform.jobs import job_payload as bg_job_payload, jobs
-from src.platform.monitor_prefs import pref_payload
+from src.platform.monitor_prefs import pref_payload, save_pref
 from src.platform.pools import catalog, resolve_pool
 from src.platform.security import issue_token, verify_password
 from src.platform.storage import clear_cache, enforce_all, health_storage, prune_artifacts, record_artifact, usage
@@ -153,8 +153,9 @@ class AlertPatchIn(BaseModel):
 
 
 class MonitorPrefIn(BaseModel):
-    selected: list[str] = []
-    custom: list[dict] = []
+    selected: list[str] | None = None
+    custom: list[dict] | None = None
+    sources: list[dict] | None = None
 
 
 class ConceptsIn(BaseModel):
@@ -1038,14 +1039,11 @@ def get_monitor_prefs(user: User = Depends(current_user), db: Session = Depends(
 
 @router.put("/monitor/prefs")
 def put_monitor_prefs(body: MonitorPrefIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    payload = json.dumps({"selected": body.selected, "custom": body.custom}, ensure_ascii=False)
-    pref = db.query(MonitorPref).filter_by(user_id=user.id).first()
-    if pref:
-        pref.institutions = payload
-    else:
-        pref = MonitorPref(user_id=user.id, institutions=payload)
-        db.add(pref)
-    db.commit()
+    try:
+        pref = save_pref(db, user, selected=body.selected, custom=body.custom, sources=body.sources)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    ensure_jobs(db, user)
     return pref_payload(pref)
 
 

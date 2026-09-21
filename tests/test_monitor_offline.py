@@ -55,6 +55,8 @@ def test_watcher_jobs_alerts_and_disabled_slots():
         assert by_key["near-bottom"]["params"]["off_low_max"] == 8
         assert by_key["futures"]["enabled"] is False
         assert "期货" in by_key["futures"]["reason"]
+        assert by_key["news"]["enabled"] is False
+        assert by_key["policy"]["enabled"] is False
 
         blocked = client.post(
             "/api/monitor/jobs/futures/toggle",

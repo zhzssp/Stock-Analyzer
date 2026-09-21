@@ -21,7 +21,7 @@ from src.agents.rules import (
 from src.market.client import MarketClient, resolve_instruments
 from src.market.holders_diff import diff_holders, format_diff, normalize_holders, watch_hits
 from src.models import Alert, MonitorJob, Snapshot, User, UserRule, WatchItem
-from src.platform.monitor_prefs import institution_catalog_for
+from src.platform.monitor_prefs import institution_catalog_for, source_kinds_for, sources_for
 from src.query.cards import card_dict
 from src.query.engine import QueryEngine
 from src.query.registry import registry as field_registry
@@ -56,8 +56,27 @@ def ensure_jobs(db: Session, user: User) -> list[MonitorJob]:
         )
         db.add(job)
         existing[spec["job_key"]] = job
+    _sync_web_jobs(existing, source_kinds_for(db, user.id))
     db.commit()
     return list(existing.values())
+
+
+def _sync_web_jobs(jobs: dict, kinds: set[str]) -> None:
+    mapping = {
+        "news": ("news" in kinds, "等待授权检索源"),
+        "policy": ("policy" in kinds, "等待资讯 Tool"),
+    }
+    for key, (ok, locked) in mapping.items():
+        job = jobs.get(key)
+        if not job:
+            continue
+        if ok:
+            if job.reason:
+                job.enabled = 1
+            job.reason = ""
+        else:
+            job.reason = locked
+            job.enabled = 0
 
 
 def job_payload(job: MonitorJob) -> dict:
@@ -306,6 +325,9 @@ def _finish_watcher(
             continue
         if not job.enabled:
             continue
+        if job.job_key in {"news", "policy"}:
+            hits.extend(_rule_web_sources(db, user, job, items, ctx, persist))
+            continue
         params = merge_params(job.job_key, job.params)
         scoped_items = [i for i in items if in_scope(i, params)]
         for item in scoped_items:
@@ -502,3 +524,54 @@ def _rule_events(db, user, ctx, inst, params: dict, persist: bool) -> dict | Non
     if link:
         fingerprint = f"{fingerprint}；公告 {link}"
     return _alert(db, user.id, "corp-events", inst.code6, f"{inst.name} · 公司事件", fingerprint, persist=persist)
+
+
+def _rule_web_sources(db, user, job, items, ctx, persist: bool) -> list[dict]:
+    from collections import defaultdict
+
+    from src.market.client import resolve_instruments
+    from src.market.taxonomy import classify
+    from src.platform.concepts import extra_for
+    from src.platform.web_sources import scan_sources, watch_needles
+
+    extra = extra_for(db, user)
+    insts = resolve_instruments([i.code_full for i in items], ctx.market)
+    by_code = {i.code6: i for i in insts}
+    watches: list[tuple[str, str, list[str]]] = []
+    for item in items:
+        inst = by_code.get(item.code6)
+        profile = ctx.market.profile(inst) if inst else {}
+        tax = classify(profile.get("industry") or "", profile.get("concept") or "", extra)
+        name = item.name or (inst.name if inst else item.code6)
+        needles = watch_needles(name, item.code6, profile.get("industry") or "", tax.get("hot_concepts") or "")
+        watches.append((item.code6, name, needles))
+    found = scan_sources(sources_for(db, user.id), job.job_key, watches, user.id)
+    grouped: dict[str, list] = defaultdict(list)
+    for hit in found:
+        grouped[hit.code6].append(hit)
+    label = "资讯冲击" if job.job_key == "news" else "产业政策"
+    out: list[dict] = []
+    for code6, rows in grouped.items():
+        name = rows[0].name
+        bits = []
+        seen = set()
+        for row in rows:
+            if row.url in seen:
+                continue
+            seen.add(row.url)
+            bits.append(f"{row.source_name} · {row.title}\n{row.url}\n{row.snippet}".strip())
+            if len(bits) >= 8:
+                break
+        hit = _alert(
+            db,
+            user.id,
+            job.job_key,
+            code6,
+            f"{name} · {label}",
+            "\n\n".join(bits),
+            persist=persist,
+            severity=job.severity or "watch",
+        )
+        if hit:
+            out.append(hit)
+    return out

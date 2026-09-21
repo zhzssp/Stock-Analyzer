@@ -659,6 +659,22 @@
                 <button class="btn sm" id="instAdd" type="button">追加</button>
                 <button class="btn sm primary" id="instSave" type="button">保存白名单</button>
               </div>
+              <div class="side-title" style="margin:16px 0 8px;">检索源</div>
+              <p class="pane-note">只抓你填的 http(s) 页面或 RSS。日终或「资讯冲击 / 产业政策」点只跑这条时拉取。标题或正文命中自选名称、代码，或不少于三个字的行业名，才进今日。不是全网搜索，也不做摘要。内网和 file 地址会被拒绝。</p>
+              <div id="sourceList" class="meta-list">尚未加载</div>
+              <div class="composer-row" style="margin:8px 0;">
+                <input id="srcName" placeholder="名称，如 交易所公告" style="width:140px;" />
+                <input id="srcUrl" placeholder="https://..." style="flex:1;" />
+              </div>
+              <div class="composer-row" style="margin:8px 0;">
+                <select id="srcKind">
+                  <option value="news">资讯</option>
+                  <option value="policy">政策</option>
+                </select>
+                <input id="srcKw" placeholder="可选关键词，逗号分隔；留空则只盯自选" style="flex:1;" />
+                <button class="btn sm" id="srcAdd" type="button">追加</button>
+                <button class="btn sm primary" id="srcSave" type="button">保存检索源</button>
+              </div>
               <div class="side-title" style="margin:16px 0 8px;">提醒通道</div>
               <div id="channelBox" class="meta-list">尚未加载</div>
               <details style="margin-top:16px;">
@@ -2440,6 +2456,23 @@
     async function loadMonitorPrefs() {
       state.monitorPrefs = await api("/monitor/prefs");
       renderInstitutions();
+      renderSources();
+    }
+
+    function kindSourceLabel(kind) {
+      return { news: "资讯", policy: "政策", both: "资讯+政策" }[kind] || kind || "资讯";
+    }
+
+    function renderSources() {
+      const box = document.getElementById("sourceList");
+      const sources = (state.monitorPrefs && state.monitorPrefs.sources) || [];
+      if (!sources.length) {
+        box.textContent = "还没有检索源。配好后资讯冲击 / 产业政策才会解锁。";
+        return;
+      }
+      box.innerHTML = sources.map((s, idx) =>
+        `<div><b>${esc(s.name)}</b> · ${esc(kindSourceLabel(s.kind))} · ${esc(s.url)}${(s.keywords || []).length ? " · " + esc((s.keywords || []).join("、")) : ""} <button class="btn sm ghost" type="button" data-drop-src="${idx}">移除</button></div>`
+      ).join("");
     }
 
     function renderFutures() {
@@ -2928,6 +2961,7 @@
           body: JSON.stringify({ selected, custom }),
         });
         renderInstitutions();
+        renderSources();
         toast("已保存白名单");
       } catch (err) {
         toast(err.message);
@@ -2948,6 +2982,49 @@
       if (!state.monitorPrefs) return;
       state.monitorPrefs.custom = (state.monitorPrefs.custom || []).filter((_, i) => i !== idx);
       renderInstitutions();
+    });
+    document.getElementById("srcAdd").addEventListener("click", () => {
+      const name = (document.getElementById("srcName").value || "").trim();
+      const url = (document.getElementById("srcUrl").value || "").trim();
+      const kind = document.getElementById("srcKind").value || "news";
+      const keywords = (document.getElementById("srcKw").value || "").trim();
+      if (!name) return toast("先填名称");
+      if (!/^https?:\/\//i.test(url)) return toast("地址须以 http:// 或 https:// 开头");
+      state.monitorPrefs = state.monitorPrefs || { selected: [], custom: [], sources: [], catalog: [] };
+      state.monitorPrefs.sources = (state.monitorPrefs.sources || []).concat([{
+        name,
+        url,
+        kind,
+        keywords: keywords ? keywords.split(/[,，、]/).map((x) => x.trim()).filter(Boolean) : [],
+        enabled: true,
+        format: "auto",
+      }]);
+      document.getElementById("srcName").value = "";
+      document.getElementById("srcUrl").value = "";
+      document.getElementById("srcKw").value = "";
+      renderSources();
+    });
+    document.getElementById("srcSave").addEventListener("click", async () => {
+      const sources = (state.monitorPrefs && state.monitorPrefs.sources) || [];
+      try {
+        state.monitorPrefs = await api("/monitor/prefs", {
+          method: "PUT",
+          body: JSON.stringify({ sources }),
+        });
+        renderSources();
+        toast(sources.length ? "已保存检索源" : "已清空检索源");
+        await loadMonitor();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById("sourceList").addEventListener("click", (e) => {
+      const drop = e.target.closest("[data-drop-src]");
+      if (!drop) return;
+      const idx = Number(drop.dataset.dropSrc);
+      if (!state.monitorPrefs) return;
+      state.monitorPrefs.sources = (state.monitorPrefs.sources || []).filter((_, i) => i !== idx);
+      renderSources();
     });
     document.getElementById("shareLookup").addEventListener("click", () => loadExportShare().catch((e) => toast(e.message)));
     document.getElementById("shareUpload").addEventListener("click", () => document.getElementById("shareFile").click());
