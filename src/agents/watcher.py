@@ -9,6 +9,7 @@ from src.agents.rules import (
     JOB_DEFS,
     TEMPLATE_SPECS,
     eval_custom,
+    eval_limit_pool,
     eval_near_bottom,
     eval_near_target,
     in_scope,
@@ -320,6 +321,9 @@ def run_watcher(
 def _finish_watcher(
     db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits
 ):
+    active_keys = {j.job_key for j in jobs if j.enabled and not j.reason}
+    limit_up_pool = market.limit_pool_codes("up") if "limit-up" in active_keys else set()
+    limit_down_pool = market.limit_pool_codes("down") if "limit-down" in active_keys else set()
     for job in jobs:
         if job.reason:
             continue
@@ -368,6 +372,36 @@ def _finish_watcher(
                         "near-target",
                         inst.code6,
                         f"{inst.name} · 接近减仓",
+                        detail,
+                        persist=persist,
+                        severity=job.severity or "act",
+                        hit_price=_price_of(qrow),
+                    )
+            elif job.job_key == "limit-up":
+                ok, detail = eval_limit_pool(inst.code6, limit_up_pool, "涨停")
+                if ok:
+                    qrow = rows_by_code.get(item.code6) or {}
+                    hit = _alert(
+                        db,
+                        user.id,
+                        "limit-up",
+                        inst.code6,
+                        f"{inst.name} · 涨停",
+                        detail,
+                        persist=persist,
+                        severity=job.severity or "act",
+                        hit_price=_price_of(qrow),
+                    )
+            elif job.job_key == "limit-down":
+                ok, detail = eval_limit_pool(inst.code6, limit_down_pool, "跌停")
+                if ok:
+                    qrow = rows_by_code.get(item.code6) or {}
+                    hit = _alert(
+                        db,
+                        user.id,
+                        "limit-down",
+                        inst.code6,
+                        f"{inst.name} · 跌停",
                         detail,
                         persist=persist,
                         severity=job.severity or "act",

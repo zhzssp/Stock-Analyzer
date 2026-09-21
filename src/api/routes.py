@@ -82,6 +82,7 @@ class QueryIn(BaseModel):
     pool: str = "watch"
     pool_name: str | None = None
     async_mode: bool = False
+    x_date: str | None = None
 
 
 class DiffIn(BaseModel):
@@ -395,12 +396,20 @@ def instruments(
     q: str = "",
     board: str = Query("all", alias="market"),
     limit: int = 50,
+    concept: str = "",
     user: User | None = Depends(optional_user),
     db: Session = Depends(get_db),
 ):
     from src.platform.concepts import extra_for
 
-    return market.search(q, board, max(1, min(limit, 200)), extra=extra_for(db, user))
+    official = (concept or "").strip() or None
+    return market.search(
+        q,
+        board,
+        max(1, min(limit, 200)),
+        extra=extra_for(db, user),
+        official_concept=official,
+    )
 
 
 @router.get("/markets/board")
@@ -503,8 +512,18 @@ def _prepare_query(body: QueryIn, user: User, db: Session):
     return insts, fields, name, meta, _cards_map(db, user)
 
 
-def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, user_id: int, cards: dict | None = None, writer: str = "", concept_extra: dict | None = None) -> dict:
-    rows = engine.run(insts, fields, cards=cards, writer=writer, concept_extra=concept_extra)
+def _execute_query(
+    insts,
+    fields: list[str],
+    do_export: bool,
+    pool_name: str,
+    user_id: int,
+    cards: dict | None = None,
+    writer: str = "",
+    concept_extra: dict | None = None,
+    x_date: str | None = None,
+) -> dict:
+    rows = engine.run(insts, fields, cards=cards, writer=writer, concept_extra=concept_extra, x_date=x_date)
     codes = [i.code_full for i in insts]
     out = {
         "fields": _field_view(fields),
@@ -545,7 +564,17 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
     extra = extra_for(db, user)
     use_job = body.async_mode or len(insts) > settings.query_sync_limit
     if not use_job:
-        result = _execute_query(insts, fields, do_export, pool_name, user.id, cards, writer=user.username, concept_extra=extra)
+        result = _execute_query(
+            insts,
+            fields,
+            do_export,
+            pool_name,
+            user.id,
+            cards,
+            writer=user.username,
+            concept_extra=extra,
+            x_date=body.x_date,
+        )
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
         result["pool_id"] = meta.get("id")
@@ -555,7 +584,17 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
 
     def worker():
         try:
-            result = _execute_query(snapshot, fields, do_export, pool_name, user.id, cards, writer=user.username, concept_extra=extra)
+            result = _execute_query(
+                snapshot,
+                fields,
+                do_export,
+                pool_name,
+                user.id,
+                cards,
+                writer=user.username,
+                concept_extra=extra,
+                x_date=body.x_date,
+            )
             result["sample"] = meta.get("sample", False)
             result["note"] = meta.get("note") or ""
             result["pool_id"] = meta.get("id")

@@ -76,18 +76,6 @@ def load_probe() -> dict:
 
 
 def index_status(code: str) -> dict:
-    rec = (load_probe().get("indices") or {}).get(code) or {}
-    if bool(rec.get("enabled")) and rec.get("codes"):
-        codes = [str(x) for x in rec["codes"]]
-        return {
-            "code": code,
-            "enabled": True,
-            "reason": "",
-            "count": len(codes),
-            "codes": codes,
-            "source": rec.get("source") or "probe",
-        }
-
     offline = settings.mairui_offline or not str(settings.mairui_licence or "").strip()
     if offline:
         from src.market.fixtures import INDEX_CONSTITUENTS
@@ -100,6 +88,18 @@ def index_status(code: str) -> dict:
             "count": len(codes),
             "codes": codes,
             "source": "offline-fixture" if codes else "",
+        }
+
+    rec = (load_probe().get("indices") or {}).get(code) or {}
+    if bool(rec.get("enabled")) and rec.get("codes"):
+        codes = [str(x) for x in rec["codes"]]
+        return {
+            "code": code,
+            "enabled": True,
+            "reason": "",
+            "count": len(codes),
+            "codes": codes,
+            "source": rec.get("source") or "probe",
         }
 
     tree = index_tree_code(code)

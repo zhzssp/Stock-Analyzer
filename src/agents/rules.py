@@ -97,6 +97,26 @@ TEMPLATE_SPECS: dict[str, dict] = {
             {"key": "scope", "label": "范围", "type": "scope"},
         ],
     },
+    "limit-up": {
+        "name": "涨停",
+        "enabled": 1,
+        "reason": "",
+        "schedule": "session",
+        "severity": "act",
+        "blurb": "自选出现在当日涨停股池（麦蕊 hslt/ztgc）。",
+        "params": {"scope": "all"},
+        "schema": [{"key": "scope", "label": "范围", "type": "scope"}],
+    },
+    "limit-down": {
+        "name": "跌停",
+        "enabled": 1,
+        "reason": "",
+        "schedule": "session",
+        "severity": "act",
+        "blurb": "自选出现在当日跌停股池（麦蕊 hslt/dtgc）。",
+        "params": {"scope": "all"},
+        "schema": [{"key": "scope", "label": "范围", "type": "scope"}],
+    },
     "futures": {
         "name": "期货联动",
         "enabled": 0,
@@ -364,6 +384,12 @@ def eval_near_bottom(row: dict, params: dict) -> tuple[bool, str]:
     if off is None or off > cap:
         return False, ""
     return True, f"现价 {row.get('price')}，离长窗底 {off}%（{row.get('low_note') or ''}）"
+
+
+def eval_limit_pool(code6: str, pool: set[str], label: str) -> tuple[bool, str]:
+    if code6 not in pool:
+        return False, ""
+    return True, f"出现在今日{label}股池"
 
 
 def eval_near_target(row: dict, params: dict) -> tuple[bool, str]:

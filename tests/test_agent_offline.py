@@ -73,7 +73,7 @@ def test_analyst_cites_exported_excel():
         assert exported_turn.json()["filename"].endswith("_agent.xlsx")
 
 
-def test_bj_finance_says_missing():
+def test_bj_finance_returns_fixture():
     with TestClient(app) as client:
         headers = _auth(client)
         chat = client.post(
@@ -83,5 +83,4 @@ def test_bj_finance_says_missing():
         )
         body = chat.json()
         assert chat.status_code == 200
-        assert "无数据" in body["answer"] or "没有" in body["answer"]
-        assert "19.4" not in body["answer"]
+        assert "0.8" in body["answer"]

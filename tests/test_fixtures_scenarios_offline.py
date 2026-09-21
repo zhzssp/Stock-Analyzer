@@ -35,7 +35,7 @@ def test_quote_scenarios_limits_pb_and_sparse_bj():
             assert row["sjl"] is None
             continue
         assert row.get("sjl") is not None
-    assert "430017" not in FINANCE
+    assert FINANCE["430017"]["yffy"] == 0.8
     assert "430017" not in HOLDERS
     assert FINANCE["830799"]["yffy"] == 1.2
     assert "挪威政府全球养老基金" in HOLDERS["600038"]["holders"]
@@ -49,7 +49,7 @@ def test_bottom_and_card_alert_paths():
     assert rows["600038"]["off_low"] == 9.19
     assert rows["600038"]["pb"] == 1.25
     assert rows["601012"]["off_low"] <= 8
-    assert rows["430017"]["yffy"] is None
+    assert rows["430017"]["yffy"] == 0.8
     assert rows["430017"]["holders"] is None
     ok, _ = eval_near_bottom(rows["601012"], {"off_low_max": 8})
     assert ok is True

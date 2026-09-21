@@ -555,6 +555,7 @@
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
             <button class="btn ghost" id="diffBtn" type="button">对照上一份</button>
+            <label class="hint" for="xDate" title="列设置勾选「X日价」时生效">X日 <input id="xDate" type="date" style="margin-left:4px" /></label>
             <span class="export-scope" id="exportScope">当前导出：自选</span>
             <span class="hint" id="queryHint">尚未查询</span>
           </div>
@@ -991,6 +992,7 @@
       monitorPrefs: null,
       editingRuleId: null,
       cardCode: "",
+      pickOfficialConcept: "",
     };
 
     function toast(text) {
@@ -1419,7 +1421,11 @@
 
     async function searchInstruments() {
       const q = document.getElementById("pickQ").value.trim();
-      const items = await api(`/markets/instruments?q=${encodeURIComponent(q)}&market=${state.pickMarket}&limit=40`);
+      const concept = state.pickOfficialConcept || "";
+      const items = await api(
+        `/markets/instruments?q=${encodeURIComponent(q)}&market=${state.pickMarket}&limit=40` +
+        (concept ? `&concept=${encodeURIComponent(concept)}` : "")
+      );
       renderPick(items);
     }
 
@@ -1471,10 +1477,17 @@
       }
     }
 
+    function queryPayload(codes) {
+      const xDate = (document.getElementById("xDate").value || "").trim();
+      const base = codes && codes.length ? { codes } : { pool: state.pool };
+      if (xDate) base.x_date = xDate.replace(/-/g, "");
+      return base;
+    }
+
     async function runQuery(codes) {
       if (codes && codes.length) state.lastQueryCodes = codes;
       else state.lastQueryCodes = null;
-      const payload = codes && codes.length ? { codes } : { pool: state.pool };
+      const payload = queryPayload(codes);
       let data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
       if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
       renderTable(data.fields, data.rows);
@@ -1514,9 +1527,10 @@
     }
 
     async function exportXlsx() {
-      const payload = state.lastQueryCodes && state.lastQueryCodes.length
-        ? { codes: state.lastQueryCodes }
-        : { pool: currentExportPool() };
+      const payload = queryPayload(
+        state.lastQueryCodes && state.lastQueryCodes.length ? state.lastQueryCodes : null
+      );
+      if (!payload.codes) payload.pool = currentExportPool();
       let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
       if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
       await downloadArtifact(data.id, data.filename);
@@ -2121,6 +2135,7 @@
 
     function applyTaxChip(label) {
       document.getElementById("pickQ").value = label;
+      state.pickOfficialConcept = label;
       searchInstruments().catch((e) => toast(e.message));
     }
 
@@ -2179,6 +2194,8 @@
     });
     document.getElementById("closePicker").addEventListener("click", closePicker);
     document.getElementById("pickQ").addEventListener("input", () => {
+      const q = document.getElementById("pickQ").value.trim();
+      if (state.pickOfficialConcept && q !== state.pickOfficialConcept) state.pickOfficialConcept = "";
       clearTimeout(state.pickTimer);
       state.pickTimer = setTimeout(() => searchInstruments().catch((e) => toast(e.message)), 180);
     });

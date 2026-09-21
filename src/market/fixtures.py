@@ -247,7 +247,23 @@ FINANCE = {
     "000063": _row(_i("000063"), mgwfplr=5.66, yffy=214.0, mgjzc=14.6, jbmgsy=1.66, xsmlv=36.2, jlv=7.8, zgb=478.0, ysltag=401.0),
     "830799": _row(_i("830799"), mgwfplr=1.48, yffy=1.2, mgjzc=5.54, jbmgsy=0.42, xsmlv=48.6, jlv=12.2, zgb=16.8, ysltag=8.4),
     "833533": _row(_i("833533"), mgwfplr=0.88, yffy=0.6, mgjzc=5.81, jbmgsy=0.42, xsmlv=22.4, jlv=8.8, zgb=12.4, ysltag=6.2),
+    "430017": _row(_i("430017"), mgwfplr=1.02, yffy=0.8, mgjzc=4.12, jbmgsy=0.36, xsmlv=38.2, jlv=9.4, zgb=8.6, ysltag=4.2),
 }
+
+INDICATORS = {
+    "600038": {"pct3": 2.4, "pct5": 4.1, "pct10": 6.8, "source": "offline"},
+    "002230": {"pct3": -1.2, "pct5": 3.5, "pct10": 8.2, "source": "offline"},
+    "300274": {"pct3": 18.5, "pct5": 22.0, "pct10": 25.4, "source": "offline"},
+}
+
+CONCEPT_OFFICIAL = {
+    "人工智能": {"002230", "688981"},
+    "军工": {"600038", "600893", "000768"},
+    "新能源": {"300750", "601012", "300274", "002594"},
+}
+
+LIMIT_UP = {"300274", "000858", "688981"}
+LIMIT_DOWN = {"002415"}
 
 
 def _make_bars(close: float, low: float, high: float, days: int = 320) -> list[dict]:

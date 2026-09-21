@@ -35,12 +35,15 @@ class QueryEngine:
         cards: dict[str, dict] | None = None,
         writer: str = "",
         concept_extra: dict | None = None,
+        x_date: str | None = None,
     ) -> list[dict]:
         keys = field_keys or registry.default_keys()
         specs = [registry.get(k) for k in keys]
         need = {dep for spec in specs for dep in spec.requires}
         if any(s.group == "card" for s in specs):
             need.add("quote")
+        if "x_price" in keys and x_date:
+            need.add("bars")
         quotes: dict[str, dict] = {}
         clock_meta = {"as_of": "", "source": "", "enabled": False}
         if "quote" in need:
@@ -56,6 +59,8 @@ class QueryEngine:
                 "finance": {},
                 "flow": {},
                 "bottom": {},
+                "indicators": {},
+                "x_price": None,
             }
             if "profile" in need:
                 bag["profile"] = self.market.profile(inst, extra=concept_extra)
@@ -67,9 +72,13 @@ class QueryEngine:
                 series = self.market.capital_flow(inst)
                 latest = series[-1] if series else {}
                 bag["flow"] = latest
+            if "indicators" in need:
+                bag["indicators"] = self.market.indicators(inst)
             if "bars" in need:
                 bars = self.market.history(inst)
                 bag["bottom"] = compute_bottom(bars, (bag["quote"] or {}).get("p"))
+                if x_date and "x_price" in keys:
+                    bag["x_price"] = self.market.close_on_date(inst, x_date)
             row = {
                 "code6": inst.code6,
                 "code_full": inst.code_full,
@@ -91,6 +100,7 @@ class QueryEngine:
 
     def _value(self, key: str, inst: Instrument, bag: dict) -> Any:
         q, p, h, f, fl, b = bag["quote"], bag["profile"], bag["holders"], bag["finance"], bag["flow"], bag["bottom"]
+        ind = bag.get("indicators") or {}
         mapping = {
             "name": inst.name,
             "code": inst.code_full,
@@ -101,8 +111,12 @@ class QueryEngine:
             "turnover": q.get("hs"),
             "mcap": q.get("sz"),
             "fcap": q.get("lt"),
+            "pct3": ind.get("pct3"),
+            "pct5": ind.get("pct5"),
+            "pct10": ind.get("pct10"),
             "pct60": q.get("zdf60"),
             "pct_ytd": q.get("zdfnc"),
+            "x_price": bag.get("x_price"),
             "industry": p.get("industry"),
             "sector": p.get("sector"),
             "sw_l1": p.get("sw_l1"),

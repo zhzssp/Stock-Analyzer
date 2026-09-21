@@ -49,11 +49,11 @@ def test_search_splits_hs_kc_bj():
     assert all(x["market"] == "hs" for x in jun)
 
 
-def test_bj_query_allows_empty_finance():
+def test_bj_query_finance_and_empty_holders():
     market = MarketClient()
     engine = QueryEngine(market)
     rows = engine.run(resolve_instruments(["430017"], market))
     assert rows[0]["name"] == "星昊医药"
     assert rows[0]["price"] == 8.46
-    assert rows[0]["yffy"] is None
+    assert rows[0]["yffy"] == 0.8
     assert rows[0]["holders"] is None

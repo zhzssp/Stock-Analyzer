@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import httpx
@@ -141,9 +142,22 @@ class MarketClient:
             self._cache_put("list_hs", data)
         return [normalize_instrument(x.get("dm", ""), x.get("mc", ""), x.get("jys", "")) for x in data]
 
-    def search(self, q: str = "", market: str = "all", limit: int = 50, extra: dict | None = None) -> list[dict]:
+    def search(
+        self,
+        q: str = "",
+        market: str = "all",
+        limit: int = 50,
+        extra: dict | None = None,
+        official_concept: str | None = None,
+    ) -> list[dict]:
         items = self.list_hs() + self.list_bj()
         market = (market or "all").lower()
+        official_set: set[str] | None = None
+        official_source = ""
+        if official_concept:
+            official_set, official_source = self.concept_constituents(official_concept)
+            if not official_set:
+                official_set = None
         if market == "hs":
             items = [i for i in items if i.market == "hs"]
         elif market == "kc":
@@ -160,6 +174,8 @@ class MarketClient:
         extra_needles = search_needles(needle, extra)
         out = []
         for inst in items:
+            if official_set is not None and inst.code6 not in official_set:
+                continue
             industry = fixtures.INDUSTRY.get(inst.code6, "")
             profile = fixtures.PROFILE.get(inst.code6) or {}
             concept = profile.get("concept") or ""
@@ -182,18 +198,19 @@ class MarketClient:
                     hit = any(token.lower() in hay for token in extra_needles)
                 if not hit:
                     continue
-            out.append(
-                {
-                    "code6": inst.code6,
-                    "code_full": inst.code_full,
-                    "name": inst.name,
-                    "market": inst.market,
-                    "industry": industry,
-                    "sector": tax.get("sector") or "",
-                    "sw_l1": tax.get("sw_l1") or "",
-                    "hot_concepts": tax.get("hot_concepts") or "",
-                }
-            )
+            row = {
+                "code6": inst.code6,
+                "code_full": inst.code_full,
+                "name": inst.name,
+                "market": inst.market,
+                "industry": industry,
+                "sector": tax.get("sector") or "",
+                "sw_l1": tax.get("sw_l1") or "",
+                "hot_concepts": tax.get("hot_concepts") or "",
+            }
+            if official_source:
+                row["concept_source"] = official_source
+            out.append(row)
             if len(out) >= limit:
                 break
         return out
@@ -272,9 +289,102 @@ class MarketClient:
         top = _holder_rows(self._try_get(f"/hsstock/financial/topholder/{inst.code_full}") or self._try_get(f"/hscp/sdgd/{inst.code6}"))
         return _pack_holders(flow, top, "live")
 
+    def hszg_tree(self) -> list[dict]:
+        if self.offline:
+            return []
+        cached = self._cache_get("hszg_list")
+        if isinstance(cached, list) and cached:
+            return cached
+        data = self._try_get("/hszg/list") or []
+        rows = data if isinstance(data, list) else []
+        if rows and not self.sample_only:
+            self._cache_put("hszg_list", rows)
+        return rows
+
+    def concept_constituents(self, label: str) -> tuple[set[str], str]:
+        from src.market.hszg import constituent_codes, match_concept_nodes
+
+        if self.offline:
+            codes = set(fixtures.CONCEPT_OFFICIAL.get(label) or [])
+            return codes, "offline-fixture" if codes else ""
+        nodes = self.hszg_tree()
+        tree_codes = match_concept_nodes(label, nodes)
+        if not tree_codes:
+            return set(), ""
+        all_codes: set[str] = set()
+        source = ""
+        for tc in tree_codes[:4]:
+            key = f"hszg_gg_{tc}"
+            cached = self._cache_get(key)
+            if isinstance(cached, list) and cached:
+                rows = cached
+            else:
+                rows = self._try_get(f"/hszg/gg/{tc}") or []
+                if isinstance(rows, list) and rows and not self.sample_only:
+                    self._cache_put(key, rows)
+            for code in constituent_codes(rows if isinstance(rows, list) else []):
+                all_codes.add(code)
+            if not source:
+                source = f"hszg/gg/{tc}"
+        return all_codes, source
+
+    def indicators(self, inst: Instrument) -> dict:
+        if self.offline:
+            return dict(fixtures.INDICATORS.get(inst.code6) or {"source": "offline"})
+        if inst.market == "bj":
+            return {"source": "unavailable"}
+        data = self._try_get(f"/hsstock/indicators/{inst.code_full}")
+        rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        row = rows[-1] if rows else {}
+        return {
+            "pct3": row.get("3d"),
+            "pct5": row.get("5d"),
+            "pct10": row.get("10d"),
+            "source": "live",
+        }
+
+    def close_on_date(self, inst: Instrument, target: str) -> float | None:
+        day = _norm_day(target)
+        if not day:
+            return None
+        bars = self.history(inst, end=day, limit=12)
+        if not bars:
+            bars = self.history(inst, limit=30)
+        target_int = int(day)
+        best_day = 0
+        best_close = None
+        for row in bars:
+            bd = int(_bar_day(row) or "0")
+            if bd <= target_int and bd >= best_day:
+                best_day = bd
+                best_close = row.get("c")
+        return best_close
+
+    def limit_pool_codes(self, kind: str = "up", day: str | None = None) -> set[str]:
+        key = (kind or "up").lower()
+        if key not in {"up", "down"}:
+            key = "up"
+        if self.offline:
+            pool = fixtures.LIMIT_UP if key == "up" else fixtures.LIMIT_DOWN
+            return set(pool)
+        d = day or date.today().isoformat()
+        path = "/hslt/ztgc" if key == "up" else "/hslt/dtgc"
+        data = self._try_get(f"{path}/{d}") or []
+        codes: set[str] = set()
+        for row in data if isinstance(data, list) else []:
+            if not isinstance(row, dict):
+                continue
+            dm = str(row.get("dm") or row.get("code") or "")
+            c6 = code6_of(dm) if dm else ""
+            if c6:
+                codes.add(c6)
+        return codes
+
     def finance(self, inst: Instrument) -> dict:
         if self.offline:
             return fixtures.FINANCE.get(inst.code6, {"source": "offline"})
+        if inst.market == "bj":
+            return self._finance_bj(inst)
         out = {"source": "live"}
         try:
             psi = self._get(f"/hsstock/financial/pershareindex/{inst.code_full}")
@@ -305,6 +415,29 @@ class MarketClient:
                 pass
         return out
 
+    def _finance_bj(self, inst: Instrument) -> dict:
+        out: dict[str, Any] = {"source": "live"}
+        psi = self._try_get(f"/bj/financial/pershareindex/{inst.code_full}")
+        if isinstance(psi, list) and psi:
+            row = psi[0]
+        elif isinstance(psi, dict):
+            row = psi
+        else:
+            row = {}
+        for key in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
+            if key in row:
+                out[key] = row.get(key)
+        income = self._try_get(f"/bj/financial/income/{inst.code_full}")
+        if isinstance(income, list) and income:
+            irow = income[0]
+            yffy = irow.get("yffy")
+            out["yffy"] = None if yffy in (None, "", "-", 0, "0") else yffy
+        cap = self._try_get(f"/bj/financial/capital/{inst.code_full}")
+        if isinstance(cap, list) and cap:
+            crow = cap[0]
+            out["zgb"] = crow.get("zgb")
+            out["ysltag"] = crow.get("ysltag")
+        return out
 
     def quotes_many(self, insts: list[Instrument]) -> dict[str, dict]:
         if self.offline:
@@ -349,7 +482,38 @@ class MarketClient:
             out = list(fixtures.BARS.get(inst.code6) or [])
             return _filter_bars(out, start=start, end=end, limit=limit)
         if inst.market == "bj":
-            return []
+            if self.offline:
+                out = list(fixtures.BARS.get(inst.code6) or [])
+                return _filter_bars(out, start=start, end=end, limit=limit)
+            key = f"bars_bj_{inst.code6}_{adjust}"
+            cached = self._cache_get(key)
+            if isinstance(cached, list) and cached:
+                raw = [row for row in cached if isinstance(row, dict)]
+                out = trim_bars(raw, settings.bars_max)
+            else:
+                try:
+                    data = self._get(f"/bj/history/{inst.code_full}/d/{adjust}")
+                except MarketError:
+                    data = []
+                rows = data if isinstance(data, list) else []
+                out = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    out.append(
+                        {
+                            "d": row.get("t") or row.get("d") or row.get("date"),
+                            "o": row.get("o"),
+                            "h": row.get("h"),
+                            "l": row.get("l"),
+                            "c": row.get("c"),
+                            "v": row.get("v"),
+                        }
+                    )
+                out = trim_bars(out, settings.bars_max)
+                if out:
+                    self._cache_put(key, out)
+            return _filter_bars(out, start=start, end=end, limit=limit)
         key = f"bars_{inst.code6}_{adjust}"
         cached = self._cache_get(key)
         if isinstance(cached, list) and cached:
@@ -593,6 +757,10 @@ def _flow_point(row: dict) -> dict:
         except (TypeError, ValueError):
             pass
     return {"d": row.get("t") or row.get("d"), "net_in": net, "inflow": inflow, "outflow": outflow}
+
+
+def _norm_day(value: str | None) -> str:
+    return str(value or "").replace("-", "").replace("/", "")[:8]
 
 
 def _bar_day(row: dict) -> str:

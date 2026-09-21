@@ -47,7 +47,7 @@ def test_pools_catalog_and_exchange_query_export():
         assert "星昊医药" in names
         assert "中直股份" not in names
         bj_row = next(row for row in bj.json()["rows"] if row["code6"] == "430017")
-        assert bj_row["yffy"] is None
+        assert bj_row["yffy"] == 0.8
 
         cy = client.post("/api/query/run", json={"pool": "board:cy"}, headers=headers)
         cy_codes = {row["code6"] for row in cy.json()["rows"]}
