@@ -1549,7 +1549,7 @@
       document.getElementById("colList").innerHTML = Object.keys(groups).map((g) =>
         `<div class="col-group">${GROUP_LABEL[g] || g}</div>` +
         groups[g].map((f) =>
-          `<label><input type="checkbox" value="${f.key}" ${chosen.has(f.key) ? "checked" : ""} /><span>${f.label}<div class="sub">${f.key}</div></span></label>`
+          `<label><input type="checkbox" value="${f.key}" ${chosen.has(f.key) ? "checked" : ""} /><span>${f.label}<div class="sub">${f.key}${f.unavailable ? " · " + esc(f.unavailable) : ""}</div></span></label>`
         ).join("")
       ).join("");
       document.getElementById("colMask").style.display = "flex";

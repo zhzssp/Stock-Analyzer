@@ -419,6 +419,7 @@ def market_board():
 
 @router.get("/markets/taxonomy")
 def market_taxonomy(user: User | None = Depends(optional_user), db: Session = Depends(get_db)):
+    from src.market.capability_gaps import gap_catalog
     from src.market.futures_map import catalog as futures_catalog
     from src.market.institutions import catalog as institution_catalog
     from src.market.taxonomy import catalog as taxonomy_catalog
@@ -426,12 +427,17 @@ def market_taxonomy(user: User | None = Depends(optional_user), db: Session = De
 
     extra = extra_for(db, user)
     tax = taxonomy_catalog(extra)
+    gaps = gap_catalog()
+    north = next((g for g in gaps if g.get("field") == "northbound"), None)
     return {
         "taxonomy": tax,
         "concepts_custom": load_items(db, user),
         "institutions": institution_catalog(),
         "futures": futures_catalog(),
         "northbound": "未接入",
+        "gaps": gaps,
+        "phase3_note": "三期明确不接：期货/新闻/北向/出口/1mK/基金转债等，保持灰卡或空列。",
+        "northbound_reason": (north or {}).get("reason", ""),
     }
 
 

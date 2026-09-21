@@ -16,8 +16,9 @@ class QueryEngine:
         self.market = market
 
     def fields(self) -> list[dict]:
-        return [
-            {
+        out: list[dict] = []
+        for s in registry.all():
+            item = {
                 "key": s.key,
                 "label": s.label,
                 "group": s.group,
@@ -25,8 +26,10 @@ class QueryEngine:
                 "realtime": s.realtime,
                 "default": s.default,
             }
-            for s in registry.all()
-        ]
+            if s.unavailable:
+                item["unavailable"] = s.unavailable
+            out.append(item)
+        return out
 
     def run(
         self,

@@ -12,6 +12,7 @@ class FieldSpec:
     alertable: str | None = None
     realtime: bool = False
     default: bool = True
+    unavailable: str | None = None
 
 
 class FieldRegistry:
@@ -61,7 +62,16 @@ NET = registry.register(FieldSpec("net", "净利率", "finance", ("finance",)))
 FLOW_IN = registry.register(FieldSpec("flow_in", "资金流入", "flow", ("flow",)))
 FLOW_OUT = registry.register(FieldSpec("flow_out", "资金流出", "flow", ("flow",)))
 FLOW_NET = registry.register(FieldSpec("flow_net", "净流入", "flow", ("flow",), alertable="threshold"))
-NORTH = registry.register(FieldSpec("northbound", "北向资金", "flow", ()))
+NORTH = registry.register(
+    FieldSpec(
+        "northbound",
+        "北向资金",
+        "flow",
+        (),
+        default=False,
+        unavailable="麦蕊无个股日频北向；勿用资金流冒充",
+    )
+)
 PB = registry.register(FieldSpec("pb", "市净率", "quote", ("quote",), alertable="threshold"))
 TURNOVER = registry.register(FieldSpec("turnover", "换手率", "quote", ("quote",), default=False, alertable="threshold", realtime=True))
 MCAP = registry.register(FieldSpec("mcap", "总市值", "quote", ("quote",), default=False))

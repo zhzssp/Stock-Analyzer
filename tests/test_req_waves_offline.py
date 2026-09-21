@@ -42,7 +42,8 @@ def test_query_has_taxonomy_and_flow_columns():
     assert row["sector"] == "高端制造与科技"
     assert row["sw_l1"] == "国防军工"
     assert row["flow_net"] is not None
-    assert row["northbound"] is None
+    nb_rows = engine.run(resolve_instruments(["600038.SH"], MarketClient()), ["northbound"])
+    assert nb_rows[0]["northbound"] is None
     assert "挪威政府全球养老基金" in (row["holders"] or "")
 
 
