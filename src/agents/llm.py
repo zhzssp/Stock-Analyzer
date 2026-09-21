@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Iterator
+from dataclasses import dataclass
+from typing import Any, Callable, Iterator
 
 import httpx
 
@@ -9,6 +10,15 @@ from src.config import settings
 
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
 DEEPSEEK_CHAT = "deepseek-flash"
+
+LLM_ERR_BALANCE = "模型服务余额不足，请充值或更换 API Key 后重试。"
+LLM_ERR_REQUEST = "模型请求失败，请稍后重试。"
+
+
+@dataclass
+class ChatResult:
+    message: dict[str, Any] | None = None
+    error: str | None = None
 
 
 def llm_available() -> bool:
@@ -29,6 +39,20 @@ def llm_status() -> dict:
     }
 
 
+def llm_failure_message(exc: Exception | None = None, *, status_code: int | None = None, body: str = "") -> str:
+    code = status_code
+    text = (body or "").lower()
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        try:
+            text = (exc.response.text or "").lower()
+        except Exception:
+            text = ""
+    if code == 402 or "insufficient balance" in text or "余额不足" in text or "insufficient_balance" in text:
+        return LLM_ERR_BALANCE
+    return LLM_ERR_REQUEST
+
+
 def _chat_base() -> str:
     raw = (settings.llm_base_url or "").strip().rstrip("/")
     if not raw:
@@ -42,10 +66,10 @@ def chat_completions(
     messages: list[dict],
     tools: list[dict] | None = None,
     tool_choice: str = "auto",
-) -> dict[str, Any] | None:
+) -> ChatResult:
     """OpenAI-compatible Chat Completions. Default vendor is DeepSeek."""
     if not llm_available():
-        return None
+        return ChatResult()
     payload: dict[str, Any] = {
         "model": settings.llm_model or DEEPSEEK_CHAT,
         "messages": messages,
@@ -66,12 +90,17 @@ def chat_completions(
             timeout=settings.llm_timeout,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]
+        return ChatResult(message=resp.json()["choices"][0]["message"])
+    except httpx.HTTPStatusError as exc:
+        return ChatResult(error=llm_failure_message(exc))
     except Exception:
-        return None
+        return ChatResult(error=LLM_ERR_REQUEST)
 
 
-def chat_completions_stream(messages: list[dict]) -> Iterator[str]:
+def chat_completions_stream(
+    messages: list[dict],
+    on_error: Callable[[str], None] | None = None,
+) -> Iterator[str]:
     if not llm_available():
         return
     payload: dict[str, Any] = {
@@ -109,5 +138,11 @@ def chat_completions_stream(messages: list[dict]) -> Iterator[str]:
                         continue
                     if piece:
                         yield piece
+    except httpx.HTTPStatusError as exc:
+        if on_error:
+            on_error(llm_failure_message(exc))
+        return
     except Exception:
+        if on_error:
+            on_error(LLM_ERR_REQUEST)
         return

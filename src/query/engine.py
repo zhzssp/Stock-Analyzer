@@ -39,6 +39,7 @@ class QueryEngine:
         writer: str = "",
         concept_extra: dict | None = None,
         x_date: str | None = None,
+        force_live: bool = False,
     ) -> list[dict]:
         keys = field_keys or registry.default_keys()
         specs = [registry.get(k) for k in keys]
@@ -52,7 +53,7 @@ class QueryEngine:
         if "quote" in need:
             from src.market.clock import align_quotes
 
-            quotes, clock_meta = align_quotes(self.market, instruments, writer=writer)
+            quotes, clock_meta = align_quotes(self.market, instruments, writer=writer, force_live=force_live)
         rows = []
         for inst in instruments:
             bag: dict[str, Any] = {

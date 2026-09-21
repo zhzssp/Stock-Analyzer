@@ -84,6 +84,21 @@ def test_align_uses_file_without_second_fetch(tmp_path: Path):
     assert len(slots) == 1
 
 
+def test_align_force_live_skips_clock_cache(tmp_path: Path):
+    at = datetime(2026, 9, 18, 10, 8, tzinfo=SHANGHAI)
+    inst = normalize_instrument("600038.SH", "中直股份", "SH")
+    market = FakeMarket()
+    align_quotes(market, [inst], writer="hanish", clock_dir=tmp_path, at=at)
+    assert market.calls == 1
+    market.calls = 0
+    market.prices["600038"] = 27.01
+    forced, meta = align_quotes(market, [inst], writer="hanish", clock_dir=tmp_path, at=at, force_live=True)
+    assert market.calls == 1
+    assert meta["source"] == "live"
+    assert forced["600038"]["p"] == 27.01
+    assert forced["600038"]["source"] == "live"
+
+
 def test_universe_union_fetched_for_tape(tmp_path: Path):
     write_universe(tmp_path, "bob", ["000001"])
     at = datetime(2026, 9, 18, 10, 5, tzinfo=SHANGHAI)

@@ -63,7 +63,8 @@ def test_chat_parses_pasted_excel_and_quotes():
         body = chat.json()
         ids = {t["id"] for t in body["tools"]}
         assert "excel_parse" in ids
-        assert {"quote", "market_fetch"} & ids
+        assert "quote" in ids
+        assert "market_fetch" not in ids
         assert "26.86" in body["answer"] or "中直" in body["answer"]
 
 
@@ -85,5 +86,7 @@ def test_warehouse_and_market_fetch_tools():
             headers=headers,
         )
         assert live.status_code == 200, live.text
-        assert "market_fetch" in {t["id"] for t in live.json()["tools"]}
+        live_ids = {t["id"] for t in live.json()["tools"]}
+        assert "quote" in live_ids
+        assert "market_fetch" not in live_ids
         assert "26.86" in live.json()["answer"]

@@ -68,6 +68,58 @@ def _history_text(ctx) -> str:
     return " ".join(str(m.get("content") or "") for m in (getattr(ctx, "history", None) or []))
 
 
+# market_fetch(resource=…) 与专用 Tool 功能重叠；同一轮只保留专用 Tool。
+_FETCH_DEDICATED = {
+    "quote": "quote",
+    "holders": "holders_flow",
+    "finance": "finance_snapshot",
+    "capital_flow": "capital_flow",
+    "events": "corp_events",
+}
+
+
+def _resolve_fetch_resource(
+    question: str,
+    *,
+    wants_warehouse: bool,
+    wants_holders: bool,
+    wants_finance: bool,
+    wants_flow: bool,
+    wants_events: bool,
+    wants_quote: bool,
+    codes: list[str],
+    wants_table: bool,
+    wants_api: bool,
+) -> str | None:
+    if not (wants_api or (codes and wants_quote and not wants_table)):
+        return None
+    if wants_warehouse and _has(question, ("日线", "K线", "k线", "历史行情")):
+        return "history"
+    if wants_holders:
+        return "holders"
+    if wants_finance:
+        return "finance"
+    if wants_flow:
+        return "capital_flow"
+    if wants_events:
+        return "events"
+    return "quote"
+
+
+def _dedicated_covers_fetch(resource: str, flags: dict[str, bool]) -> bool:
+    tool = _FETCH_DEDICATED.get(resource)
+    if not tool:
+        return False
+    mapping = {
+        "quote": "wants_quote",
+        "holders": "wants_holders",
+        "finance": "wants_finance",
+        "capital_flow": "wants_flow",
+        "events": "wants_events",
+    }
+    return bool(flags.get(mapping.get(resource, "")))
+
+
 def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict] | None = None) -> list[dict]:
     extras = watch_instruments(ctx)
     insts = mentioned(question + " " + _history_text(ctx), ctx.market, extras)
@@ -161,17 +213,27 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
     if wants_warehouse:
         kind = "bars" if _has(question, ("日线", "K线", "k线", "历史行情")) else "list"
         add("warehouse_get", {**payload, "kind": kind, "limit": 30})
-    if wants_api or (codes and wants_quote and not wants_table):
-        resource = "history" if wants_warehouse and _has(question, ("日线", "K线", "k线")) else "quote"
-        if wants_holders:
-            resource = "holders"
-        elif wants_finance:
-            resource = "finance"
-        elif wants_flow:
-            resource = "capital_flow"
-        elif wants_events:
-            resource = "events"
-        add("market_fetch", {**payload, "resource": resource})
+    fetch_flags = {
+        "wants_quote": wants_quote,
+        "wants_holders": wants_holders,
+        "wants_finance": wants_finance,
+        "wants_flow": wants_flow,
+        "wants_events": wants_events,
+    }
+    fetch_resource = _resolve_fetch_resource(
+        question,
+        wants_warehouse=wants_warehouse,
+        wants_holders=wants_holders,
+        wants_finance=wants_finance,
+        wants_flow=wants_flow,
+        wants_events=wants_events,
+        wants_quote=wants_quote,
+        codes=codes,
+        wants_table=wants_table,
+        wants_api=wants_api,
+    )
+    if fetch_resource and not _dedicated_covers_fetch(fetch_resource, fetch_flags):
+        add("market_fetch", {**payload, "resource": fetch_resource})
     if wants_quote:
         add("quote")
     if wants_holders:
@@ -202,9 +264,21 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
             add("excel_diff", {})
         elif "excel_read" not in called:
             add("excel_read", {})
-    if "excel_parse" in called and codes and "market_fetch" not in called:
-        add("market_fetch", {"resource": "quote", "codes": codes, "question": question})
+    if "excel_parse" in called and codes and "quote" not in called and "market_fetch" not in called:
+        add("quote", {**payload})
     return calls
+
+
+def _note_llm_error(ctx, message: str | None) -> None:
+    if ctx is not None and message and not getattr(ctx, "llm_notice", None):
+        ctx.llm_notice = message
+
+
+def _prepend_llm_notice(ctx, text: str) -> str:
+    notice = getattr(ctx, "llm_notice", None) if ctx else None
+    if not notice:
+        return text
+    return f"⚠️ {notice}\n\n{text}"
 
 
 def llm_plan(question: str, observations: list[dict], called: set[str], ctx) -> list[dict] | None:
@@ -240,7 +314,11 @@ def llm_plan(question: str, observations: list[dict], called: set[str], ctx) -> 
     messages.append({"role": "user", "content": question})
     if observations:
         messages.append({"role": "assistant", "content": "已取得 Tool 结果：" + json.dumps(observations, ensure_ascii=False)[:4000]})
-    msg = chat_completions(messages, tools=tools)
+    result = chat_completions(messages, tools=tools)
+    if result.error:
+        _note_llm_error(ctx, result.error)
+        return None
+    msg = result.message
     if msg is None:
         return None
     raw = msg.get("tool_calls") or []
@@ -287,8 +365,9 @@ def write_answer(question: str, observations: list[dict], agent: str = "analyst"
     if llm_available():
         prose = _llm_write(question, drafted, agent, ctx)
         if prose:
-            return prose, cites
-    return "\n".join(drafted) if drafted else "Tool 已执行，但没有可展示的字段。", cites
+            return _prepend_llm_notice(ctx, prose), cites
+    body = "\n".join(drafted) if drafted else "Tool 已执行，但没有可展示的字段。"
+    return _prepend_llm_notice(ctx, body), cites
 
 
 def write_answer_iter(question: str, observations: list[dict], agent: str = "analyst", ctx=None):
@@ -305,7 +384,8 @@ def write_answer_iter(question: str, observations: list[dict], agent: str = "ana
             [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": question + "\n\n已取到：\n" + "\n".join(drafted)},
-            ]
+            ],
+            on_error=lambda msg: _note_llm_error(ctx, msg),
         ):
             acc.append(chunk)
             yield chunk, cites
@@ -313,9 +393,9 @@ def write_answer_iter(question: str, observations: list[dict], agent: str = "ana
             return
         prose = _llm_write(question, drafted, agent, ctx)
         if prose:
-            yield prose, cites
+            yield _prepend_llm_notice(ctx, prose), cites
             return
-    yield fallback, cites
+    yield _prepend_llm_notice(ctx, fallback), cites
 
 
 def _write_prompt(agent: str, ctx=None) -> str:
@@ -329,12 +409,16 @@ def _write_prompt(agent: str, ctx=None) -> str:
 
 
 def _llm_write(question: str, drafted: list[str], agent: str = "analyst", ctx=None) -> str | None:
-    msg = chat_completions(
+    result = chat_completions(
         [
             {"role": "system", "content": _write_prompt(agent, ctx)},
             {"role": "user", "content": question + "\n\n已取到：\n" + "\n".join(drafted)},
         ]
     )
+    if result.error:
+        _note_llm_error(ctx, result.error)
+        return None
+    msg = result.message
     if not msg:
         return None
     return msg.get("content")

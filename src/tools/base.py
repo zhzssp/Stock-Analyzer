@@ -20,6 +20,7 @@ class ToolContext:
     allowed_tools: list[str] | None = None
     history: list[dict] = field(default_factory=list)
     agent_name: str = "analyst"
+    llm_notice: str | None = None
 
 
 @dataclass

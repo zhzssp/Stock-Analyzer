@@ -83,6 +83,7 @@ class QueryIn(BaseModel):
     pool_name: str | None = None
     async_mode: bool = False
     x_date: str | None = None
+    force_live: bool = False
 
 
 class DiffIn(BaseModel):
@@ -528,8 +529,17 @@ def _execute_query(
     writer: str = "",
     concept_extra: dict | None = None,
     x_date: str | None = None,
+    force_live: bool = False,
 ) -> dict:
-    rows = engine.run(insts, fields, cards=cards, writer=writer, concept_extra=concept_extra, x_date=x_date)
+    rows = engine.run(
+        insts,
+        fields,
+        cards=cards,
+        writer=writer,
+        concept_extra=concept_extra,
+        x_date=x_date,
+        force_live=force_live,
+    )
     codes = [i.code_full for i in insts]
     out = {
         "fields": _field_view(fields),
@@ -580,10 +590,12 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
             writer=user.username,
             concept_extra=extra,
             x_date=body.x_date,
+            force_live=body.force_live,
         )
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
         result["pool_id"] = meta.get("id")
+        result["force_live"] = body.force_live
         return result
     job = jobs.create("export" if do_export else "query", meta.get("id") or body.pool, len(insts))
     snapshot = list(insts)
@@ -600,6 +612,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                 writer=user.username,
                 concept_extra=extra,
                 x_date=body.x_date,
+                force_live=body.force_live,
             )
             result["sample"] = meta.get("sample", False)
             result["note"] = meta.get("note") or ""

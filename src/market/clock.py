@@ -507,8 +507,12 @@ def align_quotes(
     extra_codes: list[str] | None = None,
     clock_dir: Path | None = None,
     at: datetime | None = None,
+    force_live: bool = False,
 ) -> tuple[dict[str, dict], dict]:
-    """Return live quotes keyed by code6, preferring the current wall-clock slot file."""
+    """Return live quotes keyed by code6, preferring the current wall-clock slot file.
+
+    When ``force_live`` is True (工作台打开/点刷新)，跳过墙钟档口缓存，直接向麦蕊拉现价。
+    """
     insts = list(instruments)
     slot = slot_start(at)
     as_of = format_as_of(slot)
@@ -524,21 +528,23 @@ def align_quotes(
 
     root = clock_dir if clock_dir is not None else configured_clock_dir()
     file_quotes: dict[str, dict] = {}
-    if root is not None:
+    if root is not None and not force_live:
         meta["enabled"] = True
         payload = _read_slot_payload(root, slot)
         if payload:
             file_quotes = dict(payload.get("quotes") or {})
             meta["as_of"] = payload.get("as_of") or as_of
             as_of = meta["as_of"]
+    elif root is not None:
+        meta["enabled"] = True
 
     need = [inst for inst in insts]
-    covered = bool(need) and all((inst.code6 in file_quotes) for inst in need)
+    covered = bool(need) and not force_live and all((inst.code6 in file_quotes) for inst in need)
     if covered:
         meta["source"] = "clock"
         return {inst.code6: _decorate(file_quotes[inst.code6], "clock", as_of) for inst in need}, meta
 
-    missing = [inst for inst in need if inst.code6 not in file_quotes]
+    missing = [inst for inst in need if force_live or inst.code6 not in file_quotes]
     fetch_list = list(missing)
     if root is not None:
         union = extra_codes if extra_codes is not None else load_universe_codes(root)
@@ -562,7 +568,7 @@ def align_quotes(
 
     out: dict[str, dict] = {}
     for inst in need:
-        if inst.code6 in file_quotes:
+        if not force_live and inst.code6 in file_quotes:
             out[inst.code6] = _decorate(file_quotes[inst.code6], "clock", as_of)
         elif inst.code6 in live:
             out[inst.code6] = _decorate(live[inst.code6], live[inst.code6].get("source") or "live", as_of)
