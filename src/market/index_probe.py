@@ -40,9 +40,10 @@ def default_disabled(reason: str, extra: dict | None = None) -> dict:
 
 
 def probe(licence: str | None = None) -> dict:
-    licence = (licence or settings.mairui_licence or settings.demo_licence).strip()
+    chain = settings.licence_chain
+    licence = (licence or (chain[0] if chain else "") or settings.demo_licence).strip()
     sample_only = licence == settings.demo_licence
-    if settings.mairui_offline and not settings.mairui_licence:
+    if settings.mairui_offline and not chain:
         payload = default_disabled("离线未实测；正式 licence 请跑 scripts/Verify-Index.ps1")
         payload["sample_only"] = True
         write_status(payload)

@@ -10,6 +10,7 @@ from src.market import fixtures
 from src.platform.storage import read_cache_json, trim_bars, write_cache_json
 from src.market.holders_diff import normalize_holders, summarize
 from src.market.normalize import Instrument, code6_of, normalize_instrument
+from src.market.licence_pool import LicencePool, is_quota_error
 from src.market.taxonomy import classify, search_needles
 
 
@@ -24,25 +25,51 @@ class MarketClient:
     """
 
     def __init__(self) -> None:
-        self.offline = settings.mairui_offline or not settings.mairui_licence
-        self.licence = settings.mairui_licence.strip()
+        chain = settings.licence_chain
+        self.offline = settings.mairui_offline or not chain
+        self._pool: LicencePool | None = LicencePool.shared(chain) if chain and not self.offline else None
+        self.licence = self._pool.active() if self._pool else ""
         self.sample_only = False
         self.status = "offline" if self.offline else "unchecked"
         if not self.offline:
             self._probe()
 
-    def _url(self, path: str) -> str:
-        return f"{settings.mairui_base}{path}/{self.licence}"
+    def _url(self, path: str, licence: str | None = None) -> str:
+        key = (licence or self.licence or (self._pool.active() if self._pool else "")).strip()
+        return f"{settings.mairui_base}{path}/{key}"
 
     def _get(self, path: str) -> Any:
         if self.offline:
             raise MarketError("offline mode: live API disabled")
-        try:
-            resp = httpx.get(self._url(path), timeout=30.0)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as exc:
-            raise MarketError(str(exc)) from exc
+        pool = self._pool
+        attempts = len(pool.available()) if pool else 1
+        last_error = "麦蕊证书池今日已全部用尽"
+        for _ in range(max(attempts, 1)):
+            lic = pool.active() if pool else self.licence
+            if not lic:
+                raise MarketError(last_error)
+            url = self._url(path, lic)
+            try:
+                resp = httpx.get(url, timeout=30.0)
+                if pool and is_quota_error(resp.status_code, resp.text):
+                    last_error = f"Licence 当日额度已用尽: {lic[:8]}…"
+                    pool.mark_exhausted(lic)
+                    self.licence = pool.active()
+                    continue
+                resp.raise_for_status()
+                self.licence = lic
+                return resp.json()
+            except httpx.HTTPStatusError as exc:
+                body = exc.response.text if exc.response is not None else ""
+                if pool and is_quota_error(exc.response.status_code if exc.response else 0, body):
+                    last_error = f"Licence 当日额度已用尽: {lic[:8]}…"
+                    pool.mark_exhausted(lic)
+                    self.licence = pool.active()
+                    continue
+                raise MarketError(str(exc)) from exc
+            except Exception as exc:
+                raise MarketError(str(exc)) from exc
+        raise MarketError(last_error)
 
     def _try_get(self, path: str) -> Any | None:
         try:
@@ -67,7 +94,7 @@ class MarketClient:
         prices = []
         for code in ("000001", "600038", "002230"):
             try:
-                data = httpx.get(self._url(f"/hsrl/ssjy/{code}"), timeout=20.0).json()
+                data = self._get(f"/hsrl/ssjy/{code}")
                 row = data[0] if isinstance(data, list) else data
                 prices.append(row.get("p"))
             except Exception:
@@ -90,11 +117,14 @@ class MarketClient:
         write_cache_json(key, payload)
 
     def health(self) -> dict:
+        pool = self._pool.status() if self._pool else None
         return {
             "offline": self.offline,
             "sample_only": self.sample_only,
             "status": self.status,
             "has_licence": bool(self.licence),
+            "licence_active": self.licence,
+            "licence_pool": pool,
         }
 
     def index_quotes(self) -> list[dict]:

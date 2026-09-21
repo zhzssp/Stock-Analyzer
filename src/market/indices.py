@@ -76,7 +76,7 @@ def load_probe() -> dict:
 
 
 def index_status(code: str) -> dict:
-    offline = settings.mairui_offline or not str(settings.mairui_licence or "").strip()
+    offline = settings.mairui_offline or not settings.licence_chain
     if offline:
         from src.market.fixtures import INDEX_CONSTITUENTS
 

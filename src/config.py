@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     app_port: int = 8765
     bootstrap_user: str = "hanish"
     bootstrap_password: str = "change-me"
-    mairui_licence: str = "0911733C-31DD-454C-ADCA-5CC002806939"
+    # 主证书；可与 mairui_licences 组成队列（当日 429 自动换下一张）。
+    mairui_licence: str = "2FE37018-1B80-4185-91C5-05D4799A4572"
+    mairui_licences: str = "0911733C-31DD-454C-ADCA-5CC002806939"
     # True 才用 src/market/fixtures.py 喂工作台。样例文件保留，pytest 仍会设 MAIRUI_OFFLINE=1。
     mairui_offline: bool = False
     mairui_base: str = "https://api.mairuiapi.com"
@@ -36,6 +38,12 @@ class Settings(BaseSettings):
     alerts_log_max_mb: float = 2
     clock_dir: str = ""
     clock_interval_sec: int = 300
+
+    @property
+    def licence_chain(self) -> list[str]:
+        from src.market.licence_pool import parse_licences
+
+        return parse_licences(self.mairui_licence, self.mairui_licences)
 
     @property
     def fixtures_enabled(self) -> bool:
