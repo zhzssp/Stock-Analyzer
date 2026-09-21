@@ -5,14 +5,43 @@ from pathlib import Path
 
 from src.config import settings
 
-# Official names. Offline uses fixture slices; live probe may replace codes.
-CANDIDATE_PATHS = (
-    "/hsindex/constituent/{code}",
-    "/hsindex/chengfen/{code}",
-    "/hsindex/component/{code}",
-    "/hsindex/weight/{code}",
-    "/hslt/zs/{code}",
-)
+# 官网 hsdata：先 hszg/list（type2=7 指数成分），叶子 code 形如 zhishu_000001，
+# 再 hszg/gg/{tree_code} 取成份。hszsdata 只有点位/K 线，没有成份名单。
+# 科创综指 000680 不在指数树里（树里只有科创50 zhishu_000688）。
+NO_TREE_CODES = frozenset({"000680"})
+
+
+def index_code6(code: str) -> str:
+    return str(code or "").split(".")[0].strip()
+
+
+def index_tree_code(index_code: str) -> str | None:
+    code6 = index_code6(index_code)
+    if not code6 or code6 in NO_TREE_CODES:
+        return None
+    return f"zhishu_{code6}"
+
+
+def constituent_paths(index_code: str) -> tuple[str, ...]:
+    tree = index_tree_code(index_code)
+    if not tree:
+        return ()
+    return (f"/hszg/gg/{tree}",)
+
+
+def codes_from_constituent_rows(rows) -> list[str]:
+    codes: list[str] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        dm = str(row.get("dm") or row.get("code") or row.get("gpdm") or "").strip()
+        if not dm or dm in seen:
+            continue
+        seen.add(dm)
+        codes.append(dm)
+    return codes
+
 
 INDEX_SPECS = [
     {"code": "000001.SH", "label": "上证指数", "market": "sh"},
@@ -73,13 +102,28 @@ def index_status(code: str) -> dict:
             "source": "offline-fixture" if codes else "",
         }
 
+    tree = index_tree_code(code)
+    if not tree:
+        return {
+            "code": code,
+            "enabled": False,
+            "reason": "麦蕊 hszg 指数树无该节点",
+            "count": 0,
+            "codes": [],
+            "source": "",
+        }
+
+    from src.platform.storage import read_cache_json
+
+    cached = read_cache_json(f"index_{code}") or []
+    codes = codes_from_constituent_rows(cached) if isinstance(cached, list) else []
     return {
         "code": code,
-        "enabled": False,
-        "reason": rec.get("reason") or "等待正式 licence 实测成份接口",
-        "count": 0,
-        "codes": [],
-        "source": rec.get("source") or "",
+        "enabled": True,
+        "reason": "",
+        "count": len(codes) if codes else None,
+        "codes": codes,
+        "source": f"hszg/gg/{tree}",
     }
 
 

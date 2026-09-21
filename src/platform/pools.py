@@ -87,7 +87,8 @@ def resolve_pool(
         insts = market.list_index(code)
         if not insts:
             st = index_status(code)
-            raise HTTPException(status_code=409, detail=f"{pool_label(pid)} 未启用：{st['reason']}")
+            reason = st["reason"] or "成份接口无数据"
+            raise HTTPException(status_code=409, detail=f"{pool_label(pid)} 未启用：{reason}")
         meta["note"] = "指数成份股；不是该交易所全部挂牌"
         if market.offline:
             meta["sample"] = True

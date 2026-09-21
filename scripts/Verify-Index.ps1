@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     演示 licence 会忽略代码，成份结果一律记为无法验证、芯片保持未启用。
-    正式 licence 下会尝试若干候选路径，并确认 hscp/sszs 只是个股反查。
+    正式 licence 下打 hszg/list + hszg/gg/zhishu_{code}，并确认 hscp/sszs 只是个股反查。
     全市场扫一遍 sszs 拼成份默认不做（约 5000 次请求）。
 
 .PARAMETER Licence
@@ -97,8 +97,8 @@ $lines = @(
     '',
     '## 下一步',
     '',
-    '- 若 ``constituent_api`` 有值且 ``enabled=true``：正式 licence 下用探针名单替换离线切片。',
-    '- 若仍全部 ``enabled=false``：工作台继续用离线成份切片；不得用沪/深/北全市场冒充指数。'
+    '- 现网工作台直接走 ``hszg/gg/zhishu_{6位}``；探针用于落盘核查。',
+    '- 科创综指 000680 若不在指数树中则保持未启用，不得用科创50或科创板全部冒充。'
 )
 Write-Host ""
 Write-Host ">>> [3/3] 写入报告" -ForegroundColor Cyan

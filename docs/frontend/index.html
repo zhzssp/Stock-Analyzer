@@ -1034,7 +1034,7 @@
       const m = data.market || {};
       const a = data.agent || {};
       const st = a.llm_status || {};
-      const marketText = m.offline ? "离线切片" : (m.status || "行情在线");
+      const marketText = m.offline ? "离线切片" : (m.sample_only ? "演示证样本" : (m.status || "行情在线"));
       const llmText = a.llm ? ((st.provider || "模型") + " 已配置") : "无模型 key · 确定性编排";
       const channels = (a.channels || []).filter((c) => c.enabled).map((c) => c.name);
       const chText = channels.length ? channels.join("、") : "无提醒通道";
@@ -1478,7 +1478,9 @@
       let data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
       if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
       renderTable(data.fields, data.rows);
-      const mode = data.sample || (data.market && data.market.offline) ? "离线切片" : (data.market && data.market.status);
+      const mode = data.sample || (data.market && data.market.offline)
+        ? "离线切片"
+        : ((data.market && data.market.sample_only) ? "演示证样本" : (data.market && data.market.status));
       const scope = codes && codes.length ? "筛选一次" : (data.pool || state.poolLabel || state.pool);
       const note = data.note ? ` · ${data.note}` : "";
       const clock = data.clock || {};

@@ -19,6 +19,29 @@ def _card_empty(item: WatchItem) -> bool:
     )
 
 
+def _card_matches_seed(item: WatchItem, seed: dict) -> bool:
+    return (
+        (item.thesis or "") == (seed.get("thesis") or "")
+        and item.cost == seed.get("cost")
+        and item.shares == seed.get("shares")
+        and item.buy_low == seed.get("buy_low")
+        and item.buy_high == seed.get("buy_high")
+        and item.reduce_price == seed.get("reduce_price")
+        and (item.invalid_if or "") == (seed.get("invalid_if") or "")
+    )
+
+
+def _clear_card(item: WatchItem) -> None:
+    item.group_name = "自选"
+    item.thesis = ""
+    item.cost = None
+    item.shares = None
+    item.buy_low = None
+    item.buy_high = None
+    item.reduce_price = None
+    item.invalid_if = ""
+
+
 def _apply_card_seed(item: WatchItem, seed: dict) -> None:
     item.group_name = seed.get("group") or item.group_name or "自选"
     item.thesis = seed.get("thesis") or ""
@@ -55,7 +78,12 @@ def bootstrap(db: Session) -> None:
             db.flush()
             existing[inst.code6] = item
         seed = CARD_SEED.get(inst.code6)
-        if seed and _card_empty(item):
-            _apply_card_seed(item, seed)
+        if not seed:
+            continue
+        if settings.fixtures_enabled:
+            if _card_empty(item):
+                _apply_card_seed(item, seed)
+        elif _card_matches_seed(item, seed):
+            _clear_card(item)
     db.commit()
     ensure_jobs(db, user)

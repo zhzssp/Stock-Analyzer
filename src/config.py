@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     bootstrap_user: str = "hanish"
     bootstrap_password: str = "change-me"
     mairui_licence: str = "0911733C-31DD-454C-ADCA-5CC002806939"
+    # True 才用 src/market/fixtures.py 喂工作台。样例文件保留，pytest 仍会设 MAIRUI_OFFLINE=1。
     mairui_offline: bool = False
     mairui_base: str = "https://api.mairuiapi.com"
     demo_licence: str = "LICENCE-66D8-9F96-0C7F0FBCD073"
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
     llm_provider: str = "deepseek"
     llm_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com/v1"
-    llm_model: str = "deepseek-chat"
+    llm_model: str = "deepseek-flash"
     llm_timeout: float = 45.0
     alert_webhook: str = ""
     query_sync_limit: int = 40
@@ -35,6 +36,10 @@ class Settings(BaseSettings):
     alerts_log_max_mb: float = 2
     clock_dir: str = ""
     clock_interval_sec: int = 300
+
+    @property
+    def fixtures_enabled(self) -> bool:
+        return bool(self.mairui_offline)
 
     @property
     def db_path(self) -> Path:

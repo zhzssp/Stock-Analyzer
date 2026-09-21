@@ -9,16 +9,7 @@ from typing import Any
 import httpx
 
 from src.config import settings
-from src.market.indices import INDEX_SPECS, probe_path
-
-
-CANDIDATE_PATHS = (
-    "/hsindex/constituent/{code}",
-    "/hsindex/chengfen/{code}",
-    "/hsindex/component/{code}",
-    "/hsindex/weight/{code}",
-    "/hslt/zs/{code}",
-)
+from src.market.indices import INDEX_SPECS, codes_from_constituent_rows, constituent_paths, index_tree_code, probe_path
 
 
 def _url(path: str, licence: str) -> str:
@@ -57,15 +48,37 @@ def probe(licence: str | None = None) -> dict:
         write_status(payload)
         return payload
 
-    findings: dict[str, Any] = {"attempts": [], "sszs": None}
+    findings: dict[str, Any] = {"attempts": [], "sszs": None, "tree_hits": []}
     constituent_api = None
-    codes_by_index: dict[str, list[str]] = {}
+    extra = {"sample_only": sample_only}
 
     try:
         with httpx.Client(timeout=20.0) as client:
-            for spec in INDEX_SPECS[:3]:
-                for tmpl in CANDIDATE_PATHS:
-                    path = tmpl.format(code=spec["code"])
+            try:
+                tree = client.get(_url("/hszg/list", licence))
+                nodes = tree.json() if tree.status_code == 200 and isinstance(tree.json(), list) else []
+                wanted = {index_tree_code(spec["code"]) for spec in INDEX_SPECS}
+                wanted.discard(None)
+                for row in nodes:
+                    if row.get("code") in wanted:
+                        findings["tree_hits"].append({"code": row.get("code"), "name": row.get("name")})
+                findings["attempts"].append({"url": "/hszg/list", "ok": tree.status_code == 200, "count": len(nodes), "status": tree.status_code})
+            except Exception as exc:
+                findings["attempts"].append({"url": "/hszg/list", "ok": False, "error": str(exc)})
+
+            for spec in INDEX_SPECS:
+                paths = constituent_paths(spec["code"])
+                if not paths:
+                    extra[spec["code"]] = {
+                        "enabled": False,
+                        "reason": "麦蕊 hszg 指数树无该节点",
+                        "codes": [],
+                        "source": "",
+                    }
+                    findings["attempts"].append({"url": spec["code"], "ok": False, "status": 0, "count": 0, "note": "no tree node"})
+                    continue
+                hit = False
+                for path in paths:
                     url = _url(path, licence)
                     try:
                         resp = client.get(url)
@@ -74,18 +87,26 @@ def probe(licence: str | None = None) -> dict:
                         count = len(data) if isinstance(data, list) else 0
                         findings["attempts"].append({"url": path, "ok": ok, "count": count, "status": resp.status_code})
                         if ok and count >= 10 and not sample_only:
-                            constituent_api = path
-                            codes = []
-                            for row in data:
-                                if not isinstance(row, dict):
-                                    continue
-                                dm = row.get("dm") or row.get("code") or row.get("gpdm") or ""
-                                if dm:
-                                    codes.append(str(dm))
+                            codes = codes_from_constituent_rows(data)
                             if codes:
-                                codes_by_index[spec["code"]] = codes
+                                constituent_api = path
+                                extra[spec["code"]] = {
+                                    "enabled": True,
+                                    "reason": "",
+                                    "codes": codes,
+                                    "source": path,
+                                }
+                                hit = True
+                                break
                     except Exception as exc:
                         findings["attempts"].append({"url": path, "ok": False, "error": str(exc)})
+                if not hit and spec["code"] not in extra:
+                    extra[spec["code"]] = {
+                        "enabled": False,
+                        "reason": "未找到可用的指数→成份接口",
+                        "codes": [],
+                        "source": "",
+                    }
 
             try:
                 sszs = client.get(_url("/hscp/sszs/600038", licence))
@@ -96,14 +117,6 @@ def probe(licence: str | None = None) -> dict:
         findings["error"] = str(exc)
 
     reason = "演示 licence 无法验证成份接口" if sample_only else "未找到可用的指数→成份接口"
-    extra = {"sample_only": sample_only}
-    for code, codes in codes_by_index.items():
-        extra[code] = {
-            "enabled": True,
-            "reason": "",
-            "codes": codes,
-            "source": constituent_api or "",
-        }
     payload = default_disabled(reason, extra)
     payload["sample_only"] = sample_only
     payload["constituent_api"] = constituent_api
@@ -121,3 +134,5 @@ def probe(licence: str | None = None) -> dict:
 if __name__ == "__main__":
     result = probe()
     print(json.dumps({k: result[k] for k in ("probed_at", "sample_only", "constituent_api", "sszs_reverse_ok") if k in result}, ensure_ascii=False, indent=2))
+    enabled = {k: {"count": len(v.get("codes") or []), "source": v.get("source")} for k, v in (result.get("indices") or {}).items() if v.get("enabled")}
+    print(json.dumps(enabled, ensure_ascii=False, indent=2))

@@ -114,7 +114,7 @@ class MarketClient:
         }
 
     def _index_quote(self, code: str) -> dict:
-        if self.offline or self.sample_only:
+        if self.offline:
             data = fixtures.INDEX_QUOTE.get(code) or {}
             return {"p": data.get("p"), "pc": data.get("pc"), "source": data.get("source") or "offline"}
         code6 = code.split(".")[0]
@@ -449,19 +449,25 @@ class MarketClient:
         return out
 
     def list_index(self, code: str) -> list[Instrument]:
-        from src.market.indices import CANDIDATE_PATHS, index_status
+        from src.market.indices import constituent_paths, index_status
 
         st = index_status(code)
-        if st["enabled"] and st["codes"]:
-            return resolve_instruments(st["codes"], self)
         if self.offline or self.sample_only:
+            if st["enabled"] and st["codes"]:
+                return resolve_instruments(st["codes"], self)
             return []
         cached = self._cache_get(f"index_{code}")
         if cached:
-            return [normalize_instrument(x.get("dm", ""), x.get("mc", ""), x.get("jys", "")) for x in cached]
-        for tmpl in CANDIDATE_PATHS:
+            return [
+                normalize_instrument(x.get("dm", ""), x.get("mc", ""), x.get("jys", ""))
+                for x in cached
+                if isinstance(x, dict)
+            ]
+        if st["enabled"] and st["codes"]:
+            return resolve_instruments(st["codes"], self)
+        for path in constituent_paths(code):
             try:
-                data = self._get(tmpl.format(code=code))
+                data = self._get(path)
             except MarketError:
                 continue
             if isinstance(data, list) and len(data) >= 10:
@@ -571,8 +577,8 @@ def _pack_holders(flow_raw: list, top_raw: list, source: str) -> dict:
 
 def _flow_point(row: dict) -> dict:
     net = row.get("zljme") or row.get("net_in") or row.get("jlje")
-    inflow = row.get("zljmr") or row.get("inflow") or row.get("lrje") or row.get("main_in")
-    outflow = row.get("zljmc") or row.get("outflow") or row.get("lcje")
+    inflow = row.get("zljmr") or row.get("inflow") or row.get("lrje") or row.get("main_in") or row.get("zmbljcje")
+    outflow = row.get("zljmc") or row.get("outflow") or row.get("lcje") or row.get("zmsljcje")
     if inflow is None and outflow is None and net not in (None, ""):
         try:
             n = float(net)
@@ -581,6 +587,11 @@ def _flow_point(row: dict) -> dict:
         if n is not None:
             inflow = n if n > 0 else 0
             outflow = -n if n < 0 else 0
+    if net in (None, "") and inflow is not None and outflow is not None:
+        try:
+            net = float(inflow) - float(outflow)
+        except (TypeError, ValueError):
+            pass
     return {"d": row.get("t") or row.get("d"), "net_in": net, "inflow": inflow, "outflow": outflow}
 
 

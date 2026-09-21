@@ -140,6 +140,7 @@
 | 信息 | 接口 |
 |---|---|
 | 指数、行业、概念树（含基金/港股/美股/期货等分类） | `hszg/list` |
+| 指数成份（`type2=7` 叶子，如 `zhishu_000001`） | `hszg/gg/{tree_code}`；**不是** `hsindex/constituent`。`hszsdata` 只有点位/K 线 |
 | 按概念找股票 / 按股票找概念 | `hszg/gg/{code}` / `hszg/zg/{code}` |
 | 券商概念指数 / 一级板块 / 板块明细 | `hslt/sectorslist`、`hslt/primarylist`、`hslt/sectors/{板块名}` |
 | 交易日历 | `tcalendar/list/{年}` |

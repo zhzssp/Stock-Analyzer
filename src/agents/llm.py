@@ -8,7 +8,7 @@ import httpx
 from src.config import settings
 
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
-DEEPSEEK_CHAT = "deepseek-chat"
+DEEPSEEK_CHAT = "deepseek-flash"
 
 
 def llm_available() -> bool:
@@ -49,6 +49,8 @@ def chat_completions(
     payload: dict[str, Any] = {
         "model": settings.llm_model or DEEPSEEK_CHAT,
         "messages": messages,
+        # Flash 默认会开 thinking，既更贵也会在 Tool 多轮里要求回传 reasoning_content。
+        "thinking": {"type": "disabled"},
     }
     if tools and llm_supports_tools():
         payload["tools"] = tools
@@ -76,6 +78,7 @@ def chat_completions_stream(messages: list[dict]) -> Iterator[str]:
         "model": settings.llm_model or DEEPSEEK_CHAT,
         "messages": messages,
         "stream": True,
+        "thinking": {"type": "disabled"},
     }
     try:
         with httpx.Client(timeout=settings.llm_timeout) as client:
