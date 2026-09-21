@@ -105,6 +105,9 @@ def test_workbench_pct_column_sorts_index_constituents():
     assert "一只" in html
     assert "data-watch-up" in html
     assert "换手和市值默认不勾" in html
+    assert 'id="customConceptAdd"' in html
+    assert "/markets/concepts" in html
+    assert "自定义概念" in html
     assert "--up: #b42318" in html
     assert "--down: #1f7a4d" in html
     assert "function signedClass" in html

@@ -27,7 +27,7 @@ from src.platform.bus import bus
 from src.platform.channels import catalog as channel_catalog
 from src.tools.loader import load_manifests
 from src.agents.watcher import ensure_jobs, job_payload, rule_payload, run_watcher
-from src.api.deps import current_user
+from src.api.deps import current_user, optional_user
 from src.db import get_db
 from src.config import settings
 from src.db import SessionLocal
@@ -155,6 +155,10 @@ class AlertPatchIn(BaseModel):
 class MonitorPrefIn(BaseModel):
     selected: list[str] = []
     custom: list[dict] = []
+
+
+class ConceptsIn(BaseModel):
+    items: list[dict] = []
 
 
 class PreviewIn(BaseModel):
@@ -386,8 +390,16 @@ def put_watch_card(code6: str, body: CardIn, user: User = Depends(current_user),
 
 
 @router.get("/markets/instruments")
-def instruments(q: str = "", board: str = Query("all", alias="market"), limit: int = 50):
-    return market.search(q, board, max(1, min(limit, 200)))
+def instruments(
+    q: str = "",
+    board: str = Query("all", alias="market"),
+    limit: int = 50,
+    user: User | None = Depends(optional_user),
+    db: Session = Depends(get_db),
+):
+    from src.platform.concepts import extra_for
+
+    return market.search(q, board, max(1, min(limit, 200)), extra=extra_for(db, user))
 
 
 @router.get("/markets/board")
@@ -396,17 +408,39 @@ def market_board():
 
 
 @router.get("/markets/taxonomy")
-def market_taxonomy():
+def market_taxonomy(user: User | None = Depends(optional_user), db: Session = Depends(get_db)):
     from src.market.futures_map import catalog as futures_catalog
     from src.market.institutions import catalog as institution_catalog
     from src.market.taxonomy import catalog as taxonomy_catalog
+    from src.platform.concepts import extra_for, load_items
 
+    extra = extra_for(db, user)
+    tax = taxonomy_catalog(extra)
     return {
-        "taxonomy": taxonomy_catalog(),
+        "taxonomy": tax,
+        "concepts_custom": load_items(db, user),
         "institutions": institution_catalog(),
         "futures": futures_catalog(),
         "northbound": "未接入",
     }
+
+
+@router.get("/markets/concepts")
+def get_concepts(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from src.platform.concepts import load_items
+
+    return {"items": load_items(db, user)}
+
+
+@router.put("/markets/concepts")
+def put_concepts(body: ConceptsIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from src.platform.concepts import save_items
+
+    try:
+        items = save_items(db, user, body.items)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"items": items}
 
 
 @router.get("/markets/pools")
@@ -468,8 +502,8 @@ def _prepare_query(body: QueryIn, user: User, db: Session):
     return insts, fields, name, meta, _cards_map(db, user)
 
 
-def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, user_id: int, cards: dict | None = None, writer: str = "") -> dict:
-    rows = engine.run(insts, fields, cards=cards, writer=writer)
+def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, user_id: int, cards: dict | None = None, writer: str = "", concept_extra: dict | None = None) -> dict:
+    rows = engine.run(insts, fields, cards=cards, writer=writer, concept_extra=concept_extra)
     codes = [i.code_full for i in insts]
     out = {
         "fields": _field_view(fields),
@@ -504,10 +538,13 @@ def _execute_query(insts, fields: list[str], do_export: bool, pool_name: str, us
 
 
 def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
+    from src.platform.concepts import extra_for
+
     insts, fields, pool_name, meta, cards = _prepare_query(body, user, db)
+    extra = extra_for(db, user)
     use_job = body.async_mode or len(insts) > settings.query_sync_limit
     if not use_job:
-        result = _execute_query(insts, fields, do_export, pool_name, user.id, cards, writer=user.username)
+        result = _execute_query(insts, fields, do_export, pool_name, user.id, cards, writer=user.username, concept_extra=extra)
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
         result["pool_id"] = meta.get("id")
@@ -517,7 +554,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
 
     def worker():
         try:
-            result = _execute_query(snapshot, fields, do_export, pool_name, user.id, cards, writer=user.username)
+            result = _execute_query(snapshot, fields, do_export, pool_name, user.id, cards, writer=user.username, concept_extra=extra)
             result["sample"] = meta.get("sample", False)
             result["note"] = meta.get("note") or ""
             result["pool_id"] = meta.get("id")

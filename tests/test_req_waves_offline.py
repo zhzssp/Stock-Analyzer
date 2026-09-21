@@ -26,6 +26,15 @@ def test_search_by_sector_and_hot_concept():
     assert {x["code6"] for x in ai} >= {"002230"}
 
 
+def test_custom_concept_alias_matches_fixture_profile():
+    from src.market.taxonomy import extra_book, normalize_custom_concepts
+
+    extra = extra_book(normalize_custom_concepts([{"label": "直升机链", "aliases": ["直升机"]}]))
+    hits = MarketClient().search(q="直升机链", extra=extra)
+    row = next(x for x in hits if x["code6"] == "600038")
+    assert "直升机链" in (row["hot_concepts"] or "")
+
+
 def test_query_has_taxonomy_and_flow_columns():
     engine = QueryEngine(MarketClient())
     rows = engine.run(resolve_instruments(["600038.SH"], MarketClient()), None)

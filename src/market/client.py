@@ -141,7 +141,7 @@ class MarketClient:
             self._cache_put("list_hs", data)
         return [normalize_instrument(x.get("dm", ""), x.get("mc", ""), x.get("jys", "")) for x in data]
 
-    def search(self, q: str = "", market: str = "all", limit: int = 50) -> list[dict]:
+    def search(self, q: str = "", market: str = "all", limit: int = 50, extra: dict | None = None) -> list[dict]:
         items = self.list_hs() + self.list_bj()
         market = (market or "all").lower()
         if market == "hs":
@@ -157,13 +157,13 @@ class MarketClient:
         elif market == "cy":
             items = [i for i in items if i.code6.startswith("300")]
         needle = (q or "").strip()
-        extra = search_needles(needle)
+        extra_needles = search_needles(needle, extra)
         out = []
         for inst in items:
             industry = fixtures.INDUSTRY.get(inst.code6, "")
             profile = fixtures.PROFILE.get(inst.code6) or {}
             concept = profile.get("concept") or ""
-            tax = classify(industry, concept)
+            tax = classify(industry, concept, extra)
             hay = " ".join(
                 [
                     inst.name,
@@ -178,8 +178,8 @@ class MarketClient:
             ).lower()
             if needle:
                 hit = needle.lower() in hay
-                if not hit and extra:
-                    hit = any(token.lower() in hay for token in extra)
+                if not hit and extra_needles:
+                    hit = any(token.lower() in hay for token in extra_needles)
                 if not hit:
                     continue
             out.append(
@@ -239,9 +239,9 @@ class MarketClient:
         row = data[0] if isinstance(data, list) else data
         return _ssjy_quote(row, "live")
 
-    def profile(self, inst: Instrument) -> dict:
+    def profile(self, inst: Instrument, extra: dict | None = None) -> dict:
         if self.offline:
-            return _with_taxonomy(dict(fixtures.PROFILE.get(inst.code6, {"source": "offline"})))
+            return _with_taxonomy(dict(fixtures.PROFILE.get(inst.code6, {"source": "offline"})), extra)
         out = {"industry": "", "concept": "", "business": "", "source": "live"}
         try:
             zg = self._get(f"/hszg/zg/{inst.code6}")
@@ -260,7 +260,7 @@ class MarketClient:
                 out["concept"] = row["idea"]
         except MarketError:
             pass
-        return _with_taxonomy(out)
+        return _with_taxonomy(out, extra)
 
     def holders(self, inst: Instrument) -> dict:
         if self.offline:
@@ -538,8 +538,8 @@ def cninfo_url(code6: str) -> str:
     return f"https://www.cninfo.com.cn/new/disclosure/stock?orgId=&stockCode={code6}"
 
 
-def _with_taxonomy(row: dict) -> dict:
-    tax = classify(row.get("industry") or "", row.get("concept") or "")
+def _with_taxonomy(row: dict, extra: dict | None = None) -> dict:
+    tax = classify(row.get("industry") or "", row.get("concept") or "", extra)
     out = dict(row)
     out["sector"] = tax["sector"]
     out["sw_l1"] = tax["sw_l1"]

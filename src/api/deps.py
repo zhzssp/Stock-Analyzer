@@ -19,3 +19,15 @@ def current_user(
     if not user:
         raise HTTPException(status_code=401, detail="用户不存在")
     return user
+
+
+def optional_user(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> User | None:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    payload = read_token(authorization.split(" ", 1)[1])
+    if not payload:
+        return None
+    return db.get(User, payload["uid"])

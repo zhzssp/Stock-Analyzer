@@ -34,6 +34,7 @@ class QueryEngine:
         field_keys: list[str] | None = None,
         cards: dict[str, dict] | None = None,
         writer: str = "",
+        concept_extra: dict | None = None,
     ) -> list[dict]:
         keys = field_keys or registry.default_keys()
         specs = [registry.get(k) for k in keys]
@@ -57,7 +58,7 @@ class QueryEngine:
                 "bottom": {},
             }
             if "profile" in need:
-                bag["profile"] = self.market.profile(inst)
+                bag["profile"] = self.market.profile(inst, extra=concept_extra)
             if "holders" in need:
                 bag["holders"] = self.market.holders(inst)
             if "finance" in need:

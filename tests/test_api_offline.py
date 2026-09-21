@@ -313,3 +313,28 @@ def test_watchlist_order_drives_query_rows():
         assert keys["mcap"]["default"] is False
         assert keys["pct60"]["default"] is False
         client.put("/api/watchlist/order", json={"codes": original}, headers=headers)
+
+
+def test_custom_concepts_persist_and_filter():
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        blocked = client.put(
+            "/api/markets/concepts",
+            json={"items": [{"label": "人工智能", "aliases": ["AI"]}]},
+            headers=headers,
+        )
+        assert blocked.status_code == 400, blocked.text
+        saved = client.put(
+            "/api/markets/concepts",
+            json={"items": [{"label": "直升机链", "aliases": "直升机"}]},
+            headers=headers,
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["items"][0]["label"] == "直升机链"
+        listed = client.get("/api/markets/concepts", headers=headers)
+        assert any(x["label"] == "直升机链" for x in listed.json()["items"])
+        found = client.get("/api/markets/instruments?q=直升机链", headers=headers)
+        assert found.status_code == 200
+        assert any(x["code6"] == "600038" for x in found.json())
+        client.put("/api/markets/concepts", json={"items": []}, headers=headers)

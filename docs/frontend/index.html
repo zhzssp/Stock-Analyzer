@@ -245,6 +245,11 @@
     .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--teal-soft); color: var(--teal); font-size: 13px; }
     .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px; }
     .chip-btn.on { background: var(--teal); color: #fff; border-color: var(--teal); }
+    .chip-btn { display: inline-flex; align-items: center; gap: 4px; }
+    .chip-x { color: var(--muted); font-size: 14px; line-height: 1; padding: 0 2px; }
+    .chip-x:hover { color: var(--danger); }
+    .concept-custom { margin: 0 0 10px; }
+    .concept-custom .composer-row { margin-top: 6px; }
     .watch li { align-items: center; gap: 8px; }
     .watch .meta { display: flex; flex-direction: column; min-width: 0; }
     .watch .rm {
@@ -733,6 +738,16 @@
           <div class="chips" id="conceptChips"></div>
         </div>
       </div>
+      <div class="concept-custom">
+        <div class="picker-tax-label">自定义概念</div>
+        <p class="pane-note">名称 + 关键词，去对行业/概念文字。不是官方成分股。点芯片筛选；× 删除。每人本机一份。</p>
+        <div class="chips" id="customConceptChips"></div>
+        <div class="composer-row">
+          <input id="customConceptName" placeholder="名称，如 商业航天扩展" />
+          <input id="customConceptAliases" placeholder="关键词，逗号分隔，如 卫星,火箭" />
+          <button class="btn sm" id="customConceptAdd" type="button">添加</button>
+        </div>
+      </div>
       <div class="pick-list" id="pickList"><div class="pick-empty">输入关键词或切换市场</div></div>
       <div class="pick-actions">
         <button class="btn primary" id="addPicked" type="button">加入自选</button>
@@ -952,6 +967,7 @@
       boardTimer: null,
       rowsRaw: [],
       sortKey: "",
+      customConcepts: [],
       sortDir: "desc",
       monitorTab: "today",
       metrics: [],
@@ -2063,6 +2079,26 @@
       concepts.innerHTML = (state.taxonomy.concepts_2026 || []).map((s) =>
         `<button class="btn sm chip-btn" type="button" data-tax="${s.label}">${s.label}</button>`
       ).join("");
+      try {
+        const custom = await api("/markets/concepts");
+        state.customConcepts = custom.items || [];
+      } catch (_err) {
+        state.customConcepts = [];
+      }
+      renderCustomConceptChips();
+    }
+
+    function renderCustomConceptChips() {
+      const box = document.getElementById("customConceptChips");
+      if (!box) return;
+      const items = state.customConcepts || [];
+      if (!items.length) {
+        box.innerHTML = `<span class="pane-note">还没有自定义概念</span>`;
+        return;
+      }
+      box.innerHTML = items.map((s) =>
+        `<button class="btn sm chip-btn" type="button" data-tax="${esc(s.label)}" title="${esc((s.aliases || []).join("、"))}">${esc(s.label)}<span class="chip-x" data-del-concept="${esc(s.label)}" title="删除">×</span></button>`
+      ).join("");
     }
 
     function applyTaxChip(label) {
@@ -2081,6 +2117,43 @@
     document.getElementById("conceptChips").addEventListener("click", (e) => {
       const btn = e.target.closest("[data-tax]");
       if (btn) applyTaxChip(btn.dataset.tax);
+    });
+    document.getElementById("customConceptChips").addEventListener("click", async (e) => {
+      const del = e.target.closest("[data-del-concept]");
+      if (del) {
+        e.preventDefault();
+        e.stopPropagation();
+        const name = del.dataset.delConcept;
+        const items = (state.customConcepts || []).filter((x) => x.label !== name);
+        try {
+          const data = await api("/markets/concepts", { method: "PUT", body: JSON.stringify({ items }) });
+          state.customConcepts = data.items || [];
+          renderCustomConceptChips();
+          toast("已删除 " + name);
+        } catch (err) {
+          toast(err.message);
+        }
+        return;
+      }
+      const btn = e.target.closest("[data-tax]");
+      if (btn) applyTaxChip(btn.dataset.tax);
+    });
+    document.getElementById("customConceptAdd").addEventListener("click", async () => {
+      const label = (document.getElementById("customConceptName").value || "").trim();
+      const aliases = (document.getElementById("customConceptAliases").value || "").trim();
+      if (!label) return toast("先填概念名称");
+      const items = (state.customConcepts || []).filter((x) => x.label !== label);
+      items.push({ label, aliases });
+      try {
+        const data = await api("/markets/concepts", { method: "PUT", body: JSON.stringify({ items }) });
+        state.customConcepts = data.items || [];
+        renderCustomConceptChips();
+        document.getElementById("customConceptName").value = "";
+        document.getElementById("customConceptAliases").value = "";
+        applyTaxChip(label);
+      } catch (err) {
+        toast(err.message);
+      }
     });
     document.getElementById("swChips").addEventListener("click", (e) => {
       const btn = e.target.closest("[data-tax]");

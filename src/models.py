@@ -57,6 +57,15 @@ class FieldPref(Base):
     field_keys: Mapped[str] = mapped_column(Text, default="[]")
 
 
+class ConceptPref(Base):
+    __tablename__ = "concept_prefs"
+    __table_args__ = (UniqueConstraint("user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    payload: Mapped[str] = mapped_column(Text, default="[]")
+
+
 class Snapshot(Base):
     __tablename__ = "snapshots"
     __table_args__ = (UniqueConstraint("user_id", "code6", "kind"),)

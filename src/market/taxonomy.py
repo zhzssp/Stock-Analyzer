@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 SW_L1 = (
     "银行",
     "非银金融",
@@ -181,19 +183,73 @@ def infer_l1(industry: str, concept: str = "") -> str:
     return ""
 
 
-def infer_hot_concepts(concept: str, industry: str = "") -> list[str]:
+def normalize_custom_concepts(items: Any) -> list[dict]:
+    """User-owned labels. Still keyword aliases, not official constituents."""
+    rows = items if isinstance(items, list) else []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for raw in rows[:16]:
+        if not isinstance(raw, dict):
+            continue
+        label = _norm(str(raw.get("label") or raw.get("name") or ""))[:24]
+        if not label or label in seen:
+            continue
+        if label in CONCEPTS_2026:
+            raise ValueError("不要与内置 2026 概念重名，换一个名字")
+        aliases: list[str] = []
+        extra = raw.get("aliases") if raw.get("aliases") is not None else raw.get("needles")
+        if isinstance(extra, str):
+            extra = [p.strip() for p in extra.replace("，", ",").replace("、", ",").split(",")]
+        for token in [label, *(extra or [])]:
+            text = _norm(str(token))[:24]
+            if text and text not in aliases:
+                aliases.append(text)
+        if not aliases:
+            continue
+        seen.add(label)
+        out.append({"id": label, "label": label, "aliases": aliases[:8], "source": "custom"})
+    return out
+
+
+def extra_book(items: list[dict] | None) -> dict[str, tuple[str, ...]]:
+    book: dict[str, tuple[str, ...]] = {}
+    for row in items or []:
+        label = _norm(str(row.get("label") or ""))
+        aliases = tuple(a for a in (row.get("aliases") or []) if str(a).strip())
+        if label and aliases:
+            book[label] = aliases
+    return book
+
+
+def concept_book(extra: dict[str, tuple[str, ...]] | None = None) -> dict[str, tuple[str, ...]]:
+    book = dict(CONCEPTS_2026)
+    for label, aliases in (extra or {}).items():
+        if not label or not aliases:
+            continue
+        if label in book:
+            merged = list(book[label])
+            for alias in aliases:
+                if alias not in merged:
+                    merged.append(alias)
+            book[label] = tuple(merged)
+        else:
+            book[label] = tuple(aliases)
+    return book
+
+
+def infer_hot_concepts(concept: str, industry: str = "", extra: dict[str, tuple[str, ...]] | None = None) -> list[str]:
     hay = f"{concept or ''} {industry or ''}"
     hits = []
-    for label, aliases in CONCEPTS_2026.items():
+    for label, aliases in concept_book(extra).items():
         if any(alias and alias in hay for alias in aliases):
             hits.append(label)
     return hits
 
 
-def classify(industry: str = "", concept: str = "") -> dict:
+def classify(industry: str = "", concept: str = "", extra: dict[str, tuple[str, ...]] | None = None) -> dict:
     l1 = infer_l1(industry, concept)
     sector = L1_TO_SECTOR.get(l1, "")
-    hot = infer_hot_concepts(concept, industry)
+    hot = infer_hot_concepts(concept, industry, extra)
     return {
         "sector": sector,
         "sw_l1": l1,
@@ -202,25 +258,38 @@ def classify(industry: str = "", concept: str = "") -> dict:
     }
 
 
-def catalog() -> dict:
+def catalog(extra: dict[str, tuple[str, ...]] | None = None) -> dict:
+    book = concept_book(extra)
+    concepts = []
+    for label, aliases in book.items():
+        concepts.append(
+            {
+                "id": label,
+                "label": label,
+                "aliases": list(aliases),
+                "source": "builtin" if label in CONCEPTS_2026 else "custom",
+            }
+        )
     return {
         "sectors": [{"id": k, "label": k, "sw_l1": list(v)} for k, v in SECTORS.items()],
         "sw_l1": list(SW_L1),
-        "concepts_2026": [{"id": k, "label": k, "aliases": list(v)} for k, v in CONCEPTS_2026.items()],
+        "concepts_2026": [c for c in concepts if c["source"] == "builtin"],
+        "concepts_custom": [c for c in concepts if c["source"] == "custom"],
     }
 
 
-def search_needles(q: str) -> set[str]:
-    """If q is a sector / L1 / 2026 concept, return strings that should match a stock haystack."""
+def search_needles(q: str, extra: dict[str, tuple[str, ...]] | None = None) -> set[str]:
+    """If q is a sector / L1 / concept label, return strings that should match a stock haystack."""
     raw = _norm(q)
     if not raw:
         return set()
+    book = concept_book(extra)
     out = {raw, raw.lower()}
     if raw in SECTORS:
         out.update(SECTORS[raw])
-    if raw in CONCEPTS_2026:
-        out.update(CONCEPTS_2026[raw])
-    for label, aliases in CONCEPTS_2026.items():
+    if raw in book:
+        out.update(book[raw])
+    for label, aliases in book.items():
         if raw == label or raw in aliases:
             out.add(label)
             out.update(aliases)
