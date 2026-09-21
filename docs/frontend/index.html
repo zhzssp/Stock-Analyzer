@@ -100,7 +100,59 @@
     .side-pane { min-height: 0; overflow: auto; flex: 1; display: flex; flex-direction: column; gap: 8px; }
     .side-pane .chips { max-height: 28vh; overflow: auto; flex-shrink: 0; }
     .pane-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
-    .pool-hint { color: var(--muted); font-size: 13px; line-height: 1.5; margin-top: auto; flex-shrink: 0; overflow: auto; max-height: 4.5em; }
+    .help-tip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      margin-left: 4px;
+      border-radius: 50%;
+      border: 1px solid var(--muted);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: help;
+      flex-shrink: 0;
+      position: relative;
+      vertical-align: middle;
+      user-select: none;
+    }
+    .help-tip::before { content: "?"; }
+    .help-tip .help-bubble {
+      display: none;
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 6px);
+      transform: translateX(-50%);
+      width: max-content;
+      max-width: min(320px, 70vw);
+      padding: 8px 10px;
+      background: var(--ink);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 1.45;
+      border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+      z-index: 60;
+      text-align: left;
+      white-space: normal;
+      pointer-events: none;
+    }
+    .help-tip:hover .help-bubble,
+    .help-tip:focus-visible .help-bubble { display: block; }
+    .pool-hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-top: auto;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
     .export-scope { color: var(--muted); font-size: 13px; }
     .side-title {
       display: flex;
@@ -171,6 +223,7 @@
       flex-shrink: 0;
     }
     .toolbar .hint { margin-left: auto; color: var(--muted); white-space: normal; }
+    .toolbar .toolbar-help { margin-left: auto; display: flex; align-items: center; }
     .view { display: none; flex: 1; min-height: 0; overflow: hidden; }
     .view.on { display: flex; flex-direction: column; }
     .table-wrap { overflow: auto; padding: 0 16px 16px; flex: 1; min-height: 0; isolation: isolate; }
@@ -514,28 +567,25 @@
           <button class="btn sm chip-btn" id="sideExchange" type="button" data-side="exchange">交易所</button>
         </div>
         <div class="side-pane" id="watchPane">
-          <div class="side-title">自选池 <button class="btn sm ghost" id="openPicker" type="button">+ 添加 / 筛选</button></div>
-          <p class="pane-note">查询和导出只含你勾过的票。左侧可上下移动排序；点名称打开决策卡。自选里若同时有沪、深、北，会在同一张表。</p>
+          <div class="side-title"><span data-help-tip="查询和导出只含你勾过的票。左侧可上下移动排序；点名称打开决策卡。自选里若同时有沪、深、北，会在同一张表。">自选池</span> <button class="btn sm ghost" id="openPicker" type="button">+ 添加 / 筛选</button></div>
           <input id="watchFilter" placeholder="搜索当前自选" />
           <ul class="watch" id="watchList"></ul>
         </div>
         <div class="side-pane" id="quotePane" style="display:none;">
-          <div class="side-title">指数成份</div>
-          <p class="pane-note">只导出当前指数的成份股。上证指数 ≠ 沪市全部，深证成指 ≠ 深市全部，北证50 ≠ 北交所全部。</p>
+          <div class="side-title"><span data-help-tip="只导出当前指数的成份股。上证指数 ≠ 沪市全部，深证成指 ≠ 深市全部，北证50 ≠ 北交所全部。">指数成份</span></div>
           <div class="chips" id="indexChips"></div>
           <input id="quoteFilter" placeholder="搜索当前成份" />
           <ul class="watch" id="quoteList"></ul>
         </div>
         <div class="side-pane" id="exchangePane" style="display:none;">
-          <div class="side-title">交易所全市场</div>
-          <p class="pane-note">沪、深、北分开选、分开导，一次只出当前这一所。点三次得到三张表，不会混在一起。沪市含科创，深市含创业板。</p>
+          <div class="side-title"><span data-help-tip="沪、深、北分开选、分开导，一次只出当前这一所。点三次得到三张表，不会混在一起。沪市含科创，深市含创业板。">交易所全市场</span></div>
           <div class="chips" id="exchangeChips"></div>
-          <div class="side-title board-sub">板块另池（不是指数）</div>
+          <div class="side-title board-sub"><span data-help-tip="板块池与指数成份不同，按板块标签筛选全市场标的。">板块另池（不是指数）</span></div>
           <div class="chips" id="boardChips"></div>
           <input id="exchangeFilter" placeholder="搜索当前这一所 / 这一板块" />
           <ul class="watch" id="exchangeList"></ul>
         </div>
-        <div class="pool-hint" id="poolHint">查询和导出只含当前自选。</div>
+        <div class="pool-hint" id="poolHint"></div>
       </aside>
       <section class="main">
         <nav class="tabs">
@@ -553,7 +603,7 @@
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
             <button class="btn ghost" id="diffBtn" type="button">对照上一份</button>
-            <label class="hint" for="xDate" title="列设置勾选「X日价」时生效">X日 <input id="xDate" type="date" style="margin-left:4px" /></label>
+            <label class="hint" for="xDate"><span data-help-tip="列设置勾选「X日价」时生效。">X日</span> <input id="xDate" type="date" style="margin-left:4px" /></label>
             <span class="export-scope" id="exportScope">当前导出：自选</span>
             <span class="hint" id="queryHint">尚未查询</span>
           </div>
@@ -588,7 +638,7 @@
                   <button class="btn" id="chatAttach" type="button">上传表格</button>
                   <button class="btn" id="chatNew" type="button">新对话</button>
                   <button class="btn" id="chatResearch" type="button">看市场</button>
-                  <span class="attach-hint" id="chatAttachHint">未附文件。从 Excel 复制后粘贴到上方即可。</span>
+                  <span class="attach-hint" id="chatAttachHint">未附文件</span>
                   <button class="btn primary" id="chatSend" type="button">发送</button>
                   <button class="btn" id="chatExport" type="button">导出本轮</button>
                 </div>
@@ -601,8 +651,7 @@
               <div id="chatCites" class="alert"><span class="meta">尚无。问答后这里列出 Tool 来源。</span></div>
               <div class="side-title" style="margin:14px 0 10px;">Tool 轨迹</div>
               <div id="chatTools" class="meta">问答走 analyst；盯盘在监控中心。</div>
-              <div class="side-title" style="margin:14px 0 8px;">本机仓库</div>
-              <p class="pane-note">导出档案、行情缓存、日线。日线只缓存你查过的票，超过上限会先清最久未用的。占用与清理在「本机数据」。</p>
+              <div class="side-title" style="margin:14px 0 8px;"><span data-help-tip="导出档案、行情缓存、日线。日线只缓存你查过的票，超过上限会先清最久未用的。占用与清理在「本机数据」。">本机仓库</span></div>
               <div id="warehouseBox" class="meta-list">尚未加载</div>
               <div class="composer-row" style="margin-top:8px;">
                 <input id="barsCode" placeholder="代码，如 600038" style="flex:1;" />
@@ -622,27 +671,23 @@
               <button class="subtab" data-monitor="prefs" type="button">偏好</button>
             </div>
             <button class="btn primary" id="monitorRun" type="button">立刻跑一轮</button>
-            <span class="hint">交易日 09:00–15:00 每 5 分钟扫盘中实时规则；20:20 跑日终规则并给昨天的命中打次日标签。期货行情、彭博检索未接则保持未启用。</span>
+            <span class="toolbar-help" data-help-tip="交易日 09:00–15:00 每 5 分钟扫盘中实时规则；20:20 跑日终规则并给昨天的命中打次日标签。期货行情、彭博检索未接则保持未启用。"></span>
           </div>
           <div class="panel monitor-body">
             <div id="monitorToday" class="monitor-pane on">
-              <div class="side-title">该看</div>
-              <p class="pane-note">未处理提醒会排在这里。researcher「看市场」也读同一队列。</p>
+              <div class="side-title"><span data-help-tip="未处理提醒会排在这里。researcher「看市场」也读同一队列。">该看</span></div>
               <div id="monitorQueue" class="meta">尚未跑过</div>
               <div class="side-title" style="margin:16px 0 8px;">提醒</div>
               <div id="monitorAlerts" class="meta">尚未跑过</div>
             </div>
             <div id="monitorRules" class="monitor-pane">
-              <div class="side-title">模板规则</div>
-              <p class="pane-note">开关和阈值仍管自动扫描。决策卡只存这只票的买区 / 减仓价等数字；真响铃在「今日」。规则定义 / 监控需求点开才显示，写给问答助手当守则。</p>
+              <div class="side-title"><span data-help-tip="开关和阈值仍管自动扫描。决策卡只存这只票的买区 / 减仓价等数字；真响铃在「今日」。规则定义 / 监控需求点开才显示，写给问答助手当守则。">模板规则</span></div>
               <div id="monitorJobs"></div>
-              <div class="side-title" style="margin:16px 0 8px;">我的规则 <button class="btn sm" id="ruleAdd" type="button">添加规则</button></div>
-              <p class="pane-note">可以增删，范围可限定全部、某一分组或一只自选。可以只写文字给问答用，也可以再配指标阈值让盘中/日终扫描。</p>
+              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="可以增删，范围可限定全部、某一分组或一只自选。可以只写文字给问答用，也可以再配指标阈值让盘中/日终扫描。">我的规则</span> <button class="btn sm" id="ruleAdd" type="button">添加规则</button></div>
               <div id="customRules" class="meta">还没有自定义规则</div>
             </div>
             <div id="monitorReview" class="monitor-pane">
-              <div class="side-title">次日复盘 <button class="btn sm primary" id="reviewRun" type="button">立刻复盘</button></div>
-              <p class="pane-note">命中后等到下一根交易日收盘再打标。同向 / 反向只描述涨跌，不是买卖建议，也不会自动关规则。</p>
+              <div class="side-title"><span data-help-tip="命中后等到下一根交易日收盘再打标。同向 / 反向只描述涨跌，不是买卖建议，也不会自动关规则。">次日复盘</span> <button class="btn sm primary" id="reviewRun" type="button">立刻复盘</button></div>
               <div id="reviewCounts" class="meta">尚未复盘</div>
               <div class="side-title" style="margin:16px 0 8px;">待复盘</div>
               <div id="reviewPending" class="meta">没有待复盘的提醒</div>
@@ -650,16 +695,14 @@
               <div id="reviewDone" class="meta">还没有次日标签</div>
             </div>
             <div id="monitorPrefs" class="monitor-pane">
-              <div class="side-title">关注机构白名单</div>
-              <p class="pane-note">监控对照用的名字表，不是持仓实况。可取消勾选，也可追加名字。</p>
+              <div class="side-title"><span data-help-tip="监控对照用的名字表，不是持仓实况。可取消勾选，也可追加名字。">关注机构白名单</span></div>
               <div id="instList" class="meta-list">尚未加载</div>
               <div class="composer-row" style="margin:8px 0;">
                 <input id="instCustom" placeholder="追加机构名，如 某某基金" style="flex:1;" />
                 <button class="btn sm" id="instAdd" type="button">追加</button>
                 <button class="btn sm primary" id="instSave" type="button">保存白名单</button>
               </div>
-              <div class="side-title" style="margin:16px 0 8px;">检索源</div>
-              <p class="pane-note">只抓你填的 http(s) 页面或 RSS。日终或「资讯冲击 / 产业政策」点只跑这条时拉取。标题或正文命中自选名称、代码，或不少于三个字的行业名，才进今日。不是全网搜索，也不做摘要。内网和 file 地址会被拒绝。</p>
+              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="只抓你填的 http(s) 页面或 RSS。日终或「资讯冲击 / 产业政策」点只跑这条时拉取。标题或正文命中自选名称、代码，或不少于三个字的行业名，才进今日。不是全网搜索，也不做摘要。内网和 file 地址会被拒绝。">检索源</span></div>
               <div id="sourceList" class="meta-list">尚未加载</div>
               <div class="composer-row" style="margin:8px 0;">
                 <input id="srcName" placeholder="名称，如 交易所公告" style="width:140px;" />
@@ -677,8 +720,7 @@
               <div class="side-title" style="margin:16px 0 8px;">提醒通道</div>
               <div id="channelBox" class="meta-list">尚未加载</div>
               <details style="margin-top:16px;">
-                <summary class="side-title" style="cursor:pointer;">数据插槽</summary>
-                <p class="pane-note">关联期货只有品种名字，没有期货价格。出口占比只认本机 data/export_share.csv。</p>
+                <summary class="side-title" style="cursor:pointer;"><span data-help-tip="关联期货只有品种名字，没有期货价格。出口占比只认本机 data/export_share.csv。">数据插槽</span></summary>
                 <div id="futuresList" class="meta-list">尚未加载</div>
                 <div class="composer-row" style="margin:8px 0;">
                   <input id="shareCode" placeholder="代码查询，如 600038" style="flex:1;" />
@@ -697,13 +739,13 @@
             <button class="btn" id="storageRefresh" type="button">刷新占用</button>
             <button class="btn" id="cacheClear" type="button">清空行情缓存</button>
             <button class="btn" id="artifactPrune" type="button">只留最近导出</button>
-            <span class="hint">数据在软件根目录的 data/。缓存可删；自选、对话、提醒在 app.db，不要手删整个文件夹。</span>
+            <span class="toolbar-help" data-help-tip="数据在软件根目录的 data/。缓存可删；自选、对话、提醒在 app.db，不要手删整个文件夹。"></span>
           </div>
           <div class="panel" style="flex:1; overflow:auto;">
-            <p class="pane-note">日线只缓存你查过的股票，同一文件覆盖写，默认最多 500 根。缓存超过上限会先删最久未用的日线，名单缓存尽量留到最后。每人默认最多留 20 份 Excel。</p>
+            <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="日线只缓存你查过的股票，同一文件覆盖写，默认最多 500 根。缓存超过上限会先删最久未用的日线，名单缓存尽量留到最后。每人默认最多留 20 份 Excel。">存储占用</span></div>
             <div id="storageBox" class="storage-grid meta-list">尚未加载</div>
             <div class="clock-box">
-              <p class="pane-note">墙钟档案：选网盘里已共享的文件夹（不要选整个 data/）。软件自己读写 JSON，不必用 GitHub。有档就用，没有就本机拉行情。</p>
+              <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="墙钟档案：选网盘里已共享的文件夹（不要选整个 data/）。软件自己读写 JSON，不必用 GitHub。有档就用，没有就本机拉行情。">墙钟档案</span></div>
               <div class="composer-row" style="margin:8px 0;">
                 <input id="clockDirInput" placeholder="账本文件夹路径，例如 D:\坚果云\股市助手-墙钟账本" style="flex:1;" />
                 <button class="btn sm" id="clockDirSave" type="button">保存账本目录</button>
@@ -726,8 +768,7 @@
   <div class="toast" id="toast"></div>
   <div class="login-mask" id="pickerMask" style="display:none;">
     <div class="login-card pick-card picker-card">
-      <h2>按市场筛选进自选</h2>
-      <p>沪、深、创业板、科创、北可以分开筛。加入是追加；替换会清空当前自选。仅查询一次不改自选，随后导出 Excel 也只含这一批。</p>
+      <h2><span data-help-tip="沪、深、创业板、科创、北可以分开筛。加入是追加；替换会清空当前自选。仅查询一次不改自选，随后导出 Excel 也只含这一批。">按市场筛选进自选</span></h2>
       <div class="picker-toolbar">
         <div class="chips" id="marketChips">
           <button class="btn sm chip-btn on" type="button" data-market="all">全部</button>
@@ -754,8 +795,7 @@
         </div>
       </div>
       <div class="concept-custom">
-        <div class="picker-tax-label">自定义概念</div>
-        <p class="pane-note">名称 + 关键词，去对行业/概念文字。不是官方成分股。点芯片筛选；× 删除。每人本机一份。</p>
+        <div class="picker-tax-label"><span data-help-tip="名称 + 关键词，去对行业/概念文字。不是官方成分股。点芯片筛选；× 删除。每人本机一份。">自定义概念</span></div>
         <div class="chips" id="customConceptChips"></div>
         <div class="composer-row">
           <input id="customConceptName" placeholder="名称，如 商业航天扩展" />
@@ -774,8 +814,7 @@
   </div>
   <div class="login-mask" id="colMask" style="display:none;">
     <div class="login-card pick-card col-card">
-      <h2>列设置</h2>
-      <p>勾选后写入本机偏好，查询和导出都按这个清单。决策卡那一组、换手和市值默认不勾，要用再勾。</p>
+      <h2><span data-help-tip="勾选后写入本机偏好，查询和导出都按这个清单。决策卡那一组、换手和市值默认不勾，要用再勾。">列设置</span></h2>
       <div class="pick-list" id="colList"></div>
       <div class="pick-actions">
         <button class="btn primary" id="saveCols" type="button">保存并查询</button>
@@ -785,8 +824,7 @@
   </div>
   <div class="login-mask" id="archiveMask" style="display:none;">
     <div class="login-card pick-card art-card">
-      <h2>导出档案库</h2>
-      <p>这里是本机已经写下的 Excel。可以再下一份、预览前几行，或勾两份对照某一列。</p>
+      <h2><span data-help-tip="这里是本机已经写下的 Excel。可以再下一份、预览前几行，或勾两份对照某一列。">导出档案库</span></h2>
       <div class="pick-list" id="artList"><div class="pick-empty">还没有档案</div></div>
       <div class="composer-row" style="margin-bottom:8px;">
         <input id="diffColumn" placeholder="对照列名，默认 前十大流通股东" />
@@ -802,8 +840,7 @@
   </div>
   <div class="login-mask" id="ruleMask" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="ruleBuilderTitle">
     <form id="ruleBuilder" class="login-card col-card">
-      <h2 id="ruleBuilderTitle">添加规则</h2>
-      <p class="pane-note">从已注册指标拼一条，也可以只写文字给问答用。</p>
+      <h2 id="ruleBuilderTitle"><span id="ruleBuilderLabel" data-help-tip="从已注册指标拼一条，也可以只写文字给问答用。">添加规则</span></h2>
       <div class="rule-grid">
         <label>名称<input id="ruleName" placeholder="例如：离底小于 5%" /></label>
         <label>启用
@@ -868,8 +905,7 @@
         </label>
       </div>
       <details class="rule-notes" id="ruleNoteBox">
-        <summary>规则定义 / 监控需求<span class="note-flag" id="ruleNoteFlag">点开填写</span></summary>
-        <p class="pane-note">默认收起。定义说明这条规则在盯什么；监控需求是问答必须遵守的要求。不要写「帮我买」。自动扫描仍只认上面的数字。</p>
+        <summary><span data-help-tip="默认收起。定义说明这条规则在盯什么；监控需求是问答必须遵守的要求。不要写「帮我买」。自动扫描仍只认上面的数字。">规则定义 / 监控需求</span><span class="note-flag" id="ruleNoteFlag">点开填写</span></summary>
         <label>规则定义<textarea id="ruleDefinition" rows="3" placeholder="例如：只把离长窗底 8% 以内当成值得看一眼，不是买入信号。"></textarea></label>
         <label>监控需求<textarea id="ruleNeed" rows="3" placeholder="例如：问这只票时先核对着这条规则；没有命中就直说没有，不要补故事。"></textarea></label>
       </details>
@@ -883,8 +919,7 @@
   </div>
   <div class="drawer-mask" id="cardMask" style="display:none;">
     <form class="drawer" id="cardForm">
-      <h2 id="cardTitle">决策卡</h2>
-      <p class="pane-note" id="cardHint">这是这只票的参数，不会自己响铃。接近减仓看监控中心「今日」；表上要看到距买区 / 距减仓，请在列设置勾选决策卡那一组。</p>
+      <h2 id="cardTitle"><span id="cardTitleLabel">决策卡</span><span id="cardHintMount"></span></h2>
       <label>分组
         <select id="cardGroup">
           <option value="自选">自选</option>
@@ -909,8 +944,7 @@
   </div>
   <div class="login-mask" id="loginMask">
     <form class="login-card" id="loginForm">
-      <h2>登录本机工作台</h2>
-      <p>默认账号 hanish / change-me，仅绑定 127.0.0.1。</p>
+      <h2><span data-help-tip="默认账号 hanish / change-me，仅绑定 127.0.0.1。">登录本机工作台</span></h2>
       <label>用户名</label>
       <input name="username" value="hanish" />
       <label>密码</label>
@@ -1014,8 +1048,7 @@
 
     function notesEditor(definition, need) {
       return `<details class="rule-notes">
-        <summary>规则定义 / 监控需求<span class="note-flag">${noteFlag(definition, need)}</span></summary>
-        <p class="pane-note">点开才展开。保存后问答助手会当作守则；自动扫描仍只认开关和数字。</p>
+        <summary>规则定义 / 监控需求${helpTip("点开才展开。保存后问答助手会当作守则；自动扫描仍只认开关和数字。")}<span class="note-flag">${noteFlag(definition, need)}</span></summary>
         <label>规则定义<textarea data-note="definition" rows="3" placeholder="这条规则在盯什么">${escArea(definition || "")}</textarea></label>
         <label>监控需求<textarea data-note="need" rows="3" placeholder="问答时必须遵守的要求">${escArea(need || "")}</textarea></label>
       </details>`;
@@ -1023,7 +1056,7 @@
 
     function notesPreview(definition, need) {
       return `<details class="rule-notes">
-        <summary>规则定义 / 监控需求<span class="note-flag">${noteFlag(definition, need)}</span></summary>
+        <summary>规则定义 / 监控需求${helpTip("点开才展开。保存后问答助手会当作守则；自动扫描仍只认开关和数字。")}<span class="note-flag">${noteFlag(definition, need)}</span></summary>
         <div class="sub">${definition ? ("<b>定义</b> " + esc(definition)) : "还没有定义"}</div>
         <div class="sub">${need ? ("<b>需求</b> " + esc(need)) : "还没有监控需求"}</div>
       </details>`;
@@ -1037,7 +1070,7 @@
       if (chBox) {
         const all = a.channels || [];
         chBox.innerHTML = all.length
-          ? all.map((c) => `<div><b>${esc(c.name)}</b> · ${c.enabled ? "已开" : "未开"}<div class="sub">${esc(c.reason || "")}</div></div>`).join("")
+          ? all.map((c) => `<div><b>${esc(c.name)}</b> · ${c.enabled ? "已开" : "未开"}${c.reason ? helpTip(c.reason) : ""}</div>`).join("")
           : "无通道";
       }
     }
@@ -1049,7 +1082,8 @@
       const r = policies.researcher || {};
       const aRules = (a.rules || []).slice(0, 3).join(" ");
       const rRules = (r.rules || []).slice(0, 2).join(" ");
-      el.innerHTML = `<b>本轮守则</b>（只读）analyst：${esc(aRules || "只引用 Tool 数字，禁止荐股。")} researcher：${esc(rRules || "先看今日该看；未启用 Tool 跳过。")}`;
+      const full = `analyst：${(a.rules || []).join(" ") || "只引用 Tool 数字，禁止荐股。"} researcher：${(r.rules || []).join(" ") || "先看今日该看；未启用 Tool 跳过。"}`;
+      el.innerHTML = `<b>本轮守则</b>（只读）analyst：${esc(aRules || "只引用 Tool 数字，禁止荐股。")} researcher：${esc(rRules || "先看今日该看；未启用 Tool 跳过。")}${helpTip(full)}`;
     }
 
     function renderBoard(items) {
@@ -1130,6 +1164,28 @@
 
     function escAttr(text) {
       return escHtml(text).replace(/"/g, "&quot;");
+    }
+
+    function helpTip(text) {
+      const t = String(text == null ? "" : text).trim();
+      if (!t) return "";
+      return `<span class="help-tip" tabindex="0" role="button" aria-label="说明"><span class="help-bubble">${esc(t)}</span></span>`;
+    }
+
+    function mountHelpTips(root) {
+      const scope = root || document;
+      scope.querySelectorAll("[data-help-tip]").forEach((el) => {
+        const tip = el.getAttribute("data-help-tip");
+        if (!tip) return;
+        el.insertAdjacentHTML("afterend", helpTip(tip));
+        el.removeAttribute("data-help-tip");
+      });
+    }
+
+    function setPoolHint(text) {
+      const el = document.getElementById("poolHint");
+      if (!el) return;
+      el.innerHTML = helpTip(text || "");
     }
 
     function defaultColWidth(field) {
@@ -1313,8 +1369,9 @@
       return pools.map((p) => {
         const on = state.side !== "watch" && state.pool === p.id;
         const extra = p.enabled ? (p.count ? " · " + p.count : "") : " · 未启用";
-        const title = p.reason || p.label;
-        return `<button class="btn sm chip-btn ${on ? "on" : ""} ${p.enabled ? "" : "off"}" type="button" data-pool="${p.id}" ${p.enabled ? "" : "disabled"} title="${title}">${p.label}${extra}</button>`;
+        const reasonAttr = p.reason ? ` data-reason="${escAttr(p.reason)}"` : "";
+        const tip = (!p.enabled && p.reason) ? helpTip(p.reason) : "";
+        return `<button class="btn sm chip-btn ${on ? "on" : ""} ${p.enabled ? "" : "off"}" type="button" data-pool="${p.id}"${reasonAttr} ${p.enabled ? "" : "disabled"}>${p.label}${extra}${tip}</button>`;
       }).join("");
     }
 
@@ -1361,7 +1418,7 @@
       renderPoolChips(state.pools);
       const data = await api("/markets/pools/" + encodeURIComponent(poolId) + "/instruments");
       renderPoolList(data.items || []);
-      document.getElementById("poolHint").textContent = poolHintText(state.side, data);
+      setPoolHint(poolHintText(state.side, data));
       updateExportScope(data.label || poolId);
       await runQuery();
     }
@@ -1378,7 +1435,7 @@
         state.pool = "watch";
         state.sortKey = "";
         updateExportScope("自选");
-        document.getElementById("poolHint").textContent = poolHintText("watch");
+        setPoolHint(poolHintText("watch"));
       }
       if (side === "quote" || side === "exchange") {
         state.sortKey = "pct";
@@ -1462,28 +1519,48 @@
       }
     }
 
-    function queryPayload(codes) {
+    function queryPayload(codes, forceLive) {
       const xDate = (document.getElementById("xDate").value || "").trim();
       const base = codes && codes.length ? { codes } : { pool: state.pool };
       if (xDate) base.x_date = xDate.replace(/-/g, "");
+      if (forceLive) base.force_live = true;
       return base;
     }
 
-    async function runQuery(codes) {
+    function describeQueryMode(data) {
+      const m = data.market || {};
+      if (m.offline || data.sample) return "离线切片（非实盘）";
+      if (m.sample_only) return "演示证样本";
+      if (data.force_live) return "现网刷新";
+      const src = (data.clock && data.clock.source) || "";
+      if (src === "live") return "现网";
+      if (src === "clock") return "墙钟档口";
+      if (src === "mixed") return "现网+墙钟";
+      return m.status || "行情";
+    }
+
+    async function runQuery(codes, forceLive) {
       if (codes && codes.length) state.lastQueryCodes = codes;
       else state.lastQueryCodes = null;
-      const payload = queryPayload(codes);
+      const payload = queryPayload(codes, forceLive);
       let data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
       if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
       renderTable(data.fields, data.rows);
-      const mode = data.sample || (data.market && data.market.offline)
-        ? "离线切片"
-        : ((data.market && data.market.sample_only) ? "演示证样本" : (data.market && data.market.status));
+      if (forceLive) {
+        const m = data.market || {};
+        if (m.offline || data.sample) {
+          toast("当前为离线切片，不是麦蕊实时数据。请确认 .env 里 MAIRUI_OFFLINE=0 并重启后端服务。");
+        } else if (m.sample_only) {
+          toast("当前 licence 只能返回演示样本，不是全市场实盘。");
+        }
+      }
+      const mode = describeQueryMode(data);
       const scope = codes && codes.length ? "筛选一次" : (data.pool || state.poolLabel || state.pool);
       const note = data.note ? ` · ${data.note}` : "";
       const clock = data.clock || {};
-      const asOf = clock.as_of ? ` · 墙钟 ${String(clock.as_of).replace("T", " ").slice(0, 16)}` : "";
-      document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}${asOf}`;
+      const asOf = clock.as_of ? ` · 更新 ${String(clock.as_of).replace("T", " ").slice(0, 16)}` : "";
+      const qsrc = clock.source ? ` · 现价源 ${clock.source}` : "";
+      document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}${qsrc}${asOf}`;
       if (state.lastQueryCodes) updateExportScope("筛选一次");
       else updateExportScope(data.pool || scope);
     }
@@ -1534,7 +1611,7 @@
       document.getElementById("colList").innerHTML = Object.keys(groups).map((g) =>
         `<div class="col-group">${GROUP_LABEL[g] || g}</div>` +
         groups[g].map((f) =>
-          `<label><input type="checkbox" value="${f.key}" ${chosen.has(f.key) ? "checked" : ""} /><span>${f.label}<div class="sub">${f.key}${f.unavailable ? " · " + esc(f.unavailable) : ""}</div></span></label>`
+          `<label><input type="checkbox" value="${f.key}" ${chosen.has(f.key) ? "checked" : ""} /><span>${f.label}${f.unavailable ? helpTip(f.unavailable) : ""}<div class="sub">${f.key}</div></span></label>`
         ).join("")
       ).join("");
       document.getElementById("colMask").style.display = "flex";
@@ -1588,12 +1665,12 @@
         const canToggle = !j.reason;
         const schema = j.schema || [];
         const fields = schema.map((f) => paramInput(j, f)).join("");
-        const status = j.reason
-          ? `<span class="off">${esc(j.reason)}</span>`
-          : "";
+        const schedule = j.schedule === "session" ? "盘中" : "日终";
+        const status = j.reason ? `<span class="off">未启用${helpTip(j.reason)}</span>` : "";
+        const blurbTip = j.blurb ? helpTip(j.blurb) : "";
         return `<div class="rule-card" data-job-card="${j.job_key}">
-          <div class="rule-head"><h3>${esc(j.name)}</h3></div>
-          <div class="meta">${esc(j.blurb || "")} · ${j.schedule === "session" ? "盘中" : "日终"}</div>
+          <div class="rule-head"><h3>${esc(j.name)}${blurbTip}</h3></div>
+          <div class="meta">${schedule}</div>
           ${status}
           ${canToggle && fields ? `<div class="rule-grid">${fields}</div>` : ""}
           ${canToggle ? notesEditor(j.definition || (j.params || {}).definition, j.need || (j.params || {}).need) : ""}
@@ -1822,10 +1899,10 @@
       if (!item) return;
       state.cardCode = code6;
       const card = item.card || {};
-      document.getElementById("cardTitle").textContent = (item.name || code6) + " · 决策卡";
-      document.getElementById("cardHint").textContent = item.card_filled
+      document.getElementById("cardTitleLabel").textContent = (item.name || code6) + " · 决策卡";
+      document.getElementById("cardHintMount").innerHTML = helpTip(item.card_filled
         ? "已填。接近减仓由监控「接近减仓」写入今日列表；表上要看距买区 / 距减仓请勾列设置里的决策卡列。"
-        : "未填时监控仍用统计底 / 默认目标卖价。填了也不会在卡上弹窗，命中去监控中心「今日」。";
+        : "未填时监控仍用统计底 / 默认目标卖价。填了也不会在卡上弹窗，命中去监控中心「今日」。");
       document.getElementById("cardGroup").value = item.group || "自选";
       document.getElementById("cardThesis").value = card.thesis || "";
       document.getElementById("cardCost").value = card.cost == null ? "" : card.cost;
@@ -1845,7 +1922,7 @@
     function showBuilder(rule) {
       const mask = document.getElementById("ruleMask");
       mask.style.display = "flex";
-      document.getElementById("ruleBuilderTitle").textContent = rule ? "编辑规则" : "添加规则";
+      document.getElementById("ruleBuilderLabel").textContent = rule ? "编辑规则" : "添加规则";
       state.editingRuleId = rule ? rule.id : null;
       const spec = (rule && rule.spec) || {};
       document.getElementById("ruleName").value = (rule && rule.name) || "";
@@ -1910,7 +1987,7 @@
       startBoardClock();
       await loadWatch();
       await loadPools();
-      await runQuery();
+      await runQuery(null, true);
     }
 
     document.getElementById("loginForm").addEventListener("submit", async (e) => {
@@ -1933,7 +2010,14 @@
     bindColResize();
     bindColumnSort();
     document.getElementById("queryBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
-    document.getElementById("refreshBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
+    document.getElementById("refreshBtn").addEventListener("click", async () => {
+      try {
+        await loadBoard();
+        await runQuery(null, true);
+      } catch (e) {
+        toast(e.message);
+      }
+    });
     document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
     document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
@@ -2025,7 +2109,7 @@
     function onPoolChipClick(e) {
       const btn = e.target.closest("[data-pool]");
       if (!btn) return;
-      if (btn.disabled) return toast(btn.title || "未启用");
+      if (btn.disabled) return toast(btn.dataset.reason || "未启用");
       selectPool(btn.dataset.pool).catch((err) => toast(err.message));
     }
     document.getElementById("indexChips").addEventListener("click", onPoolChipClick);
@@ -2110,7 +2194,7 @@
       if (!box) return;
       const items = state.customConcepts || [];
       if (!items.length) {
-        box.innerHTML = `<span class="pane-note">还没有自定义概念</span>`;
+        box.innerHTML = `<span class="meta">还没有自定义概念</span>`;
         return;
       }
       box.innerHTML = items.map((s) =>
@@ -2263,10 +2347,11 @@
 
     function setAttachHint() {
       const el = document.getElementById("chatAttachHint");
+      const attachTip = "从 Excel 复制后粘贴到上方即可。";
       if (state.attachFile) {
         el.textContent = "已选 " + state.attachFile.name;
       } else {
-        el.textContent = "未附文件。从 Excel 复制后粘贴到上方即可。";
+        el.innerHTML = "未附文件" + helpTip(attachTip);
       }
     }
 
@@ -2552,7 +2637,8 @@
       if (!box) return;
       if (data && data.clock_dir && input && !input.value) input.value = data.clock_dir;
       if (!data || !data.enabled) {
-        box.innerHTML = `<div class="meta">${esc((data && data.reason) || "未选择账本文件夹。四人把网盘共享目录填在上面即可。")}</div>`;
+        const reason = (data && data.reason) || "未选择账本文件夹。四人把网盘共享目录填在上面即可。";
+        box.innerHTML = `<div class="meta">账本未启用${helpTip(reason)}</div>`;
         return;
       }
       const asOf = data.as_of ? String(data.as_of).replace("T", " ").slice(0, 19) : "还没有档";
@@ -2562,7 +2648,7 @@
         : "";
       box.innerHTML =
         `<div><b>目录</b> <span class="storage-path">${esc(data.clock_dir || "")}</span></div>` +
-        `<div class="sub">最近档 ${esc(asOf)} · ${data.slot_count || 0} 档 · ${data.writable ? "可写" : "只读"} ${data.reason ? " · " + esc(data.reason) : ""}</div>` +
+        `<div class="sub">最近档 ${esc(asOf)} · ${data.slot_count || 0} 档 · ${data.writable ? "可写" : "只读"}${data.reason ? helpTip(data.reason) : ""}</div>` +
         gitFail;
     }
 
@@ -3046,6 +3132,10 @@
         toast(err.message);
       }
     });
+
+    mountHelpTips();
+    setPoolHint(poolHintText("watch"));
+    setAttachHint();
 
     if (state.token) {
       afterLogin("已登录", state.token).catch(() => {
