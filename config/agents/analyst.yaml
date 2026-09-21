@@ -17,6 +17,8 @@ tools:
   - excel_diff
   - capital_flow
   - corp_events
+  - corp_disclosure
+  - limit_review
   - bottom
   - taxonomy_lookup
   - fund_holding

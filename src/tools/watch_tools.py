@@ -18,8 +18,27 @@ def capital_flow(args: dict, ctx: ToolContext) -> ToolResult:
     insts = _pick(args, ctx)
     if not insts:
         return ToolResult(ok=False, error="没有可查询的标的", source="capital_flow", cite="资金流")
+    day = (args.get("day") or args.get("date") or "").strip()
     rows = []
     for inst in insts:
+        if day:
+            point = ctx.market.capital_flow_on_date(inst, day)
+            nums = [float(x["net_in"]) for x in ctx.market.capital_flow(inst) if x.get("net_in") not in (None, "")]
+            latest = float(point.get("net_in")) if point.get("net_in") not in (None, "") else None
+            mean = sum(nums[:-1]) / max(len(nums) - 1, 1) if len(nums) > 1 else None
+            rows.append(
+                {
+                    "name": inst.name,
+                    "code": inst.code_full,
+                    "day": day,
+                    "latest_net": latest,
+                    "mean_net": mean,
+                    "inflow": point.get("inflow"),
+                    "outflow": point.get("outflow"),
+                    "days": len(nums),
+                }
+            )
+            continue
         series = ctx.market.capital_flow(inst)
         nums = [float(x["net_in"]) for x in series if x.get("net_in") not in (None, "")]
         latest = nums[-1] if nums else None
@@ -36,7 +55,8 @@ def capital_flow(args: dict, ctx: ToolContext) -> ToolResult:
                 "days": len(nums),
             }
         )
-    return ToolResult(ok=True, data=rows, source="capital_flow", cite="资金流 · transaction")
+    cite = "资金流 · 按日" if day else "资金流 · transaction"
+    return ToolResult(ok=True, data=rows, source="capital_flow", cite=cite)
 
 
 def corp_events(args: dict, ctx: ToolContext) -> ToolResult:
@@ -46,8 +66,17 @@ def corp_events(args: dict, ctx: ToolContext) -> ToolResult:
     rows = []
     for inst in insts:
         ev = ctx.market.events(inst)
-        rows.append({"name": inst.name, "code": inst.code_full, "cninfo_url": ev.get("cninfo_url"), **ev})
-    return ToolResult(ok=True, data=rows, source="corp_events", cite="事件 · 分红/增发/解禁")
+        rows.append(
+            {
+                "name": inst.name,
+                "code": inst.code_full,
+                "cninfo_url": ev.get("cninfo_url"),
+                "announcements": ctx.market.announcements(inst),
+                "interactive_qa": ctx.market.interactive_qa(inst),
+                **ev,
+            }
+        )
+    return ToolResult(ok=True, data=rows, source="corp_events", cite="事件 · 分红/增发/解禁/公告/问董秘")
 
 
 def bottom(args: dict, ctx: ToolContext) -> ToolResult:
@@ -68,6 +97,8 @@ _schema = {
         "code": {"type": "string"},
         "codes": {"type": "array", "items": {"type": "string"}},
         "question": {"type": "string"},
+        "day": {"type": "string", "description": "按日资金 YYYYMMDD"},
+        "date": {"type": "string"},
     },
 }
 

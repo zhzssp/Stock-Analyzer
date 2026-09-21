@@ -484,7 +484,31 @@ def _draft_lines(observations: list[dict]) -> list[str]:
                     items = row.get(key) or []
                     if items:
                         bits.append(f"{label}{len(items)}条")
+                ann = row.get("announcements") or []
+                if ann:
+                    bits.append(f"公告{len(ann)}条")
+                qa = row.get("interactive_qa") or []
+                if qa:
+                    bits.append(f"问董秘{len(qa)}条")
                 lines.append(f"{row.get('name')} 事件：{'，'.join(bits) or '近期无分红/增发/解禁'}。")
+        elif tool == "corp_disclosure" and isinstance(data, list):
+            for row in data:
+                ann = row.get("announcements") or []
+                qa = row.get("interactive_qa") or []
+                titles = [x.get("title") for x in ann if x.get("title")]
+                lines.append(f"{row.get('name')} 公告 {len(ann)} 条" + (f"：{'；'.join(titles[:2])}" if titles else "") + f"；问董秘 {len(qa)} 条。")
+        elif tool == "limit_review" and isinstance(data, list):
+            for row in data:
+                perf = (row.get("limit_perf") or [{}])[0] if row.get("limit_perf") else {}
+                auc = (row.get("auction") or [{}])[0] if row.get("auction") else {}
+                lines.append(
+                    f"{row.get('name')} 涨跌停方向 {perf.get('direction')}，竞价开盘量 {auc.get('open_vol')}。"
+                )
+        elif tool == "market_breadth" and isinstance(data, dict):
+            watch = data.get("watch_on_board") or []
+            ind = data.get("sector_funds_industry") or []
+            top = ind[0].get("name") if ind else ""
+            lines.append(f"龙虎榜 {data.get('dragon_tiger_count')} 只；自选上榜 {len(watch)} 只；行业资金首位 {top or '无'}。")
         elif tool == "excel_parse" and isinstance(data, dict):
             codes = "、".join(data.get("codes") or []) or "未识别代码"
             lines.append(

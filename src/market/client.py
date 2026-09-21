@@ -344,7 +344,9 @@ class MarketClient:
         }
 
     def close_on_date(self, inst: Instrument, target: str) -> float | None:
-        day = _norm_day(target)
+        from src.market.calendar import nearest_trading_day_on_or_before
+
+        day = nearest_trading_day_on_or_before(_norm_day(target), self) or _norm_day(target)
         if not day:
             return None
         bars = self.history(inst, end=day, limit=12)
@@ -559,6 +561,163 @@ class MarketClient:
             if not isinstance(row, dict):
                 continue
             out.append(_flow_point(row))
+        return out
+
+    def capital_flow_on_date(self, inst: Instrument, yyyymmdd: str) -> dict:
+        day = _norm_day(yyyymmdd)
+        if self.offline:
+            for row in fixtures.FLOW.get(inst.code6) or []:
+                if _bar_day(row) == day:
+                    return _flow_point(row)
+            return {}
+        try:
+            data = self._get(f"/hsstock/history/transaction/{day}/{inst.code6}")
+        except MarketError:
+            return {}
+        rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        if not rows:
+            return {}
+        return _flow_point(rows[0] if isinstance(rows[0], dict) else {})
+
+    def announcements(self, inst: Instrument, limit: int = 8) -> list[dict]:
+        if self.offline:
+            return list(fixtures.ANNOUNCEMENTS.get(inst.code6) or [])
+        if inst.market == "bj":
+            return []
+        data = self._try_get(f"/hsstock/announcement/{inst.code_full}") or []
+        rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        out = []
+        for row in rows[: max(1, int(limit))]:
+            if not isinstance(row, dict):
+                continue
+            out.append(
+                {
+                    "t": row.get("t") or "",
+                    "title": row.get("zt") or row.get("zy") or "",
+                    "url": row.get("nr") or "",
+                    "kind": "财报" if row.get("lx") == 1 else "其他",
+                }
+            )
+        return out
+
+    def interactive_qa(self, inst: Instrument, limit: int = 5) -> list[dict]:
+        if self.offline:
+            return list(fixtures.INTERACTIVE_QA.get(inst.code6) or [])
+        if inst.market == "bj":
+            return []
+        data = self._try_get(f"/hsstock/interactiveqa/{inst.code_full}") or []
+        rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        out = []
+        for row in rows[: max(1, int(limit))]:
+            if not isinstance(row, dict):
+                continue
+            out.append(
+                {
+                    "t": row.get("t") or row.get("qt") or "",
+                    "q": row.get("q") or row.get("qh") or "",
+                    "a": row.get("a") or "",
+                    "at": row.get("at") or "",
+                }
+            )
+        return out
+
+    def limit_performance(self, inst: Instrument, limit: int = 3) -> list[dict]:
+        if self.offline:
+            row = fixtures.LIMIT_PERF.get(inst.code6)
+            return [dict(row)] if row else []
+        if inst.market == "bj":
+            return []
+        data = self._try_get(f"/hsstock/lup/limit/{inst.code_full}") or []
+        rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        out = []
+        for row in rows[: max(1, int(limit))]:
+            if not isinstance(row, dict):
+                continue
+            out.append(
+                {
+                    "t": row.get("t") or "",
+                    "direction": row.get("dr"),
+                    "limit_up_amount": row.get("ua"),
+                    "break_count": row.get("bu"),
+                    "seal_ratio": row.get("vr"),
+                    "boards": row.get("sc"),
+                }
+            )
+        return out
+
+    def auction(self, inst: Instrument, limit: int = 3) -> list[dict]:
+        if self.offline:
+            row = fixtures.AUCTION.get(inst.code6)
+            return [dict(row)] if row else []
+        if inst.market == "bj":
+            return []
+        data = self._try_get(f"/hsstock/lup/auction/{inst.code_full}") or []
+        rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        out = []
+        for row in rows[: max(1, int(limit))]:
+            if not isinstance(row, dict):
+                continue
+            out.append(
+                {
+                    "t": row.get("t") or "",
+                    "open_vol": row.get("ov"),
+                    "close_vol": row.get("cv"),
+                    "vs_prev": row.get("bp"),
+                }
+            )
+        return out
+
+    def dragon_tiger_date(self) -> str:
+        if self.offline:
+            return fixtures.DRAGON_TIGER_DATE
+        data = self._try_get("/hilh/mrxq") or {}
+        row = data[0] if isinstance(data, list) and data else data
+        if isinstance(row, dict):
+            return str(row.get("t") or "")[:10]
+        return ""
+
+    def dragon_tiger_codes(self) -> set[str]:
+        if self.offline:
+            return set(fixtures.DRAGON_TIGER_POOL)
+        data = self._try_get("/hilh/mrxq") or {}
+        row = data[0] if isinstance(data, list) and data else data
+        if not isinstance(row, dict):
+            return set()
+        codes: set[str] = set()
+        for key, items in row.items():
+            if key == "t" or not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                dm = str(item.get("dm") or "")
+                c6 = code6_of(dm) if dm else ""
+                if c6:
+                    codes.add(c6)
+        return codes
+
+    def sector_funds_top(self, kind: str = "industry", limit: int = 8) -> list[dict]:
+        if self.offline:
+            rows = fixtures.SECTOR_FUNDS_INDUSTRY if kind == "industry" else fixtures.SECTOR_FUNDS_CONCEPT
+            return list(rows[: max(1, int(limit))])
+        path = "/hibk/zjhhy" if kind == "industry" else "/hibk/gnbk"
+        data = self._try_get(path) or []
+        rows = data if isinstance(data, list) else []
+        out = []
+        for row in rows[: max(1, int(limit))]:
+            if not isinstance(row, dict):
+                continue
+            out.append(
+                {
+                    "name": row.get("mc") or "",
+                    "code": row.get("dm") or "",
+                    "pct": row.get("zdf"),
+                    "net_in": row.get("jlr"),
+                    "net_rate": row.get("jlrl"),
+                    "leader": row.get("lzgmc") or "",
+                    "leader_code": row.get("lzgdm") or "",
+                }
+            )
         return out
 
     def fund_holdings(self, inst: Instrument) -> list[dict]:

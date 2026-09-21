@@ -9,6 +9,7 @@ from src.agents.rules import (
     JOB_DEFS,
     TEMPLATE_SPECS,
     eval_custom,
+    eval_dragon_tiger,
     eval_limit_pool,
     eval_near_bottom,
     eval_near_target,
@@ -321,13 +322,20 @@ def run_watcher(
 def _finish_watcher(
     db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits
 ):
+    from src.market.calendar import is_trading_day
+
+    trading_today = is_trading_day(date.today().strftime("%Y%m%d"), market)
     active_keys = {j.job_key for j in jobs if j.enabled and not j.reason}
     limit_up_pool = market.limit_pool_codes("up") if "limit-up" in active_keys else set()
     limit_down_pool = market.limit_pool_codes("down") if "limit-down" in active_keys else set()
+    dragon_pool = market.dragon_tiger_codes() if "dragon-tiger" in active_keys else set()
     for job in jobs:
         if job.reason:
             continue
         if not job.enabled:
+            continue
+        sched = job.schedule or (TEMPLATE_SPECS.get(job.job_key) or {}).get("schedule") or "eod"
+        if sched == "session" and not trading_today:
             continue
         if job.job_key in {"news", "policy"}:
             hits.extend(_rule_web_sources(db, user, job, items, ctx, persist))
@@ -407,6 +415,25 @@ def _finish_watcher(
                         severity=job.severity or "act",
                         hit_price=_price_of(qrow),
                     )
+            elif job.job_key == "dragon-tiger":
+                ok, detail = eval_dragon_tiger(inst.code6, dragon_pool)
+                if ok:
+                    qrow = rows_by_code.get(item.code6) or {}
+                    hit = _alert(
+                        db,
+                        user.id,
+                        "dragon-tiger",
+                        inst.code6,
+                        f"{inst.name} · 龙虎榜",
+                        detail,
+                        persist=persist,
+                        severity=job.severity or "watch",
+                        hit_price=_price_of(qrow),
+                    )
+            elif job.job_key == "corp-disclosure":
+                hit = _rule_disclosure(db, user, ctx, inst, params, persist)
+            elif job.job_key == "limit-review":
+                hit = _rule_limit_review(db, user, ctx, inst, params, persist)
             if hit:
                 hits.append(hit)
 
@@ -520,15 +547,74 @@ def _rule_funds(db, user, ctx, inst, persist: bool) -> dict | None:
 
 
 def _rule_flow(db, user, ctx, inst, params: dict, persist: bool) -> dict | None:
-    row = _row(ctx, "capital_flow", inst)
+    extra: dict = {}
+    if params.get("use_prev_day"):
+        from src.market.calendar import prev_trading_day
+
+        day = prev_trading_day(date.today().strftime("%Y%m%d"), ctx.market)
+        if day:
+            extra["day"] = day
+    row = _row(ctx, "capital_flow", inst, extra or None)
     if not row:
         return None
     latest, mean = row.get("latest_net"), row.get("mean_net")
     multiple = float(params.get("mean_multiple") or 2)
     if latest is None or mean is None or latest <= mean * multiple:
         return None
-    detail = f"流入 {row.get('inflow')} 流出 {row.get('outflow')} 净流入 {latest:.0f}，近窗均值 {mean:.0f}"
+    day_note = f"（{row.get('day')}）" if row.get("day") else ""
+    detail = f"流入 {row.get('inflow')} 流出 {row.get('outflow')} 净流入 {latest:.0f}{day_note}，近窗均值 {mean:.0f}"
     return _alert(db, user.id, "capital-flow", inst.code6, f"{inst.name} · 资金净流入偏离", detail, persist=persist)
+
+
+def _rule_disclosure(db, user, ctx, inst, params: dict, persist: bool) -> dict | None:
+    bits = []
+    if params.get("announcements", True):
+        for item in ctx.market.announcements(inst)[:5]:
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if title:
+                bits.append(f"公告·{title}" + (f" {url}" if url else ""))
+    if params.get("interactive_qa", True):
+        for item in ctx.market.interactive_qa(inst)[:3]:
+            q = str(item.get("q") or "").strip()
+            if q:
+                bits.append(f"问董秘·{q[:80]}")
+    if not bits:
+        return None
+    fingerprint = "；".join(bits)
+    prev = _snap(db, user.id, inst.code6, "disclosure")
+    old = json.loads(prev.payload or "{}").get("text") if prev else None
+    if persist:
+        _write_snap(db, user.id, inst.code6, "disclosure", {"text": fingerprint})
+    if old == fingerprint:
+        return None
+    return _alert(db, user.id, "corp-disclosure", inst.code6, f"{inst.name} · 公告/问董秘", fingerprint, persist=persist)
+
+
+def _rule_limit_review(db, user, ctx, inst, params: dict, persist: bool) -> dict | None:
+    bits = []
+    if params.get("limit_perf", True):
+        perf = ctx.market.limit_performance(inst)
+        if perf:
+            row = perf[0]
+            dr = row.get("direction")
+            label = "涨停" if dr == 1 else ("跌停" if dr == 2 else "无涨跌停")
+            bits.append(f"涨跌停·{label} 炸板{row.get('break_count')}次 封板资金{row.get('limit_up_amount')}")
+    if params.get("auction", True):
+        rows = ctx.market.auction(inst)
+        if rows:
+            row = rows[0]
+            bits.append(f"竞价·开盘量{row.get('open_vol')} 收盘量{row.get('close_vol')} 竞昨比{row.get('vs_prev')}")
+    if not bits:
+        return None
+    fingerprint = "；".join(bits)
+    prev = _snap(db, user.id, inst.code6, "limit_review")
+    old = json.loads(prev.payload or "{}").get("text") if prev else None
+    if persist:
+        _write_snap(db, user.id, inst.code6, "limit_review", {"text": fingerprint})
+    if old == fingerprint:
+        return None
+    return _alert(db, user.id, "limit-review", inst.code6, f"{inst.name} · 盘后复盘", fingerprint, persist=persist)
 
 
 def _rule_events(db, user, ctx, inst, params: dict, persist: bool) -> dict | None:

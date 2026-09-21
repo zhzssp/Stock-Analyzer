@@ -10,6 +10,9 @@ tools:
   - company_profile
   - capital_flow
   - corp_events
+  - corp_disclosure
+  - limit_review
+  - market_breadth
   - bottom
   - excel_list
   - market_fetch

@@ -265,6 +265,51 @@ CONCEPT_OFFICIAL = {
 LIMIT_UP = {"300274", "000858", "688981"}
 LIMIT_DOWN = {"002415"}
 
+TRADING_DAYS = {
+    "2026": [
+        (date(2026, 9, 1) + timedelta(days=i)).strftime("%Y%m%d")
+        for i in range(30)
+        if (date(2026, 9, 1) + timedelta(days=i)).weekday() < 5
+    ],
+}
+
+ANNOUNCEMENTS = {
+    "600038": [
+        {"t": "2026-09-18", "title": "关于签订重大合同的公告", "url": "http://static.cninfo.com.cn/sample-600038.pdf", "kind": "其他"},
+    ],
+    "002230": [
+        {"t": "2026-09-17", "title": "2026年半年度报告", "url": "http://static.cninfo.com.cn/sample-002230.pdf", "kind": "财报"},
+    ],
+}
+
+INTERACTIVE_QA = {
+    "002230": [
+        {"t": "2026-09-16", "q": "大模型业务进展如何？", "a": "持续推进核心场景落地。", "at": "2026-09-17"},
+    ],
+}
+
+DRAGON_TIGER_DATE = "2026-09-18"
+DRAGON_TIGER_POOL = {"300274", "000858", "688981"}
+
+SECTOR_FUNDS_INDUSTRY = [
+    {"name": "电子", "code": "sw_dz", "pct": 2.31, "net_in": 1280000000, "net_rate": 3.2, "leader": "京东方A", "leader_code": "000725"},
+    {"name": "国防军工", "code": "sw_jg", "pct": 1.88, "net_in": 620000000, "net_rate": 2.1, "leader": "中直股份", "leader_code": "600038"},
+]
+
+SECTOR_FUNDS_CONCEPT = [
+    {"name": "人工智能", "code": "gn_rgzn", "pct": 3.12, "net_in": 980000000, "net_rate": 4.1, "leader": "科大讯飞", "leader_code": "002230"},
+]
+
+LIMIT_PERF = {
+    "300274": {"t": "2026-09-18", "direction": 1, "limit_up_amount": 125000000, "break_count": 1, "seal_ratio": 0.82, "boards": 1},
+    "002415": {"t": "2026-09-18", "direction": 2, "limit_up_amount": 0, "break_count": 0, "seal_ratio": 0.0, "boards": 0},
+}
+
+AUCTION = {
+    "600038": {"t": "2026-09-18", "open_vol": 1280, "close_vol": 960, "vs_prev": 1.04},
+    "300274": {"t": "2026-09-18", "open_vol": 4200, "close_vol": 3100, "vs_prev": 1.22},
+}
+
 
 def _make_bars(close: float, low: float, high: float, days: int = 320) -> list[dict]:
     end = date(2026, 9, 14)

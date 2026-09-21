@@ -49,10 +49,11 @@ TEMPLATE_SPECS: dict[str, dict] = {
         "reason": "",
         "schedule": "eod",
         "severity": "watch",
-        "blurb": "净流入相对近窗均值偏大。",
-        "params": {"mean_multiple": 2, "scope": "all"},
+        "blurb": "净流入相对近窗均值偏大；可指定上一交易日按日资金。",
+        "params": {"mean_multiple": 2, "use_prev_day": True, "scope": "all"},
         "schema": [
             {"key": "mean_multiple", "label": "相对均值倍数", "type": "number"},
+            {"key": "use_prev_day", "label": "用上一交易日按日资金", "type": "bool"},
             {"key": "scope", "label": "范围", "type": "scope"},
         ],
     },
@@ -114,6 +115,44 @@ TEMPLATE_SPECS: dict[str, dict] = {
         "schedule": "session",
         "severity": "act",
         "blurb": "自选出现在当日跌停股池（麦蕊 hslt/dtgc）。",
+        "params": {"scope": "all"},
+        "schema": [{"key": "scope", "label": "范围", "type": "scope"}],
+    },
+    "corp-disclosure": {
+        "name": "公告 / 问董秘",
+        "enabled": 1,
+        "reason": "",
+        "schedule": "eod",
+        "severity": "watch",
+        "blurb": "交易所公告标题或问董秘问答相对上次快照有新增。",
+        "params": {"announcements": True, "interactive_qa": True, "scope": "all"},
+        "schema": [
+            {"key": "announcements", "label": "公告", "type": "bool"},
+            {"key": "interactive_qa", "label": "问董秘", "type": "bool"},
+            {"key": "scope", "label": "范围", "type": "scope"},
+        ],
+    },
+    "limit-review": {
+        "name": "涨跌停 / 竞价复盘",
+        "enabled": 1,
+        "reason": "",
+        "schedule": "eod",
+        "severity": "watch",
+        "blurb": "涨跌停表现或集合竞价量相对上次快照有变化（盘后）。",
+        "params": {"limit_perf": True, "auction": True, "scope": "all"},
+        "schema": [
+            {"key": "limit_perf", "label": "涨跌停表现", "type": "bool"},
+            {"key": "auction", "label": "集合竞价", "type": "bool"},
+            {"key": "scope", "label": "范围", "type": "scope"},
+        ],
+    },
+    "dragon-tiger": {
+        "name": "龙虎榜上榜",
+        "enabled": 1,
+        "reason": "",
+        "schedule": "eod",
+        "severity": "watch",
+        "blurb": "自选出现在当日龙虎榜概览（hilh/mrxq）。",
         "params": {"scope": "all"},
         "schema": [{"key": "scope", "label": "范围", "type": "scope"}],
     },
@@ -384,6 +423,12 @@ def eval_near_bottom(row: dict, params: dict) -> tuple[bool, str]:
     if off is None or off > cap:
         return False, ""
     return True, f"现价 {row.get('price')}，离长窗底 {off}%（{row.get('low_note') or ''}）"
+
+
+def eval_dragon_tiger(code6: str, pool: set[str]) -> tuple[bool, str]:
+    if code6 not in pool:
+        return False, ""
+    return True, "出现在今日龙虎榜概览"
 
 
 def eval_limit_pool(code6: str, pool: set[str], label: str) -> tuple[bool, str]:

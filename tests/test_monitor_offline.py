@@ -79,7 +79,7 @@ def test_watcher_jobs_alerts_and_disabled_slots():
         assert "capital-flow" in body["ran"]
         assert body["count"] >= 1
         titles = " ".join(h["title"] for h in body["hits"])
-        assert "资金" in titles or "事件" in titles or "分红" in titles
+        assert any(k in titles for k in ("资金", "事件", "分红", "涨停", "龙虎", "复盘", "公告"))
 
         alerts = client.get("/api/alerts", headers=headers)
         assert alerts.status_code == 200
