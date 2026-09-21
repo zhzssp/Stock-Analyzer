@@ -130,7 +130,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run.ps1
 
 ## 数据源
 
-麦蕊数据 · https://api.mairuiapi.com
+麦蕊数据 · 调用 `https://api.mairuiapi.com` · 文档 [沪深基础数据](https://www.mairuiapi.com/hsdata)（全表见 [`docs/设计/API现状.md`](docs/设计/API现状.md) 文首）
 
 覆盖沪深 A 股、沪深指数、京市、科创板、基金。档位与限频见 [`docs/设计/API现状.md`](docs/设计/API现状.md) §4.2、§4.5。
 

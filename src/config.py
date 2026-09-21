@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     app_port: int = 8765
     bootstrap_user: str = "hanish"
     bootstrap_password: str = "change-me"
-    mairui_licence: str = ""
-    mairui_offline: bool = True
+    mairui_licence: str = "0911733C-31DD-454C-ADCA-5CC002806939"
+    mairui_offline: bool = False
     mairui_base: str = "https://api.mairuiapi.com"
     demo_licence: str = "LICENCE-66D8-9F96-0C7F0FBCD073"
     data_dir: Path = ROOT / "data"
