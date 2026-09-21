@@ -67,7 +67,7 @@ engine = QueryEngine(market)
 def ensure_market() -> MarketClient:
     """Recreate client when .env toggles offline/live; repair licence pool in long-running workers."""
     global market, engine
-    want_offline = settings.mairui_offline or not settings.licence_chain
+    want_offline = not settings.use_live_market
     if market.offline != want_offline:
         LicencePool.reset_shared()
         market = MarketClient()

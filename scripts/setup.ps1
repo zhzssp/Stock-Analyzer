@@ -1048,7 +1048,7 @@ try {
                 exit 1
             }
             Copy-Item -LiteralPath $example -Destination $envFile
-            Write-Ok "已从模板复制 .env（默认离线模式，不必填 licence 也能打开）"
+            Write-Ok "已从模板复制 .env（模板默认 MAIRUI_OFFLINE=0；要纯样例模式请改为 1）"
             Write-Info "以后若有正式行情授权或 AI 密钥，再请工作人员帮你改 .env"
         } else {
             Write-Ok ".env 已存在，未改动"

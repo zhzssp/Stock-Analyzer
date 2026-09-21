@@ -1529,7 +1529,10 @@
 
     function describeQueryMode(data) {
       const m = data.market || {};
-      if (m.offline || data.sample) return "离线切片（非实盘）";
+      if (m.offline || data.sample) {
+        const why = m.offline_reason || data.note || "";
+        return why ? `离线样例（${why}）` : "离线切片（非实盘）";
+      }
       if (m.sample_only) return "演示证样本";
       const pool = m.licence_pool || {};
       if (pool.total && !(pool.available || []).length) return "证书额度已用尽";
@@ -1568,7 +1571,8 @@
       if (forceLive) {
         const m = data.market || {};
         if (m.offline || data.sample) {
-          toast("当前为离线切片，不是麦蕊实时数据。请确认 .env 里 MAIRUI_OFFLINE=0 并重启助手。");
+          const why = m.offline_reason || data.note || "请确认 .env 里 MAIRUI_OFFLINE=0 并重启助手";
+          toast("当前为离线样例，不是麦蕊实时数据。" + why);
         } else if (m.sample_only) {
           toast("当前 licence 只能返回演示样本，不是全市场实盘。");
         } else {
@@ -2033,7 +2037,7 @@
 
     bindColResize();
     bindColumnSort();
-    document.getElementById("queryBtn").addEventListener("click", () => runQuery().catch((e) => toast(e.message)));
+    document.getElementById("queryBtn").addEventListener("click", () => runQuery(null, true).catch((e) => toast(e.message)));
     document.getElementById("refreshBtn").addEventListener("click", async () => {
       try {
         await loadBoard();

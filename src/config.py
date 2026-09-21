@@ -1,8 +1,12 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parent.parent
+
+_BUILTIN_LICENCE = "2FE37018-1B80-4185-91C5-05D4799A4572"
+_BUILTIN_LICENCES = "0911733C-31DD-454C-ADCA-5CC002806939"
 
 
 class Settings(BaseSettings):
@@ -18,8 +22,8 @@ class Settings(BaseSettings):
     bootstrap_user: str = "hanish"
     bootstrap_password: str = "change-me"
     # 主证书；可与 mairui_licences 组成队列（当日 429 自动换下一张）。
-    mairui_licence: str = "2FE37018-1B80-4185-91C5-05D4799A4572"
-    mairui_licences: str = "0911733C-31DD-454C-ADCA-5CC002806939"
+    mairui_licence: str = _BUILTIN_LICENCE
+    mairui_licences: str = _BUILTIN_LICENCES
     # True 才用 src/market/fixtures.py 喂工作台。样例文件保留，pytest 仍会设 MAIRUI_OFFLINE=1。
     mairui_offline: bool = False
     mairui_base: str = "https://api.mairuiapi.com"
@@ -39,6 +43,20 @@ class Settings(BaseSettings):
     clock_dir: str = ""
     clock_interval_sec: int = 300
 
+    @field_validator("mairui_licence", mode="before")
+    @classmethod
+    def blank_primary_licence(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return _BUILTIN_LICENCE
+        return value
+
+    @field_validator("mairui_licences", mode="before")
+    @classmethod
+    def blank_backup_licences(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return _BUILTIN_LICENCES
+        return value
+
     @property
     def licence_chain(self) -> list[str]:
         from src.market.licence_pool import parse_licences
@@ -48,6 +66,19 @@ class Settings(BaseSettings):
     @property
     def fixtures_enabled(self) -> bool:
         return bool(self.mairui_offline)
+
+    @property
+    def use_live_market(self) -> bool:
+        """Live API is used only when MAIRUI_OFFLINE=0 and at least one licence resolves."""
+        return not self.mairui_offline and bool(self.licence_chain)
+
+    @property
+    def offline_reason(self) -> str:
+        if self.mairui_offline:
+            return "MAIRUI_OFFLINE=1，工作台强制使用内置样例"
+        if not self.licence_chain:
+            return "未配置有效麦蕊证书"
+        return ""
 
     @property
     def db_path(self) -> Path:

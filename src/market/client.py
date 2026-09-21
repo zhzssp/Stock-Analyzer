@@ -26,7 +26,7 @@ class MarketClient:
 
     def __init__(self) -> None:
         chain = settings.licence_chain
-        self.offline = settings.mairui_offline or not chain
+        self.offline = not settings.use_live_market
         self._pool: LicencePool | None = LicencePool.shared(chain) if chain and not self.offline else None
         self.licence = self._pool.active() if self._pool else ""
         self.sample_only = False
@@ -130,6 +130,9 @@ class MarketClient:
         pool = self._pool.status() if self._pool else None
         return {
             "offline": self.offline,
+            "offline_reason": settings.offline_reason if self.offline else "",
+            "mairui_offline": settings.mairui_offline,
+            "licence_configured": bool(settings.licence_chain),
             "sample_only": self.sample_only,
             "status": self.status,
             "has_licence": bool(self.licence),
