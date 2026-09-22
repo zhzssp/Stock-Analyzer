@@ -31,6 +31,8 @@ class MarketClient:
         self.licence = self._registry.active() if self._registry else ""
         self.sample_only = False
         self.status = "offline" if self.offline else "unchecked"
+        self.query_refresh_mode: str = "full"
+        self.slow_cache_stats: dict[str, int] = {"hits": 0, "misses": 0}
         if not self.offline:
             self._probe()
 
@@ -134,6 +136,31 @@ class MarketClient:
         if self.sample_only or self.offline:
             return
         write_cache_json(key, payload)
+
+    def _refresh_mode(self) -> str:
+        return (self.query_refresh_mode or "full").strip().lower()
+
+    def _slow_key(self, kind: str, inst: Instrument) -> str:
+        return f"slow_{kind}_{inst.code6}"
+
+    def _slow_load(self, key: str, ttl_sec: int) -> Any | None:
+        if self.offline or self.sample_only or self._refresh_mode() != "cache":
+            return None
+        from src.market.slow_cache import read_fresh
+
+        hit = read_fresh(key, ttl_sec)
+        if hit is not None:
+            self.slow_cache_stats["hits"] = self.slow_cache_stats.get("hits", 0) + 1
+            return hit
+        self.slow_cache_stats["misses"] = self.slow_cache_stats.get("misses", 0) + 1
+        return None
+
+    def _slow_store(self, key: str, data: Any) -> None:
+        if self.offline or self.sample_only:
+            return
+        from src.market.slow_cache import write
+
+        write(key, data)
 
     def health(self) -> dict:
         pools = self._registry.status() if self._registry else None
@@ -314,6 +341,10 @@ class MarketClient:
     def profile(self, inst: Instrument, extra: dict | None = None) -> dict:
         if self.offline:
             return _with_taxonomy(dict(fixtures.PROFILE.get(inst.code6, {"source": "offline"})), extra)
+        key = self._slow_key("profile", inst)
+        cached = self._slow_load(key, settings.slow_cache_profile_ttl_sec)
+        if isinstance(cached, dict):
+            return _with_taxonomy(dict(cached), extra)
         out = {"industry": "", "concept": "", "business": "", "source": "live"}
         try:
             zg = self._get(f"/hszg/zg/{inst.code6}")
@@ -332,6 +363,7 @@ class MarketClient:
                 out["concept"] = row["idea"]
         except MarketError:
             pass
+        self._slow_store(key, out)
         return _with_taxonomy(out, extra)
 
     def holders(self, inst: Instrument) -> dict:
@@ -340,9 +372,15 @@ class MarketClient:
             if not raw:
                 return {"holders": None, "holders_detail": [], "top_holders": None, "top_holders_detail": [], "source": "offline"}
             return _pack_holders(raw.get("holders_detail") or [], raw.get("top_holders_detail") or [], "offline")
+        key = self._slow_key("holders", inst)
+        cached = self._slow_load(key, settings.slow_cache_holders_ttl_sec)
+        if isinstance(cached, dict):
+            return cached
         flow = _holder_rows(self._try_get(f"/hsstock/financial/flowholder/{inst.code_full}") or self._try_get(f"/hscp/ltgd/{inst.code6}"))
         top = _holder_rows(self._try_get(f"/hsstock/financial/topholder/{inst.code_full}") or self._try_get(f"/hscp/sdgd/{inst.code6}"))
-        return _pack_holders(flow, top, "live")
+        packed = _pack_holders(flow, top, "live")
+        self._slow_store(key, packed)
+        return packed
 
     def hszg_tree(self) -> list[dict]:
         if self.offline:
@@ -388,15 +426,21 @@ class MarketClient:
             return dict(fixtures.INDICATORS.get(inst.code6) or {"source": "offline"})
         if inst.market == "bj":
             return {"source": "unavailable"}
+        key = self._slow_key("indicators", inst)
+        cached = self._slow_load(key, settings.slow_cache_indicators_ttl_sec)
+        if isinstance(cached, dict):
+            return cached
         data = self._try_get(f"/hsstock/indicators/{inst.code_full}")
         rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
         row = rows[-1] if rows else {}
-        return {
+        out = {
             "pct3": row.get("3d"),
             "pct5": row.get("5d"),
             "pct10": row.get("10d"),
             "source": "live",
         }
+        self._slow_store(key, out)
+        return out
 
     def close_on_date(self, inst: Instrument, target: str) -> float | None:
         from src.market.calendar import nearest_trading_day_on_or_before
@@ -440,8 +484,14 @@ class MarketClient:
     def finance(self, inst: Instrument) -> dict:
         if self.offline:
             return fixtures.FINANCE.get(inst.code6, {"source": "offline"})
+        key = self._slow_key("finance", inst)
+        cached = self._slow_load(key, settings.slow_cache_finance_ttl_sec)
+        if isinstance(cached, dict):
+            return cached
         if inst.market == "bj":
-            return self._finance_bj(inst)
+            out = self._finance_bj(inst)
+            self._slow_store(key, out)
+            return out
         out = {"source": "live"}
         try:
             psi = self._get(f"/hsstock/financial/pershareindex/{inst.code_full}")
@@ -470,6 +520,7 @@ class MarketClient:
                 out["ysltag"] = row.get("fv")
             except MarketError:
                 pass
+        self._slow_store(key, out)
         return out
 
     def _finance_bj(self, inst: Instrument) -> dict:
@@ -606,6 +657,10 @@ class MarketClient:
     def capital_flow(self, inst: Instrument) -> list[dict]:
         if self.offline:
             return [_flow_point(x) for x in fixtures.FLOW.get(inst.code6) or []]
+        key = self._slow_key("flow", inst)
+        cached = self._slow_load(key, settings.slow_cache_flow_ttl_sec)
+        if isinstance(cached, list):
+            return cached
         try:
             data = self._get(f"/hsstock/history/transaction/{inst.code_full}")
         except MarketError:
@@ -616,6 +671,7 @@ class MarketClient:
             if not isinstance(row, dict):
                 continue
             out.append(_flow_point(row))
+        self._slow_store(key, out)
         return out
 
     def capital_flow_on_date(self, inst: Instrument, yyyymmdd: str) -> dict:

@@ -597,9 +597,9 @@
 
         <div id="query" class="view on">
           <div class="toolbar">
-            <button class="btn primary" id="queryBtn" type="button">查询</button>
-            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="只更新现价相关列，优先读墙钟档口；行业/财务/股东等请用「全量更新」。">刷新</span></button>
-            <button class="btn" id="fullQueryBtn" type="button"><span data-help-tip="按列设置拉齐全部字段（含财务、股东、底顶），耗麦蕊额度较多。">全量更新</span></button>
+            <button class="btn primary" id="queryBtn" type="button"><span data-help-tip="按列设置查表：现价优先墙钟；财务/股东等未过期则用本机分项缓存，少打麦蕊。">查询</span></button>
+            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="只更新现价相关列，优先读墙钟档口；行业/财务/股东等请用「查询」或「全量更新」。">刷新</span></button>
+            <button class="btn" id="fullQueryBtn" type="button"><span data-help-tip="忽略慢字段缓存，向麦蕊重新拉齐全部列（含财务、股东、底顶），额度消耗最大。">全量更新</span></button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
@@ -1446,7 +1446,7 @@
       renderPoolList(data.items || []);
       setPoolHint(poolHintText(state.side, data));
       updateExportScope(data.label || poolId);
-      await runQuery(null, { refreshMode: "full", forceLive: true });
+      await runQuery(null, { refreshMode: "cache", forceLive: false });
     }
 
     function setSide(side) {
@@ -1583,6 +1583,7 @@
       base.refresh_mode = refreshMode;
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       if (forceLive) base.force_live = true;
+      else if (refreshMode === "cache") base.force_live = false;
       return base;
     }
 
@@ -1609,6 +1610,15 @@
         if (src === "mixed") return "快刷·混合";
         if (src === "live") return "快刷·现网";
         return "快刷";
+      }
+      if (data.refresh_mode === "cache") {
+        const sc = data.slow_cache || {};
+        const hit = sc.hits || 0;
+        const miss = sc.misses || 0;
+        const tag = hit && !miss ? "缓存" : hit ? "缓存+补拉" : "补拉";
+        if (src === "clock") return `查询·墙钟·${tag}`;
+        if (src === "live") return `查询·现网·${tag}`;
+        return `查询·${tag}`;
       }
       if (data.force_live && src === "live") return "现网刷新";
       if (src === "live") return "现网";
@@ -1655,6 +1665,7 @@
       const refreshMode = o.refreshMode || "quote";
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       const payload = queryPayload(codes, { refreshMode, forceLive });
+      if (refreshMode === "cache" && !forceLive) payload.force_live = false;
       let data;
       try {
         data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
@@ -1795,7 +1806,7 @@
       if (preset === "custom" && !fields.length) return toast("至少保留一列");
       await api("/query/prefs", { method: "PUT", body: JSON.stringify({ fields, preset }) });
       closeCols();
-      await runQuery(null, { refreshMode: "full", forceLive: true });
+      await runQuery(null, { refreshMode: "cache", forceLive: false });
     }
 
     function paramInput(job, field) {
@@ -2156,7 +2167,7 @@
       startBoardClock();
       await loadWatch();
       await loadPools();
-      await runQuery(null, { refreshMode: "full", forceLive: true });
+      await runQuery(null, { refreshMode: "cache", forceLive: false });
     }
 
     document.getElementById("loginForm").addEventListener("submit", async (e) => {
@@ -2179,7 +2190,7 @@
     bindColResize();
     bindColumnSort();
     document.getElementById("queryBtn").addEventListener("click", () =>
-      runQuery(null, { refreshMode: "full", forceLive: true }).catch((e) => toast(e.message))
+      runQuery(null, { refreshMode: "cache", forceLive: false }).catch((e) => toast(e.message))
     );
     document.getElementById("fullQueryBtn").addEventListener("click", () =>
       runQuery(null, { refreshMode: "full", forceLive: true }).catch((e) => toast(e.message))
@@ -2475,7 +2486,7 @@
         renderWatch(data.items);
         closePicker();
         toast(`已加入 ${data.added.length} 只`);
-        await runQuery(null, { refreshMode: "full", forceLive: true });
+        await runQuery(null, { refreshMode: "cache", forceLive: false });
       } catch (err) {
         toast(err.message);
       }
@@ -2493,7 +2504,7 @@
         setSide("watch");
         closePicker();
         toast("自选已替换为 " + items.length + " 只");
-        await runQuery(null, { refreshMode: "full", forceLive: true });
+        await runQuery(null, { refreshMode: "cache", forceLive: false });
       } catch (err) {
         toast(err.message);
       }

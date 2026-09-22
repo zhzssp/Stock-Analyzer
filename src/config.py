@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     alerts_log_max_mb: float = 2
     clock_dir: str = ""
     clock_interval_sec: int = 300
+    # P2：慢字段分项缓存 TTL（秒）；refresh_mode=cache 时未过期则不打麦蕊。
+    slow_cache_profile_ttl_sec: int = 86_400
+    slow_cache_holders_ttl_sec: int = 86_400
+    slow_cache_finance_ttl_sec: int = 86_400
+    slow_cache_flow_ttl_sec: int = 3_600
+    slow_cache_indicators_ttl_sec: int = 3_600
 
     @field_validator("mairui_licence", mode="before")
     @classmethod

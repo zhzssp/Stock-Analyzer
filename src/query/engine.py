@@ -9,16 +9,16 @@ from src.query.cards import derive_card_metrics
 from src.query.registry import registry
 
 REFRESH_QUOTE = "quote"
+REFRESH_CACHE = "cache"
 REFRESH_FULL = "full"
 SLOW_DEPS = frozenset({"profile", "holders", "finance", "flow", "bars", "indicators"})
 
 
 def fetch_need(column_need: set[str], refresh_mode: str) -> set[str]:
-    """P0：快刷只拉现价；全量才拉慢字段。"""
+    """P0 快刷只拉现价；P2 cache/full 按列需要拉慢字段（cache 走 TTL 分项缓存）。"""
     mode = (refresh_mode or REFRESH_FULL).strip().lower()
     if mode == REFRESH_QUOTE:
-        out = {d for d in column_need if d == "quote"}
-        return out
+        return {d for d in column_need if d == "quote"}
     return set(column_need)
 
 
@@ -28,6 +28,7 @@ class QueryEngine:
     def __init__(self, market: MarketClient) -> None:
         self.market = market
         self.last_clock_meta: dict = {}
+        self.last_slow_cache: dict = {}
 
     def fields(self) -> list[dict]:
         out: list[dict] = []
@@ -64,6 +65,39 @@ class QueryEngine:
         if "x_price" in keys and x_date:
             column_need.add("bars")
         need = fetch_need(column_need, refresh_mode)
+        mode = (refresh_mode or REFRESH_FULL).strip().lower()
+        prev_mode = getattr(self.market, "query_refresh_mode", REFRESH_FULL)
+        self.market.query_refresh_mode = mode
+        self.market.slow_cache_stats = {"hits": 0, "misses": 0}
+        try:
+            return self._run_rows(
+                instruments,
+                keys,
+                specs,
+                need,
+                refresh_mode,
+                cards,
+                writer,
+                concept_extra,
+                x_date,
+                force_live,
+            )
+        finally:
+            self.market.query_refresh_mode = prev_mode
+
+    def _run_rows(
+        self,
+        instruments: list[Instrument],
+        keys: list[str],
+        specs: list,
+        need: set[str],
+        refresh_mode: str,
+        cards: dict[str, dict] | None,
+        writer: str,
+        concept_extra: dict | None,
+        x_date: str | None,
+        force_live: bool,
+    ) -> list[dict]:
         quotes: dict[str, dict] = {}
         clock_meta = {"as_of": "", "source": "", "enabled": False, "reason": ""}
         if "quote" in need:
@@ -124,6 +158,7 @@ class QueryEngine:
             for spec in specs:
                 row[spec.key] = self._value(spec.key, inst, bag)
             rows.append(row)
+        self.last_slow_cache = dict(getattr(self.market, "slow_cache_stats", {}) or {})
         return rows
 
     def _value(self, key: str, inst: Instrument, bag: dict) -> Any:

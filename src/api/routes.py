@@ -642,7 +642,7 @@ def _execute_query(
 ) -> dict:
     ensure_market()
     mode = (refresh_mode or "full").strip().lower()
-    if mode not in ("quote", "full"):
+    if mode not in ("quote", "cache", "full"):
         mode = "full"
     rows = engine.run(
         insts,
@@ -670,6 +670,8 @@ def _execute_query(
         },
         "refresh_mode": mode,
     }
+    if mode == "cache":
+        out["slow_cache"] = engine.last_slow_cache or {}
     if do_export:
         path = write_query_xlsx(rows, fields, pool_name)
         db = SessionLocal()
