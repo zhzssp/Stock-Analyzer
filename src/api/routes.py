@@ -107,6 +107,7 @@ class QueryIn(BaseModel):
     async_mode: bool = False
     x_date: str | None = None
     force_live: bool = False
+    refresh_mode: str = "full"
 
 
 class DiffIn(BaseModel):
@@ -612,8 +613,12 @@ def _execute_query(
     concept_extra: dict | None = None,
     x_date: str | None = None,
     force_live: bool = False,
+    refresh_mode: str = "full",
 ) -> dict:
     ensure_market()
+    mode = (refresh_mode or "full").strip().lower()
+    if mode not in ("quote", "full"):
+        mode = "full"
     rows = engine.run(
         insts,
         fields,
@@ -622,6 +627,7 @@ def _execute_query(
         concept_extra=concept_extra,
         x_date=x_date,
         force_live=force_live,
+        refresh_mode=mode,
     )
     codes = [i.code_full for i in insts]
     clock_meta = engine.last_clock_meta or {}
@@ -637,6 +643,7 @@ def _execute_query(
             "reason": clock_meta.get("reason") or "",
             "enabled": bool(clock_meta.get("enabled")),
         },
+        "refresh_mode": mode,
     }
     if do_export:
         path = write_query_xlsx(rows, fields, pool_name)
@@ -677,11 +684,13 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
             concept_extra=extra,
             x_date=body.x_date,
             force_live=body.force_live,
+            refresh_mode=body.refresh_mode,
         )
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
         result["pool_id"] = meta.get("id")
         result["force_live"] = body.force_live
+        result["refresh_mode"] = (body.refresh_mode or "full").strip().lower()
         return result
     job = jobs.create("export" if do_export else "query", meta.get("id") or body.pool, len(insts))
     snapshot = list(insts)
@@ -699,10 +708,12 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                 concept_extra=extra,
                 x_date=body.x_date,
                 force_live=body.force_live,
+                refresh_mode=body.refresh_mode,
             )
             result["sample"] = meta.get("sample", False)
             result["note"] = meta.get("note") or ""
             result["pool_id"] = meta.get("id")
+            result["refresh_mode"] = (body.refresh_mode or "full").strip().lower()
             jobs.finish(job.id, result)
         except Exception as exc:
             jobs.fail(job.id, str(exc))

@@ -598,7 +598,8 @@
         <div id="query" class="view on">
           <div class="toolbar">
             <button class="btn primary" id="queryBtn" type="button">查询</button>
-            <button class="btn" id="refreshBtn" type="button">刷新</button>
+            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="只更新现价相关列，优先读墙钟档口；行业/财务/股东等请用「全量更新」。">刷新</span></button>
+            <button class="btn" id="fullQueryBtn" type="button"><span data-help-tip="按列设置拉齐全部字段（含财务、股东、底顶），耗麦蕊额度较多。">全量更新</span></button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
@@ -1444,7 +1445,7 @@
       renderPoolList(data.items || []);
       setPoolHint(poolHintText(state.side, data));
       updateExportScope(data.label || poolId);
-      await runQuery();
+      await runQuery(null, { refreshMode: "full", forceLive: true });
     }
 
     function setSide(side) {
@@ -1543,10 +1544,43 @@
       }
     }
 
-    function queryPayload(codes, forceLive) {
+    const QUOTE_FIELD_KEYS = new Set([
+      "price", "pct", "pe", "pb", "turnover", "mcap", "fcap", "pct60", "pct_ytd",
+      "vs_cost", "dist_buy", "dist_reduce", "as_of", "quote_source",
+    ]);
+
+    function mergeQuoteRefreshRows(prev, incoming) {
+      if (!prev || !prev.length) return incoming || [];
+      const byCode = new Map((incoming || []).map((r) => [r.code6, r]));
+      const seen = new Set();
+      const merged = prev.map((old) => {
+        const neu = byCode.get(old.code6);
+        if (!neu) return old;
+        seen.add(old.code6);
+        const out = { ...old };
+        for (const [k, v] of Object.entries(neu)) {
+          if (QUOTE_FIELD_KEYS.has(k) || k === "code6" || k === "code" || k === "name") {
+            out[k] = v;
+            continue;
+          }
+          if (v !== null && v !== undefined && v !== "") out[k] = v;
+        }
+        return out;
+      });
+      for (const r of incoming || []) {
+        if (!seen.has(r.code6)) merged.push(r);
+      }
+      return merged;
+    }
+
+    function queryPayload(codes, opts) {
+      const o = opts && typeof opts === "object" ? opts : { forceLive: !!opts };
       const xDate = (document.getElementById("xDate").value || "").trim();
       const base = codes && codes.length ? { codes } : { pool: state.pool };
       if (xDate) base.x_date = xDate.replace(/-/g, "");
+      const refreshMode = o.refreshMode || "quote";
+      base.refresh_mode = refreshMode;
+      const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       if (forceLive) base.force_live = true;
       return base;
     }
@@ -1569,6 +1603,12 @@
       if (pool.total && !(pool.available || []).length && !consAvail) return "证书额度已用尽";
       const src = (data.clock && data.clock.source) || "";
       if (src === "missing") return "行情拉取失败";
+      if (data.refresh_mode === "quote") {
+        if (src === "clock") return "快刷·墙钟";
+        if (src === "mixed") return "快刷·混合";
+        if (src === "live") return "快刷·现网";
+        return "快刷";
+      }
       if (data.force_live && src === "live") return "现网刷新";
       if (src === "live") return "现网";
       if (src === "clock") return "墙钟档口";
@@ -1605,12 +1645,15 @@
       return "麦蕊行情未返回现价，请点刷新或重启助手后重试。";
     }
 
-    async function runQuery(codes, forceLive) {
+    async function runQuery(codes, opts) {
+      const o = opts && typeof opts === "object" ? opts : { forceLive: !!opts, refreshMode: opts ? "full" : "quote" };
       if (codes && codes.length) state.lastQueryCodes = codes;
       else state.lastQueryCodes = null;
       const hintEl = document.getElementById("queryHint");
       hintEl.textContent = "查询中…";
-      const payload = queryPayload(codes, forceLive);
+      const refreshMode = o.refreshMode || "quote";
+      const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
+      const payload = queryPayload(codes, { refreshMode, forceLive });
       let data;
       try {
         data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
@@ -1621,7 +1664,10 @@
         throw err;
       }
       const fields = data.fields || [];
-      const rows = data.rows || [];
+      let rows = data.rows || [];
+      if (refreshMode === "quote" && state.rowsRaw && state.rowsRaw.length) {
+        rows = mergeQuoteRefreshRows(state.rowsRaw, rows);
+      }
       if (!fields.length) {
         hintEl.textContent = "查询失败：未返回列定义";
         toast("查询未返回列定义，请重启助手后重试");
@@ -1686,7 +1732,8 @@
 
     async function exportXlsx() {
       const payload = queryPayload(
-        state.lastQueryCodes && state.lastQueryCodes.length ? state.lastQueryCodes : null
+        state.lastQueryCodes && state.lastQueryCodes.length ? state.lastQueryCodes : null,
+        { refreshMode: "full", forceLive: true }
       );
       if (!payload.codes) payload.pool = currentExportPool();
       let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
@@ -1722,7 +1769,7 @@
       if (!fields.length) return toast("至少保留一列");
       await api("/query/prefs", { method: "PUT", body: JSON.stringify({ fields }) });
       closeCols();
-      await runQuery();
+      await runQuery(null, { refreshMode: "full", forceLive: true });
     }
 
     function paramInput(job, field) {
@@ -2083,7 +2130,7 @@
       startBoardClock();
       await loadWatch();
       await loadPools();
-      await runQuery(null, true);
+      await runQuery(null, { refreshMode: "full", forceLive: true });
     }
 
     document.getElementById("loginForm").addEventListener("submit", async (e) => {
@@ -2105,11 +2152,16 @@
 
     bindColResize();
     bindColumnSort();
-    document.getElementById("queryBtn").addEventListener("click", () => runQuery(null, true).catch((e) => toast(e.message)));
+    document.getElementById("queryBtn").addEventListener("click", () =>
+      runQuery(null, { refreshMode: "full", forceLive: true }).catch((e) => toast(e.message))
+    );
+    document.getElementById("fullQueryBtn").addEventListener("click", () =>
+      runQuery(null, { refreshMode: "full", forceLive: true }).catch((e) => toast(e.message))
+    );
     document.getElementById("refreshBtn").addEventListener("click", async () => {
       try {
         await loadBoard();
-        await runQuery(null, true);
+        await runQuery(null, { refreshMode: "quote", forceLive: false });
       } catch (e) {
         toast(e.message);
       }
@@ -2392,7 +2444,7 @@
         renderWatch(data.items);
         closePicker();
         toast(`已加入 ${data.added.length} 只`);
-        await runQuery();
+        await runQuery(null, { refreshMode: "full", forceLive: true });
       } catch (err) {
         toast(err.message);
       }
@@ -2410,7 +2462,7 @@
         setSide("watch");
         closePicker();
         toast("自选已替换为 " + items.length + " 只");
-        await runQuery();
+        await runQuery(null, { refreshMode: "full", forceLive: true });
       } catch (err) {
         toast(err.message);
       }
@@ -2618,7 +2670,7 @@
       const codes = selectedPickCodes();
       if (!codes.length) return toast("先勾选股票");
       try {
-        await runQuery(codes);
+        await runQuery(codes, { refreshMode: "full", forceLive: true });
         closePicker();
         toast("已按筛选结果查询，未改自选。导出 Excel 会导出这一批。");
       } catch (err) {

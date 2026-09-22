@@ -8,6 +8,19 @@ from src.query.bottom import compute_bottom
 from src.query.cards import derive_card_metrics
 from src.query.registry import registry
 
+REFRESH_QUOTE = "quote"
+REFRESH_FULL = "full"
+SLOW_DEPS = frozenset({"profile", "holders", "finance", "flow", "bars", "indicators"})
+
+
+def fetch_need(column_need: set[str], refresh_mode: str) -> set[str]:
+    """P0：快刷只拉现价；全量才拉慢字段。"""
+    mode = (refresh_mode or REFRESH_FULL).strip().lower()
+    if mode == REFRESH_QUOTE:
+        out = {d for d in column_need if d == "quote"}
+        return out
+    return set(column_need)
+
 
 class QueryEngine:
     """Deterministic field assembly. New columns = new FieldSpec, not a new engine."""
@@ -41,20 +54,29 @@ class QueryEngine:
         concept_extra: dict | None = None,
         x_date: str | None = None,
         force_live: bool = False,
+        refresh_mode: str = REFRESH_FULL,
     ) -> list[dict]:
         keys = field_keys or registry.default_keys()
         specs = [registry.get(k) for k in keys]
-        need = {dep for spec in specs for dep in spec.requires}
+        column_need = {dep for spec in specs for dep in spec.requires}
         if any(s.group == "card" for s in specs):
-            need.add("quote")
+            column_need.add("quote")
         if "x_price" in keys and x_date:
-            need.add("bars")
+            column_need.add("bars")
+        need = fetch_need(column_need, refresh_mode)
         quotes: dict[str, dict] = {}
         clock_meta = {"as_of": "", "source": "", "enabled": False, "reason": ""}
         if "quote" in need:
             from src.market.clock import align_quotes
 
-            quotes, clock_meta = align_quotes(self.market, instruments, writer=writer, force_live=force_live)
+            quote_extra = [] if (refresh_mode or "").strip().lower() == REFRESH_QUOTE else None
+            quotes, clock_meta = align_quotes(
+                self.market,
+                instruments,
+                writer=writer,
+                force_live=force_live,
+                extra_codes=quote_extra,
+            )
         self.last_clock_meta = clock_meta
         rows = []
         for inst in instruments:
