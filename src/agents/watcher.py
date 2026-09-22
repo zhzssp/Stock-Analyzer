@@ -234,8 +234,26 @@ def _cards(items: list[WatchItem]) -> dict[str, dict]:
 
 
 def _query_rows(ctx: ToolContext, insts, items: list[WatchItem], keys: list[str], writer: str = "") -> dict[str, dict]:
-    rows = ctx.engine.run(insts, keys, cards=_cards(items), writer=writer)
+    rows = ctx.engine.run(
+        insts,
+        keys,
+        cards=_cards(items),
+        writer=writer,
+        refresh_mode="cache",
+        force_live=False,
+    )
     return {r["code6"]: r for r in rows}
+
+
+def _profile_cached(ctx: ToolContext, inst) -> dict:
+    if not inst:
+        return {}
+    prev = ctx.market.query_refresh_mode
+    ctx.market.query_refresh_mode = "cache"
+    try:
+        return ctx.market.profile(inst)
+    finally:
+        ctx.market.query_refresh_mode = prev
 
 
 def run_watcher(
@@ -660,7 +678,7 @@ def _rule_web_sources(db, user, job, items, ctx, persist: bool) -> list[dict]:
     watches: list[tuple[str, str, list[str]]] = []
     for item in items:
         inst = by_code.get(item.code6)
-        profile = ctx.market.profile(inst) if inst else {}
+        profile = _profile_cached(ctx, inst)
         tax = classify(profile.get("industry") or "", profile.get("concept") or "", extra)
         name = item.name or (inst.name if inst else item.code6)
         needles = watch_needles(name, item.code6, profile.get("industry") or "", tax.get("hot_concepts") or "")

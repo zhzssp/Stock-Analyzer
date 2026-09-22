@@ -10,6 +10,7 @@ from src.query.registry import registry
 
 REFRESH_QUOTE = "quote"
 REFRESH_CACHE = "cache"
+REFRESH_SNAPSHOT = "snapshot"
 REFRESH_FULL = "full"
 SLOW_DEPS = frozenset({"profile", "holders", "finance", "flow", "bars", "indicators"})
 
@@ -19,6 +20,8 @@ def fetch_need(column_need: set[str], refresh_mode: str) -> set[str]:
     mode = (refresh_mode or REFRESH_FULL).strip().lower()
     if mode == REFRESH_QUOTE:
         return {d for d in column_need if d == "quote"}
+    if mode == REFRESH_SNAPSHOT:
+        return set()
     return set(column_need)
 
 

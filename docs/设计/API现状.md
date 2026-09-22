@@ -308,8 +308,9 @@ N 变大时，上述五块按 **9N** 线性涨；只有 **quote** 项是 **⌈N/
 1. **P0（已实现）**：工作台 **「刷新」** = `refresh_mode=quote`、默认不 `force_live`、快刷不扩墙钟宇宙；**「查询 / 全量更新」** = `refresh_mode=full` + `force_live`；快刷时前端合并保留已有慢字段列。API：`POST /query/run` 字段 `refresh_mode`: `quote` | `full`（默认 `full` 兼容旧调用）。
 2. **P1（已实现）**：列预设「看盘 / 研究 / 自定义」；新用户默认 **看盘**（`name,code,price,pct,pe,pb`）。`GET/PUT /query/prefs` 含 `preset` 与 `presets` 目录；升级前已保存完整列清单的用户仍按原列查询（`preset=watch` 且 `field_keys` 与看盘不一致时视为自定义列集）。
 3. **P2（已实现）**：`data/cache/` 分项 TTL（profile/holders/finance 默认 24h，flow/indicators 默认 1h；`.env` 可配 `SLOW_CACHE_*_TTL_SEC`）。`refresh_mode=cache` 时慢字段未过期则不打麦蕊；日线仍用既有 `bars_*` 冷缓存。工作台 **「查询」** = `cache` + 不 `force_live`；**「全量更新」** = `full` + `force_live`；响应可含 `slow_cache: {hits, misses}`。
-4. **行为**：非必要不用 `force_live`（快刷已遵守）；导出 Excel 固定走全量。
-5. **运维**：本机数据 → 麦蕊证书池；避免 101 状态下反复点全量更新。
+4. **P3（已实现）**：`data/snapshots/user_{id}.json` 表级快照；`cache`/`full` 成功后写入。`refresh_mode=snapshot` **零麦蕊**，只读上次快照（决策卡列仍按 DB 重算）。登录先 `snapshot` 再 `cache`；**刷新**不再顺带拉顶栏指数（指数本地 60s 缓存）。监控 `engine.run` 与 Agent `query_run`、资讯监控 `profile` 默认走 `cache` 慢字段 TTL。`GET /storage` 含 `query_snapshot` 元数据。
+5. **行为**：非必要不用 `force_live`（快刷已遵守）；导出 Excel 固定走全量。
+6. **运维**：本机数据 → 麦蕊证书池；避免 101 状态下反复点全量更新。
 
 ### 6.6 查询表以外还会打麦蕊的地方
 

@@ -1131,9 +1131,16 @@
       }).join("");
     }
 
-    async function loadBoard() {
+    const BOARD_TTL_MS = 60000;
+
+    async function loadBoard(force) {
+      if (!force && state.boardCache && Date.now() - state.boardCache.at < BOARD_TTL_MS) {
+        renderBoard(state.boardCache.items || []);
+        return;
+      }
       const data = await api("/markets/board");
-      renderBoard(data.items || []);
+      state.boardCache = { at: Date.now(), items: data.items || [] };
+      renderBoard(state.boardCache.items);
     }
 
     function startBoardClock() {
@@ -1610,6 +1617,11 @@
         if (src === "mixed") return "快刷·混合";
         if (src === "live") return "快刷·现网";
         return "快刷";
+      }
+      if (data.refresh_mode === "snapshot") {
+        const sn = data.snapshot || {};
+        const at = (sn.saved_at || "").replace("T", " ").slice(0, 16);
+        return at ? `快照·${at}` : "快照·仅读本机";
       }
       if (data.refresh_mode === "cache") {
         const sc = data.slow_cache || {};
@@ -2158,6 +2170,14 @@
       );
     }
 
+    async function bootTableQuery() {
+      try {
+        await runQuery(null, { refreshMode: "snapshot", forceLive: false });
+      } catch {
+        await runQuery(null, { refreshMode: "cache", forceLive: false });
+      }
+    }
+
     async function afterLogin(username, token) {
       state.token = token;
       sessionStorage.setItem("sa_token", token);
@@ -2167,7 +2187,7 @@
       startBoardClock();
       await loadWatch();
       await loadPools();
-      await runQuery(null, { refreshMode: "cache", forceLive: false });
+      await bootTableQuery();
     }
 
     document.getElementById("loginForm").addEventListener("submit", async (e) => {
@@ -2197,7 +2217,6 @@
     );
     document.getElementById("refreshBtn").addEventListener("click", async () => {
       try {
-        await loadBoard();
         await runQuery(null, { refreshMode: "quote", forceLive: false });
       } catch (e) {
         toast(e.message);
@@ -2826,6 +2845,13 @@
         ["提醒日志", data.log_human || "0 B"],
         ["日线窗口", "每只最多 " + (lim.bars_max || 500) + " 根，覆盖写"],
       ];
+      const qs = data.query_snapshot || {};
+      if (qs.has_snapshot) {
+        const at = (qs.saved_at || "").replace("T", " ").slice(0, 19);
+        rows.push(["查询表快照", `${qs.count || 0} 行 · ${at} · 来源 ${qs.refresh_mode || "—"}`]);
+      } else {
+        rows.push(["查询表快照", "尚无（查询/全量更新成功后会写入）"]);
+      }
       document.getElementById("storageBox").innerHTML = rows.map((row) =>
         `<div class="storage-row"><b>${esc(row[0])}</b>${row[0] === "路径" ? `<span class="storage-path">${esc(row[1])}</span>` : `<span>${esc(row[1])}</span>`}</div>`
       ).join("");

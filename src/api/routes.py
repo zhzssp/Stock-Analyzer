@@ -642,8 +642,55 @@ def _execute_query(
 ) -> dict:
     ensure_market()
     mode = (refresh_mode or "full").strip().lower()
-    if mode not in ("quote", "cache", "full"):
+    if mode not in ("quote", "cache", "full", "snapshot"):
         mode = "full"
+    if mode == "snapshot":
+        from fastapi import HTTPException
+
+        from src.query.snapshot import load_table_snapshot, rows_from_snapshot
+
+        snap = load_table_snapshot(user_id)
+        if not snap:
+            raise HTTPException(status_code=404, detail="尚无表级快照，请先点「查询」或「全量更新」")
+        rows = rows_from_snapshot(snap, insts, fields, cards)
+        clock_meta = snap.get("clock") or {}
+        out = {
+            "fields": _field_view(fields),
+            "rows": rows,
+            "pool": pool_name,
+            "count": len(rows),
+            "market": market.health(),
+            "clock": {
+                "as_of": clock_meta.get("as_of") or "",
+                "source": clock_meta.get("source") or "snapshot",
+                "reason": "",
+                "enabled": bool(clock_meta.get("enabled")),
+            },
+            "refresh_mode": mode,
+            "snapshot": {
+                "saved_at": snap.get("saved_at") or "",
+                "source_refresh_mode": snap.get("refresh_mode") or "",
+            },
+        }
+        if do_export:
+            path = write_query_xlsx(rows, fields, pool_name)
+            db = SessionLocal()
+            try:
+                rec = record_artifact(
+                    db,
+                    user_id=user_id,
+                    path=path,
+                    pool_name=pool_name,
+                    field_keys=fields,
+                    codes=[i.code_full for i in insts],
+                )
+                out["id"] = rec.id
+                out["filename"] = rec.filename
+                out["path"] = rec.path
+                out["download_url"] = f"/api/artifacts/{rec.id}/download"
+            finally:
+                db.close()
+        return out
     rows = engine.run(
         insts,
         fields,
@@ -672,6 +719,18 @@ def _execute_query(
     }
     if mode == "cache":
         out["slow_cache"] = engine.last_slow_cache or {}
+    if mode in ("cache", "full"):
+        from src.query.snapshot import save_table_snapshot
+
+        save_table_snapshot(
+            user_id,
+            pool=pool_name,
+            field_keys=fields,
+            codes=codes,
+            rows=rows,
+            clock=out.get("clock"),
+            refresh_mode=mode,
+        )
     if do_export:
         path = write_query_xlsx(rows, fields, pool_name)
         db = SessionLocal()
@@ -811,6 +870,9 @@ def get_storage(user: User = Depends(current_user), db: Session = Depends(get_db
     count = db.query(Artifact).filter_by(user_id=user.id).count()
     snap["artifact_records"] = count
     snap["clock"] = clock_status()
+    from src.query.snapshot import snapshot_meta
+
+    snap["query_snapshot"] = snapshot_meta(user.id)
     return snap
 
 

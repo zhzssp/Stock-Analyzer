@@ -28,7 +28,14 @@ def query_run(args: dict, ctx: ToolContext) -> ToolResult:
 
         user = ctx.db.get(User, ctx.user_id)
         writer = user.username if user else ""
-    rows = ctx.engine.run(insts, keys, cards=cards, writer=writer)
+    rows = ctx.engine.run(
+        insts,
+        keys,
+        cards=cards,
+        writer=writer,
+        refresh_mode="cache",
+        force_live=False,
+    )
     compact = []
     keep = {"name", "code", "price", "pct", "industry", "holders", "yffy", "eps", "pe", "net", "as_of"}
     for row in rows[:40]:
