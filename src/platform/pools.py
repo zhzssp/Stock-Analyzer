@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from src.market.client import MarketClient, resolve_instruments
 from src.market.indices import all_index_pools, index_status
-from src.market.normalize import Instrument
+from src.market.normalize import Instrument, normalize_instrument
 from src.models import User, WatchItem
 
 
@@ -61,8 +61,14 @@ def resolve_pool(
     if pid == "watch":
         if user is None or db is None:
             raise HTTPException(status_code=400, detail="自选池需要登录")
-        codes = [i.code_full for i in db.query(WatchItem).filter_by(user_id=user.id).order_by(WatchItem.sort_order.asc(), WatchItem.id.asc()).all()]
-        insts = resolve_instruments(codes, market)
+        items = (
+            db.query(WatchItem)
+            .filter_by(user_id=user.id)
+            .order_by(WatchItem.sort_order.asc(), WatchItem.id.asc())
+            .all()
+        )
+        # 自选行里已有代码/名称，不要为查自选先拉全市场 hslt/list（证书异常时会直接 500，表格空白）。
+        insts = [normalize_instrument(i.code_full, i.name or i.code6) for i in items]
         meta["label"] = "自选"
         return insts, meta
 

@@ -988,7 +988,11 @@ def _filter_bars(rows: list[dict], start: str | None = None, end: str | None = N
 
 def resolve_instruments(codes: list[str], client: MarketClient) -> list[Instrument]:
     known = {i.code6: i for i in fixtures.WATCH_SEED}
-    for item in client.list_hs() + client.list_bj():
+    try:
+        catalog = client.list_hs() + client.list_bj()
+    except MarketError:
+        catalog = []
+    for item in catalog:
         known[item.code6] = item
     out: list[Instrument] = []
     for raw in codes:

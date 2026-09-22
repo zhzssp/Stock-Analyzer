@@ -1564,10 +1564,32 @@
     async function runQuery(codes, forceLive) {
       if (codes && codes.length) state.lastQueryCodes = codes;
       else state.lastQueryCodes = null;
+      const hintEl = document.getElementById("queryHint");
+      hintEl.textContent = "查询中…";
       const payload = queryPayload(codes, forceLive);
-      let data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
-      if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
-      renderTable(data.fields, data.rows);
+      let data;
+      try {
+        data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
+        if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+      } catch (err) {
+        hintEl.textContent = "查询失败";
+        toast(err.message || "查询失败");
+        throw err;
+      }
+      const fields = data.fields || [];
+      const rows = data.rows || [];
+      if (!fields.length) {
+        hintEl.textContent = "查询失败：未返回列定义";
+        toast("查询未返回列定义，请重启助手后重试");
+        return;
+      }
+      try {
+        renderTable(fields, rows);
+      } catch (renderErr) {
+        hintEl.textContent = "表格渲染失败";
+        toast(renderErr.message || "表格渲染失败");
+        throw renderErr;
+      }
       if (forceLive) {
         const m = data.market || {};
         if (m.offline || data.sample) {
