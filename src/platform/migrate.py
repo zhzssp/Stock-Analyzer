@@ -22,6 +22,9 @@ _COLUMNS = {
         ("schedule", "VARCHAR(16) DEFAULT ''"),
         ("severity", "VARCHAR(16) DEFAULT ''"),
     ],
+    "field_prefs": [
+        ("preset", "VARCHAR(16) DEFAULT 'watch'"),
+    ],
     "alerts": [
         ("status", "VARCHAR(16) DEFAULT 'open'"),
         ("severity", "VARCHAR(16) DEFAULT 'watch'"),

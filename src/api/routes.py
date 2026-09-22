@@ -144,7 +144,8 @@ class AgentExportIn(BaseModel):
 
 
 class PrefsIn(BaseModel):
-    fields: list[str]
+    fields: list[str] | None = None
+    preset: str | None = None
 
 
 class JobToggleIn(BaseModel):
@@ -581,12 +582,36 @@ def _field_view(keys: list[str]) -> list[dict]:
 
 
 def _user_fields(user: User, db: Session) -> list[str]:
+    from src.query.presets import PRESET_CUSTOM, PRESET_RESEARCH, PRESET_WATCH, keys_for_preset
+
+    allowed = {s.key for s in registry.all()}
     pref = db.query(FieldPref).filter_by(user_id=user.id).first()
-    if pref and pref.field_keys:
-        keys = [k for k in json.loads(pref.field_keys) if k in {s.key for s in registry.all()}]
-        if keys:
-            return keys
-    return registry.default_keys()
+    if not pref:
+        return keys_for_preset(PRESET_WATCH)
+    saved: list[str] = []
+    if pref.field_keys:
+        saved = [k for k in json.loads(pref.field_keys) if k in allowed]
+    preset = (pref.preset or PRESET_WATCH).strip().lower()
+    watch = keys_for_preset(PRESET_WATCH)
+    # 升级前已保存的列清单：preset 列默认 watch，但 field_keys 仍是完整研究列
+    if preset == PRESET_WATCH and saved and saved != watch:
+        return saved
+    if preset == PRESET_RESEARCH:
+        return keys_for_preset(PRESET_RESEARCH)
+    if preset == PRESET_CUSTOM and saved:
+        return saved
+    if preset == PRESET_WATCH:
+        return watch
+    return saved or watch
+
+
+def _user_preset(user: User, db: Session) -> str:
+    from src.query.presets import PRESET_WATCH
+
+    pref = db.query(FieldPref).filter_by(user_id=user.id).first()
+    if not pref or not pref.preset:
+        return PRESET_WATCH
+    return (pref.preset or PRESET_WATCH).strip().lower()
 
 
 def _prepare_query(body: QueryIn, user: User, db: Session):
@@ -1034,23 +1059,40 @@ def agent_export(body: AgentExportIn, user: User = Depends(current_user), db: Se
 
 @router.get("/query/prefs")
 def get_prefs(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return {"fields": _user_fields(user, db), "all": engine.fields()}
+    from src.query.presets import catalog
+
+    return {
+        "fields": _user_fields(user, db),
+        "preset": _user_preset(user, db),
+        "presets": catalog(),
+        "all": engine.fields(),
+    }
 
 
 @router.put("/query/prefs")
 def put_prefs(body: PrefsIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from src.query.presets import PRESET_CUSTOM, PRESET_RESEARCH, PRESET_WATCH, keys_for_preset
+
     allowed = {s.key for s in registry.all()}
-    keys = [k for k in body.fields if k in allowed]
-    if not keys:
-        raise HTTPException(status_code=400, detail="至少保留一列")
+    preset = (body.preset or PRESET_CUSTOM).strip().lower()
+    if preset not in (PRESET_WATCH, PRESET_RESEARCH, PRESET_CUSTOM):
+        preset = PRESET_CUSTOM
+    if preset in (PRESET_WATCH, PRESET_RESEARCH):
+        keys = keys_for_preset(preset)
+    else:
+        raw = body.fields or []
+        keys = [k for k in raw if k in allowed]
+        if not keys:
+            raise HTTPException(status_code=400, detail="至少保留一列")
     pref = db.query(FieldPref).filter_by(user_id=user.id).first()
     payload = json.dumps(keys, ensure_ascii=False)
     if pref:
         pref.field_keys = payload
+        pref.preset = preset
     else:
-        db.add(FieldPref(user_id=user.id, field_keys=payload))
+        db.add(FieldPref(user_id=user.id, field_keys=payload, preset=preset))
     db.commit()
-    return {"fields": keys}
+    return {"fields": keys, "preset": preset}
 
 
 @router.get("/monitor/jobs")

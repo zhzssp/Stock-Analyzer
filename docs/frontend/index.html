@@ -839,7 +839,8 @@
   </div>
   <div class="login-mask" id="colMask" style="display:none;">
     <div class="login-card pick-card col-card">
-      <h2><span data-help-tip="勾选后写入本机偏好，查询和导出都按这个清单。决策卡那一组、换手和市值默认不勾，要用再勾。">列设置</span></h2>
+      <h2><span data-help-tip="预设「看盘」只显示行情列；「研究」含财务股东底顶；自定义可逐项勾选。保存后影响查询与导出列。">列设置</span></h2>
+      <div class="chips" id="colPresets" style="margin-bottom:12px;"></div>
       <div class="pick-list" id="colList"></div>
       <div class="pick-actions">
         <button class="btn primary" id="saveCols" type="button">保存并查询</button>
@@ -1744,19 +1745,43 @@
 
     const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", flow: "资金", bottom: "底/顶", card: "决策卡" };
 
+    state.colPreset = "watch";
+    state.colPresetDefs = [];
+
+    function applyColPreset(presetId) {
+      state.colPreset = presetId || "custom";
+      const def = (state.colPresetDefs || []).find((p) => p.id === presetId);
+      const keys = new Set(def && def.fields && def.fields.length ? def.fields : []);
+      document.querySelectorAll("#colList input[type=checkbox]").forEach((el) => {
+        if (presetId === "custom") return;
+        el.checked = keys.has(el.value);
+      });
+      document.querySelectorAll("#colPresets .chip-btn").forEach((btn) => {
+        btn.classList.toggle("on", btn.dataset.preset === presetId);
+      });
+    }
+
     async function openCols() {
       const data = await api("/query/prefs");
+      state.colPreset = data.preset || "watch";
+      state.colPresetDefs = data.presets || [];
       const chosen = new Set(data.fields || []);
       const groups = {};
       (data.all || []).forEach((f) => {
         (groups[f.group] || (groups[f.group] = [])).push(f);
       });
+      document.getElementById("colPresets").innerHTML = (data.presets || []).map((p) =>
+        `<button type="button" class="btn sm chip-btn ${p.id === state.colPreset ? "on" : ""}" data-preset="${esc(p.id)}">${esc(p.label)}</button>`
+      ).join("");
       document.getElementById("colList").innerHTML = Object.keys(groups).map((g) =>
         `<div class="col-group">${GROUP_LABEL[g] || g}</div>` +
         groups[g].map((f) =>
           `<label><input type="checkbox" value="${f.key}" ${chosen.has(f.key) ? "checked" : ""} /><span>${f.label}${f.unavailable ? helpTip(f.unavailable) : ""}<div class="sub">${f.key}</div></span></label>`
         ).join("")
       ).join("");
+      document.getElementById("colPresets").querySelectorAll(".chip-btn").forEach((btn) => {
+        btn.addEventListener("click", () => applyColPreset(btn.dataset.preset));
+      });
       document.getElementById("colMask").style.display = "flex";
     }
 
@@ -1765,9 +1790,10 @@
     }
 
     async function saveCols() {
+      const preset = state.colPreset || "custom";
       const fields = [...document.querySelectorAll("#colList input[type=checkbox]:checked")].map((el) => el.value);
-      if (!fields.length) return toast("至少保留一列");
-      await api("/query/prefs", { method: "PUT", body: JSON.stringify({ fields }) });
+      if (preset === "custom" && !fields.length) return toast("至少保留一列");
+      await api("/query/prefs", { method: "PUT", body: JSON.stringify({ fields, preset }) });
       closeCols();
       await runQuery(null, { refreshMode: "full", forceLive: true });
     }
@@ -2206,6 +2232,11 @@
     document.getElementById("diffBtn").addEventListener("click", () => openArchive({ diffLatest: true }).catch((e) => toast(e.message)));
     document.getElementById("closeCols").addEventListener("click", closeCols);
     document.getElementById("saveCols").addEventListener("click", () => saveCols().catch((e) => toast(e.message)));
+    document.getElementById("colList").addEventListener("change", (e) => {
+      if (!e.target.matches("input[type=checkbox]")) return;
+      state.colPreset = "custom";
+      document.querySelectorAll("#colPresets .chip-btn").forEach((b) => b.classList.remove("on"));
+    });
     document.getElementById("monitorRun").addEventListener("click", () => runMonitor().catch((e) => toast(e.message)));
     document.getElementById("reviewRun").addEventListener("click", () => runReview().catch((e) => toast(e.message)));
     document.getElementById("monitorJobs").addEventListener("click", async (e) => {

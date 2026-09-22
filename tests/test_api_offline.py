@@ -88,6 +88,7 @@ def test_s3_filter_append_and_once_query():
         assert len(body["added"]) == 2
         assert len(body["items"]) == start + 2
 
+        client.put("/api/query/prefs", json={"preset": "research"}, headers=headers)
         query = client.post("/api/query/run", json={}, headers=headers)
         names = {row["name"] for row in query.json()["rows"]}
         assert "星昊医药" in names
