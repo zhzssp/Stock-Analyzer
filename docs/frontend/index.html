@@ -744,6 +744,30 @@
           <div class="panel" style="flex:1; overflow:auto;">
             <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="日线只缓存你查过的股票，同一文件覆盖写，默认最多 500 根。缓存超过上限会先删最久未用的日线，名单缓存尽量留到最后。每人默认最多留 20 份 Excel。">存储占用</span></div>
             <div id="storageBox" class="storage-grid meta-list">尚未加载</div>
+            <div class="clock-box" id="licenceBox">
+              <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="每日刷新池：当日额度用尽会换下一张，次日自动恢复。长期池：不限每日次数，总额度耗尽后自动从池中删除。默认先日用池、再长期池。">麦蕊证书池</span></div>
+              <div class="composer-row" style="margin:8px 0; flex-wrap:wrap; gap:8px;">
+                <label class="hint"><input type="radio" name="licMode" value="auto" checked /> 默认（先每日刷新，再长期）</label>
+                <label class="hint"><input type="radio" name="licMode" value="renewable" /> 仅每日刷新池</label>
+                <label class="hint"><input type="radio" name="licMode" value="consumable" /> 仅长期池</label>
+                <label class="hint"><input type="radio" name="licMode" value="manual" /> 指定证书</label>
+                <select id="licManualPick" style="min-width:220px; display:none;"></select>
+                <button class="btn sm primary" id="licPrefSave" type="button">保存调度</button>
+              </div>
+              <div id="licActive" class="meta">尚未加载</div>
+              <div class="side-title" style="margin:12px 0 6px;">每日刷新额度池</div>
+              <div id="licRenewableList" class="meta-list">尚未加载</div>
+              <div class="composer-row" style="margin:8px 0;">
+                <input id="licRenewableInput" placeholder="追加证书 UUID" style="flex:1;" />
+                <button class="btn sm" id="licRenewableAdd" type="button">追加</button>
+              </div>
+              <div class="side-title" style="margin:12px 0 6px;">长期额度池（用尽即移除）</div>
+              <div id="licConsumableList" class="meta-list">尚未加载</div>
+              <div class="composer-row" style="margin:8px 0;">
+                <input id="licConsumableInput" placeholder="追加证书 UUID" style="flex:1;" />
+                <button class="btn sm" id="licConsumableAdd" type="button">追加</button>
+              </div>
+            </div>
             <div class="clock-box">
               <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="墙钟档案：选网盘里已共享的文件夹（不要选整个 data/）。软件自己读写 JSON，不必用 GitHub。有档就用，没有就本机拉行情。">墙钟档案</span></div>
               <div class="composer-row" style="margin:8px 0;">
@@ -1533,9 +1557,16 @@
         const why = m.offline_reason || data.note || "";
         return why ? `离线样例（${why}）` : "离线切片（非实盘）";
       }
-      if (m.sample_only) return "演示证样本";
+      if (m.status === "probe-failed") return "行情探针失败";
+      if (m.sample_only || m.status === "demo-licence") return "演示证样本";
+      const pools = m.licence_pools || {};
+      const ren = pools.renewable || {};
+      const cons = pools.consumable || {};
+      const renAvail = (ren.available || []).length;
+      const consAvail = (cons.available || []).length;
+      if ((ren.total || 0) + (cons.total || 0) > 0 && !renAvail && !consAvail) return "证书额度已用尽";
       const pool = m.licence_pool || {};
-      if (pool.total && !(pool.available || []).length) return "证书额度已用尽";
+      if (pool.total && !(pool.available || []).length && !consAvail) return "证书额度已用尽";
       const src = (data.clock && data.clock.source) || "";
       if (src === "missing") return "行情拉取失败";
       if (data.force_live && src === "live") return "现网刷新";
@@ -1553,8 +1584,21 @@
       const src = (data.clock && data.clock.source) || "";
       if (src !== "missing") return "";
       const reason = (data.clock && data.clock.reason) || "";
-      const pool = (data.market && data.market.licence_pool) || {};
-      if (pool.total && !(pool.available || []).length) {
+      const mstatus = (data.market && data.market.status) || "";
+      if (mstatus === "probe-failed") {
+        return "麦蕊行情探针失败，请检查 .env 中的证书、当日额度与网络。";
+      }
+      const mkt = data.market || {};
+      const pools = mkt.licence_pools || {};
+      const ren = pools.renewable || {};
+      const cons = pools.consumable || {};
+      const renAvail = (ren.available || []).length;
+      const consAvail = (cons.available || []).length;
+      if ((ren.total || 0) + (cons.total || 0) > 0 && !renAvail && !consAvail) {
+        return "麦蕊证书已全部用尽：每日池请明天再试，长期池请追加新证或删除失效证。";
+      }
+      const pool = mkt.licence_pool || {};
+      if (pool.total && !(pool.available || []).length && !consAvail) {
         return "麦蕊证书今日额度已用尽，请明天再试或追加证书。";
       }
       if (reason) return reason;
@@ -1595,7 +1639,9 @@
         if (m.offline || data.sample) {
           const why = m.offline_reason || data.note || "请确认 .env 里 MAIRUI_OFFLINE=0 并重启助手";
           toast("当前为离线样例，不是麦蕊实时数据。" + why);
-        } else if (m.sample_only) {
+        } else if (m.status === "probe-failed") {
+          toast("麦蕊行情探针失败（证书无效、额度用尽或网络问题），字段可能为空。请检查 .env 证书并重启助手。");
+        } else if (m.sample_only || m.status === "demo-licence") {
           toast("当前 licence 只能返回演示样本，不是全市场实盘。");
         } else {
           const fetchIssue = quoteFetchIssue(data);
@@ -2072,6 +2118,16 @@
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
     document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
     document.getElementById("storageRefresh").addEventListener("click", () => loadStorage().catch((e) => toast(e.message)));
+    document.getElementById("licRenewableAdd").addEventListener("click", () => addLicence("renewable", "licRenewableInput").catch((e) => toast(e.message)));
+    document.getElementById("licConsumableAdd").addEventListener("click", () => addLicence("consumable", "licConsumableInput").catch((e) => toast(e.message)));
+    document.getElementById("licPrefSave").addEventListener("click", () => saveLicencePreference().catch((e) => toast(e.message)));
+    document.querySelectorAll('input[name="licMode"]').forEach((el) => {
+      el.addEventListener("change", () => {
+        if (!el.checked) return;
+        const manual = document.getElementById("licManualPick");
+        if (manual) manual.style.display = el.value === "manual" ? "" : "none";
+      });
+    });
     document.getElementById("clockDirSave").addEventListener("click", () => saveClockDir().catch((e) => toast(e.message)));
     document.getElementById("clockSeriesBtn").addEventListener("click", () => loadClockSeries().catch((e) => toast(e.message)));
     document.getElementById("cacheClear").addEventListener("click", async () => {
@@ -2774,9 +2830,107 @@
       drawClockSeries(data.points || []);
     }
 
+    function maskLicence(s) {
+      const t = String(s || "");
+      if (t.length < 14) return t;
+      return t.slice(0, 8) + "…" + t.slice(-4);
+    }
+
+    function licenceRow(pool, token, flags) {
+      const tags = (flags || []).map((f) => `<span class="sub">${esc(f)}</span>`).join(" ");
+      return `<div class="storage-row" style="align-items:center; gap:8px;">
+        <code style="font-size:12px;">${esc(maskLicence(token))}</code> ${tags}
+        <button class="btn sm" type="button" data-lic-del="${esc(pool)}" data-lic-token="${esc(token)}">删除</button>
+      </div>`;
+    }
+
+    function renderLicencePools(pools) {
+      if (!pools) return;
+      const pref = pools.preference || {};
+      const mode = pref.mode || "auto";
+      document.querySelectorAll('input[name="licMode"]').forEach((el) => {
+        el.checked = el.value === mode;
+      });
+      const manualSel = document.getElementById("licManualPick");
+      const all = []
+        .concat((pools.renewable && pools.renewable.licences) || [])
+        .concat((pools.consumable && pools.consumable.licences) || []);
+      if (manualSel) {
+        manualSel.style.display = mode === "manual" ? "" : "none";
+        manualSel.innerHTML = all.map((t) =>
+          `<option value="${esc(t)}"${t === (pref.manual_licence || "") ? " selected" : ""}>${esc(maskLicence(t))}</option>`
+        ).join("");
+        if (!all.length) manualSel.innerHTML = `<option value="">（池中无证书）</option>`;
+      }
+      const active = pools.active || "";
+      const ap = pools.active_pool || "";
+      const poolLabel = ap === "renewable" ? "每日刷新池" : ap === "consumable" ? "长期池" : "";
+      document.getElementById("licActive").innerHTML =
+        active
+          ? `<div><b>当前使用</b> <code>${esc(maskLicence(active))}</code>${poolLabel ? ` · ${esc(poolLabel)}` : ""}</div>`
+          : `<div class="meta">当前无可用证书</div>`;
+      const ren = pools.renewable || {};
+      const renEx = new Set(ren.exhausted_today || []);
+      const renHtml = (ren.licences || []).map((t) => {
+        const flags = [];
+        if (renEx.has(t)) flags.push("今日已用尽");
+        else if ((ren.available || []).includes(t)) flags.push("可用");
+        return licenceRow("renewable", t, flags);
+      });
+      document.getElementById("licRenewableList").innerHTML = renHtml.length
+        ? renHtml.join("")
+        : `<div class="meta">${esc(ren.description || "空")}</div>`;
+      const cons = pools.consumable || {};
+      const consAvail = new Set(cons.available || []);
+      const consHtml = (cons.licences || []).map((t) => {
+        const flags = consAvail.has(t) ? ["可用"] : [];
+        return licenceRow("consumable", t, flags);
+      });
+      document.getElementById("licConsumableList").innerHTML = consHtml.length
+        ? consHtml.join("")
+        : `<div class="meta">${esc(cons.description || "空")}</div>`;
+      document.getElementById("licenceBox").querySelectorAll("[data-lic-del]").forEach((btn) => {
+        btn.onclick = () => removeLicence(btn.dataset.licDel, btn.dataset.licToken).catch((e) => toast(e.message));
+      });
+    }
+
+    async function loadLicences() {
+      const data = await api("/licences");
+      renderLicencePools(data.pools);
+      return data;
+    }
+
+    async function addLicence(pool, inputId) {
+      const token = (document.getElementById(inputId).value || "").trim();
+      if (!token) return toast("先填写证书");
+      await api("/licences", { method: "POST", body: JSON.stringify({ pool, licence: token }) });
+      document.getElementById(inputId).value = "";
+      toast("已追加证书");
+      await loadLicences();
+      startBoardClock();
+    }
+
+    async function removeLicence(pool, token) {
+      if (!token) return;
+      await api("/licences", { method: "DELETE", body: JSON.stringify({ pool, licence: token }) });
+      toast("已删除");
+      await loadLicences();
+      startBoardClock();
+    }
+
+    async function saveLicencePreference() {
+      const mode = (document.querySelector('input[name="licMode"]:checked') || {}).value || "auto";
+      const manual = mode === "manual" ? (document.getElementById("licManualPick").value || "").trim() : "";
+      await api("/licences/preference", { method: "PUT", body: JSON.stringify({ mode, manual_licence: manual }) });
+      toast("已保存证书调度");
+      await loadLicences();
+      startBoardClock();
+    }
+
     async function loadStorage() {
       const data = await api("/storage");
       renderStorage(data);
+      await loadLicences().catch(() => {});
       await loadClock().catch(() => {});
       return data;
     }

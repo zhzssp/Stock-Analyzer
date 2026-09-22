@@ -10,7 +10,8 @@ from src.market import fixtures
 from src.platform.storage import read_cache_json, trim_bars, write_cache_json
 from src.market.holders_diff import normalize_holders, summarize
 from src.market.normalize import Instrument, code6_of, normalize_instrument
-from src.market.licence_pool import LicencePool, is_quota_error
+from src.market.licence_pool import is_quota_error
+from src.market.licence_registry import LicenceRegistry
 from src.market.taxonomy import classify, search_needles
 
 
@@ -25,56 +26,54 @@ class MarketClient:
     """
 
     def __init__(self) -> None:
-        chain = settings.licence_chain
         self.offline = not settings.use_live_market
-        self._pool: LicencePool | None = LicencePool.shared(chain) if chain and not self.offline else None
-        self.licence = self._pool.active() if self._pool else ""
+        self._registry: LicenceRegistry | None = LicenceRegistry.shared() if not self.offline else None
+        self.licence = self._registry.active() if self._registry else ""
         self.sample_only = False
         self.status = "offline" if self.offline else "unchecked"
         if not self.offline:
             self._probe()
 
     def _url(self, path: str, licence: str | None = None) -> str:
-        key = (licence or self.licence or (self._pool.active() if self._pool else "")).strip()
+        reg = self._registry
+        key = (licence or self.licence or (reg.active() if reg else "")).strip()
         return f"{settings.mairui_base}{path}/{key}"
 
     def refresh_pool(self) -> None:
-        if self.offline or not self._pool:
+        if self.offline or not self._registry:
             return
-        if self._pool.repair():
-            self.licence = self._pool.active()
-            if self.status in ("unchecked", "offline"):
-                self._probe()
+        self._registry.repair()
+        self.licence = self._registry.active() or self.licence
+        if self.status in ("unchecked", "offline", "sample-only", "probe-failed"):
+            self._probe()
 
     def _get(self, path: str) -> Any:
         if self.offline:
             raise MarketError("offline mode: live API disabled")
-        pool = self._pool
-        if pool and not pool.active():
+        reg = self._registry
+        if not reg:
+            raise MarketError("未配置麦蕊证书")
+        if not reg.iteration_plan():
             self.refresh_pool()
-        attempts = len(pool.available()) if pool else 1
-        last_error = "麦蕊证书池今日已全部用尽"
-        for _ in range(max(attempts, 1)):
-            lic = pool.active() if pool else self.licence
+        last_error = "麦蕊证书池已全部用尽"
+        for _pool_kind, lic in list(reg.iteration_plan()):
             if not lic:
-                raise MarketError(last_error)
+                continue
             url = self._url(path, lic)
             try:
                 resp = httpx.get(url, timeout=30.0)
-                if pool and is_quota_error(resp.status_code, resp.text):
-                    last_error = f"Licence 当日额度已用尽: {lic[:8]}…"
-                    pool.mark_exhausted(lic)
-                    self.licence = pool.active()
+                if is_quota_error(resp.status_code, resp.text):
+                    last_error = f"Licence 额度已用尽: {lic[:8]}…"
+                    self.licence = reg.mark_quota_exhausted(lic)
                     continue
                 resp.raise_for_status()
                 self.licence = lic
                 return resp.json()
             except httpx.HTTPStatusError as exc:
                 body = exc.response.text if exc.response is not None else ""
-                if pool and is_quota_error(exc.response.status_code if exc.response else 0, body):
-                    last_error = f"Licence 当日额度已用尽: {lic[:8]}…"
-                    pool.mark_exhausted(lic)
-                    self.licence = pool.active()
+                if is_quota_error(exc.response.status_code if exc.response else 0, body):
+                    last_error = f"Licence 额度已用尽: {lic[:8]}…"
+                    self.licence = reg.mark_quota_exhausted(lic)
                     continue
                 raise MarketError(str(exc)) from exc
             except Exception as exc:
@@ -101,15 +100,25 @@ class MarketClient:
             self.sample_only = True
             self.status = "demo-licence"
             return
-        prices = []
+        self.sample_only = False
+        prices: list[Any] = []
+        errors = 0
         for code in ("000001", "600038", "002230"):
             try:
                 data = self._get(f"/hsrl/ssjy/{code}")
                 row = data[0] if isinstance(data, list) else data
                 prices.append(row.get("p"))
             except Exception:
+                errors += 1
                 prices.append("ERR")
         distinct = {p for p in prices if p not in (None, "ERR")}
+        ok = 3 - errors
+        if ok == 0:
+            self.status = "probe-failed"
+            return
+        if ok < 2:
+            self.status = "live" if distinct else "probe-failed"
+            return
         if len(distinct) <= 1:
             self.sample_only = True
             self.status = "sample-only"
@@ -127,17 +136,20 @@ class MarketClient:
         write_cache_json(key, payload)
 
     def health(self) -> dict:
-        pool = self._pool.status() if self._pool else None
+        pools = self._registry.status() if self._registry else None
+        legacy_pool = self._registry.legacy_renewable_status() if self._registry else None
         return {
             "offline": self.offline,
             "offline_reason": settings.offline_reason if self.offline else "",
             "mairui_offline": settings.mairui_offline,
-            "licence_configured": bool(settings.licence_chain),
+            "licence_configured": bool(settings.licence_chain) or bool(pools and pools.get("renewable", {}).get("total")),
             "sample_only": self.sample_only,
             "status": self.status,
             "has_licence": bool(self.licence),
             "licence_active": self.licence,
-            "licence_pool": pool,
+            "licence_active_pool": pools.get("active_pool") if pools else "",
+            "licence_pools": pools,
+            "licence_pool": legacy_pool,
         }
 
     def index_quotes(self) -> list[dict]:

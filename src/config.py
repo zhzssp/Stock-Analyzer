@@ -69,16 +69,22 @@ class Settings(BaseSettings):
 
     @property
     def use_live_market(self) -> bool:
-        """Live API is used only when MAIRUI_OFFLINE=0 and at least one licence resolves."""
-        return not self.mairui_offline and bool(self.licence_chain)
+        """Live API when MAIRUI_OFFLINE=0 and .env 或本机证书池至少有一张证。"""
+        if self.mairui_offline:
+            return False
+        if self.licence_chain:
+            return True
+        from src.market.licence_registry import LicenceRegistry
+
+        return LicenceRegistry.shared().has_any_licence()
 
     @property
     def offline_reason(self) -> str:
         if self.mairui_offline:
             return "MAIRUI_OFFLINE=1，工作台强制使用内置样例"
-        if not self.licence_chain:
-            return "未配置有效麦蕊证书"
-        return ""
+        if self.use_live_market:
+            return ""
+        return "未配置有效麦蕊证书（.env 与本机证书池均为空）"
 
     @property
     def db_path(self) -> Path:

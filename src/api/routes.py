@@ -32,7 +32,7 @@ from src.db import get_db
 from src.config import settings
 from src.db import SessionLocal
 from src.market.client import MarketClient, resolve_instruments
-from src.market.licence_pool import LicencePool
+from src.market.licence_registry import LicenceRegistry, POOL_CONSUMABLE, POOL_RENEWABLE
 from src.market.clock import (
     clock_series,
     configured_clock_dir,
@@ -69,12 +69,21 @@ def ensure_market() -> MarketClient:
     global market, engine
     want_offline = not settings.use_live_market
     if market.offline != want_offline:
-        LicencePool.reset_shared()
+        LicenceRegistry.reset_shared()
         market = MarketClient()
         engine = QueryEngine(market)
         return market
     market.refresh_pool()
     return market
+
+
+def _reload_licence_runtime() -> None:
+    global market, engine
+    LicenceRegistry.reset_shared()
+    if not market.offline:
+        market._registry = LicenceRegistry.shared()
+        market.licence = market._registry.active()
+        market.refresh_pool()
 
 
 class LoginIn(BaseModel):
@@ -222,6 +231,64 @@ def health():
         "storage": health_storage(),
         "clock": clock_status(),
     }
+
+
+class LicenceAddIn(BaseModel):
+    licence: str
+    pool: str = POOL_RENEWABLE
+
+
+class LicenceRemoveIn(BaseModel):
+    licence: str
+    pool: str = POOL_RENEWABLE
+
+
+class LicencePrefIn(BaseModel):
+    mode: str = "auto"
+    manual_licence: str = ""
+
+
+@router.get("/licences")
+def get_licences(user: User = Depends(current_user)):
+    ensure_market()
+    reg = LicenceRegistry.shared()
+    return {"ok": True, "pools": reg.status(), "market": market.health()}
+
+
+@router.post("/licences")
+def post_licence(body: LicenceAddIn, user: User = Depends(current_user)):
+    pool = (body.pool or "").strip().lower()
+    if pool not in (POOL_RENEWABLE, POOL_CONSUMABLE):
+        raise HTTPException(status_code=400, detail="pool 须为 renewable 或 consumable")
+    try:
+        LicenceRegistry.shared().add(pool, body.licence)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _reload_licence_runtime()
+    return {"ok": True, "pools": LicenceRegistry.shared().status()}
+
+
+@router.delete("/licences")
+def delete_licence(body: LicenceRemoveIn, user: User = Depends(current_user)):
+    pool = (body.pool or "").strip().lower()
+    if pool not in (POOL_RENEWABLE, POOL_CONSUMABLE):
+        raise HTTPException(status_code=400, detail="pool 须为 renewable 或 consumable")
+    try:
+        LicenceRegistry.shared().remove(pool, body.licence)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _reload_licence_runtime()
+    return {"ok": True, "pools": LicenceRegistry.shared().status()}
+
+
+@router.put("/licences/preference")
+def put_licence_preference(body: LicencePrefIn, user: User = Depends(current_user)):
+    try:
+        LicenceRegistry.shared().set_preference(body.mode, body.manual_licence)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _reload_licence_runtime()
+    return {"ok": True, "pools": LicenceRegistry.shared().status()}
 
 
 def _watch_payload(item: WatchItem) -> dict:
