@@ -311,6 +311,7 @@ N 变大时，上述五块按 **9N** 线性涨；只有 **quote** 项是 **⌈N/
 4. **P3（已实现）**：`data/snapshots/user_{id}.json` 表级快照；`cache`/`full` 成功后写入。`refresh_mode=snapshot` **零麦蕊**，只读上次快照（决策卡列仍按 DB 重算）。登录先 `snapshot` 再 `cache`；**刷新**不再顺带拉顶栏指数（指数本地 60s 缓存）。监控 `engine.run` 与 Agent `query_run`、资讯监控 `profile` 默认走 `cache` 慢字段 TTL。`GET /storage` 含 `query_snapshot` 元数据。
 5. **行为**：非必要不用 `force_live`（快刷已遵守）；导出 Excel 固定走全量。
 6. **运维**：本机数据 → 麦蕊证书池；避免 101 状态下反复点全量更新。
+7. **监控 / Agent 日额度**：一万次/日证下如何分区、调 session/eod 频率与任务开关，见 [`监控与麦蕊额度预算.md`](./监控与麦蕊额度预算.md)。
 
 ### 6.6 查询表以外还会打麦蕊的地方
 
