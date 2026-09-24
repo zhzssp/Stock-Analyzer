@@ -1,4 +1,4 @@
-"""Live workbench tests that never call /api/agent/*. Writes docs/报告/T-20260921-现网无Agent.md."""
+"""Live workbench tests that never call /api/agent/*. Writes docs/reports/T-20260921-现网无Agent.md."""
 from __future__ import annotations
 
 import json

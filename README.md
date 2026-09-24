@@ -13,12 +13,12 @@ Stock-Analyzer/
 ├── README.md                 # 本文件
 ├── docs/
 │   ├── INDEX.md               # 文档入口：分类与权威
-│   ├── 使用/                  # 部署教程、对客说明
-│   ├── 设计/                  # 软件设计、智能体专论、API 现状
-│   ├── 评审/                  # 提效缺口（默认不实现）
-│   ├── 需求/                  # 客户原话（R-）
-│   ├── 问题/                  # 已核实阻塞（P-）
-│   ├── 报告/                  # 脚本生成，勿手改
+│   ├── usage/                 # 部署教程、对客说明
+│   ├── design/                # 软件设计、智能体专论、API 现状
+│   ├── reviews/               # 提效缺口（默认不实现）
+│   ├── requirements/          # 客户原话（R-）
+│   ├── issues/                # 已核实阻塞（P-）
+│   ├── reports/               # 脚本生成，勿手改
 │   └── frontend/              # 本机工作台（不要双击 HTML）
 ├── pics/                     # 现有表格截图，字段比对的基准
 ├── src/                      # FastAPI 单体（S1–S5）
@@ -38,7 +38,7 @@ Stock-Analyzer/
 
 ## 验证脚本
 
-针对 [`docs/设计/API现状.md`](docs/设计/API现状.md) §4 逐条实测，避免只凭文档做设计。
+针对 [`docs/API/API现状.md`](docs/API/API现状.md) §4 逐条实测，避免只凭文档做设计。
 
 ```powershell
 # 用你自己的正式 licence 运行（推荐）
@@ -48,7 +48,7 @@ Stock-Analyzer/
 .\scripts\Verify-Api.ps1 -Licence "你的licence" -TestRateLimit
 
 # 指定报告输出位置
-.\scripts\Verify-Api.ps1 -Licence "你的licence" -OutFile ".\docs\报告\验证报告.md"
+.\scripts\Verify-Api.ps1 -Licence "你的licence" -OutFile ".\docs\reports\验证报告.md"
 ```
 
 **环境要求：** Windows PowerShell 5.1 及以上，无需任何第三方依赖。
@@ -77,7 +77,7 @@ Stock-Analyzer/
 
 ## 本机运行
 
-完全不会用命令的，请按 [`docs/使用/本地部署教程.md`](docs/使用/本地部署教程.md) 做。下面是给已经会开终端的人看的精简步骤。
+完全不会用命令的，请按 [`docs/usage/本地部署教程.md`](docs/usage/本地部署教程.md) 做。下面是给已经会开终端的人看的精简步骤。
 
 新机器或环境坏了，可单独跑配置（已配置成功过则只做检查，不重装）：
 
@@ -130,9 +130,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run.ps1
 
 ## 数据源
 
-麦蕊数据 · 调用 `https://api.mairuiapi.com` · 文档 [沪深基础数据](https://www.mairuiapi.com/hsdata)（全表见 [`docs/设计/API现状.md`](docs/设计/API现状.md) 文首）
+麦蕊数据 · 调用 `https://api.mairuiapi.com` · 文档 [沪深基础数据](https://www.mairuiapi.com/hsdata)（全表见 [`docs/API/API现状.md`](docs/API/API现状.md) 文首）
 
-覆盖沪深 A 股、沪深指数、京市、科创板、基金。档位与限频见 [`docs/设计/API现状.md`](docs/设计/API现状.md) §4.2、§4.5。
+覆盖沪深 A 股、沪深指数、京市、科创板、基金。档位与限频见 [`docs/API/API现状.md`](docs/API/API现状.md) §4.2、§4.5。
 
 > ⚠️ licence 属于凭据，请勿硬编码进代码或提交至版本库。建议通过环境变量传入：
 >

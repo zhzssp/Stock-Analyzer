@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     S0：实测「指数 → 成份股」接口，禁止用交易所全市场冒充指数。
 
@@ -11,7 +11,7 @@
     麦蕊授权码。缺省用公开演示 licence。
 
 .PARAMETER OutFile
-    报告路径，默认 docs/报告/指数成份探针.md
+    报告路径，默认 docs/reports/指数成份探针.md
 #>
 
 [CmdletBinding()]
@@ -24,7 +24,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutFile)) {
-    $OutFile = Join-Path $RepoRoot 'docs\报告\指数成份探针.md'
+    $OutFile = Join-Path $RepoRoot 'docs\reports\指数成份探针.md'
 }
 
 $DemoLicence = "LICENCE-66D8-9F96-0C7F0FBCD073"
