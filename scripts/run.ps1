@@ -23,6 +23,9 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "关掉黑窗口后助手会留在托盘；要彻底退出请点托盘里的「退出助手」。"
 Write-Host "工作目录: $root"
 Write-Host "开始时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+if ($env:MAIRUI_OFFLINE -eq "1") {
+    Write-Host "启动模式: 离线样例（脚本 run-offline.cmd 设置），仅供测试，不连麦蕊、不消耗证书次数。" -ForegroundColor Yellow
+}
 Write-Host "将先检查环境（已配置过就只校验），然后启动服务。"
 Write-Host ""
 
