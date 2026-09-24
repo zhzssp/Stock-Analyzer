@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     slow_cache_finance_ttl_sec: int = 86_400
     slow_cache_flow_ttl_sec: int = 3_600
     slow_cache_indicators_ttl_sec: int = 3_600
+    # 抬头指数点位 TTL（秒）。前端 20 秒轮询，靠这层缓存兜住额度，不打满 hsindex。
+    board_quote_ttl_sec: int = 60
 
     @field_validator("mairui_licence", mode="before")
     @classmethod

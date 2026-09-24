@@ -53,12 +53,21 @@ INDEX_SPECS = [
     {"code": "000016.SH", "label": "上证50", "market": "sh"},
 ]
 
-# Header pulse: 上证 / 深成 / 科创. 科创用科创50点位，不是科创综指成份池。
+# Header pulse: 上证 / 深成 / 北证 / 科创 / 创业。
+# kind=quote：麦蕊 hsindex 有实时点位（官方《沪深主要指数列表》611 条，仅 SH / SZ）。
+# kind=pool：官方没有该指数的实时点位（北证50 不在 hsindex 覆盖范围内，实测 404 / 422），
+#            只展示官方成份数量，不打点位、不编数、不拿别的东西冒充。
+# 科创用科创50点位（000688），不是科创综指（000680）成份池。
 BOARD_INDICES = [
-    {"code": "000001.SH", "short": "上证", "label": "上证指数"},
-    {"code": "399001.SZ", "short": "深成", "label": "深证成指"},
-    {"code": "000688.SH", "short": "科创", "label": "科创50"},
+    {"code": "000001.SH", "short": "上证", "label": "上证指数", "kind": "quote"},
+    {"code": "399001.SZ", "short": "深成", "label": "深证成指", "kind": "quote"},
+    {"code": "899050.BJ", "short": "北证", "label": "北证50", "kind": "pool"},
+    {"code": "000688.SH", "short": "科创", "label": "科创50", "kind": "quote"},
+    {"code": "399006.SZ", "short": "创业", "label": "创业板指", "kind": "quote"},
 ]
+
+# 抬头里 kind=pool 的条目在没拿到成份时的说明（与 capability_gaps 同一口径：无源就说无源）。
+NO_QUOTE_SOURCE_NOTE = "麦蕊指数接口只覆盖沪深（官方指数列表 611 条，无北证50），因此这里不显示点位"
 
 
 def probe_path() -> Path:

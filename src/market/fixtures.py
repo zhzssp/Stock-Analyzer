@@ -61,6 +61,7 @@ INDEX_QUOTE = {
     "000001.SH": {"p": 3900.87, "pc": 1.86, "source": "offline"},
     "399001.SZ": {"p": 13650.68, "pc": 2.01, "source": "offline"},
     "000688.SH": {"p": 1948.21, "pc": 2.37, "source": "offline"},
+    "399006.SZ": {"p": 3317.33, "pc": -1.84, "source": "offline"},
 }
 
 INDUSTRY = {

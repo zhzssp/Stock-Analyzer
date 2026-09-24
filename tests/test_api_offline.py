@@ -190,11 +190,13 @@ def test_health_cy_export_codes_artifacts_warehouse():
 
 
 def test_board_indices_offline():
+    from src.market.fixtures import INDEX_CONSTITUENTS
+
     with TestClient(app) as client:
         data = client.get("/api/markets/board")
         assert data.status_code == 200
         items = data.json()["items"]
-        assert [x["short"] for x in items] == ["上证", "深成", "科创"]
+        assert [x["short"] for x in items] == ["上证", "深成", "北证", "科创", "创业"]
         by = {x["short"]: x for x in items}
         assert by["上证"]["code"] == "000001.SH"
         assert by["上证"]["p"] == 3900.87
@@ -202,13 +204,24 @@ def test_board_indices_offline():
         assert by["深成"]["code"] == "399001.SZ"
         assert by["深成"]["p"] == 13650.68
         assert by["深成"]["pc"] == 2.01
+        # 北证50：麦蕊 hsindex 只覆盖沪深，无实时点位；只展示官方成份数量，不打点位。
+        assert by["北证"]["code"] == "899050.BJ"
+        assert by["北证"]["kind"] == "pool"
+        assert by["北证"]["p"] is None
+        assert by["北证"]["count"] == len(INDEX_CONSTITUENTS["899050.BJ"])
         assert by["科创"]["code"] == "000688.SH"
         assert by["科创"]["label"] == "科创50"
         assert by["科创"]["p"] == 1948.21
         assert by["科创"]["pc"] == 2.37
+        assert by["创业"]["code"] == "399006.SZ"
+        assert by["创业"]["label"] == "创业板指"
+        assert by["创业"]["p"] == 3317.33
+        assert by["创业"]["pc"] == -1.84
 
 
-def test_index_quote_parser_accepts_mairui_shapes():
+def test_index_quote_parser_accepts_mairui_shapes(monkeypatch):
+    # 关掉抬头点位 TTL，避免读到本机 data/cache 里上一次实盘留下的缓存。
+    monkeypatch.setattr("src.config.settings.board_quote_ttl_sec", 0, raising=False)
     from src.market.client import MarketClient, _parse_index_quote
 
     assert _parse_index_quote({"p": 3900.87, "pc": 1.86}) == {"p": 3900.87, "pc": 1.86}

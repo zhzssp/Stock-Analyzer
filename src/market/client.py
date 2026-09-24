@@ -182,24 +182,53 @@ class MarketClient:
     def index_quotes(self) -> list[dict]:
         from src.market.indices import BOARD_INDICES
 
-        return [self._index_quote_item(spec) for spec in BOARD_INDICES]
+        return [self._index_board_item(spec) for spec in BOARD_INDICES]
 
-    def _index_quote_item(self, spec: dict) -> dict:
+    def _index_board_item(self, spec: dict) -> dict:
         code = spec["code"]
-        row = self._index_quote(code)
-        return {
+        kind = (spec.get("kind") or "quote").strip().lower()
+        out = {
             "code": code,
-            "short": spec["short"],
-            "label": spec["label"],
-            "p": row.get("p"),
-            "pc": row.get("pc"),
-            "source": row.get("source") or "",
+            "short": spec.get("short") or "",
+            "label": spec.get("label") or "",
+            "kind": kind,
         }
+        if kind == "pool":
+            # 官方无该指数实时点位：只报官方成份数量，不打点位。
+            from src.market.indices import NO_QUOTE_SOURCE_NOTE, index_status
+
+            st = index_status(code) or {}
+            out.update(
+                {
+                    "p": None,
+                    "pc": None,
+                    "count": st.get("count"),
+                    "enabled": bool(st.get("enabled")),
+                    "reason": st.get("reason") or ("" if st.get("enabled") else NO_QUOTE_SOURCE_NOTE),
+                    "source": st.get("source") or "",
+                }
+            )
+            return out
+
+        row = self._index_quote(code)
+        out.update({"p": row.get("p"), "pc": row.get("pc"), "source": row.get("source") or ""})
+        return out
 
     def _index_quote(self, code: str) -> dict:
         if self.offline:
             data = fixtures.INDEX_QUOTE.get(code) or {}
             return {"p": data.get("p"), "pc": data.get("pc"), "source": data.get("source") or "offline"}
+        # 分层刷新：抬头点位是实时数据，不走 _slow_load（那条只服务 refresh_mode=cache 的慢字段），
+        # 而是单独走一层短 TTL 缓存，避免前端 20 秒轮询把额度打在 hsindex 上。
+        cache_key = f"index_quote_{code}"
+        ttl = int(getattr(settings, "board_quote_ttl_sec", 0) or 0)
+        if ttl > 0:
+            from src.market.slow_cache import read_fresh
+
+            cached = read_fresh(cache_key, ttl)
+            if isinstance(cached, dict) and cached.get("p") is not None:
+                cached["source"] = "cache"
+                return cached
         code6 = code.split(".")[0]
         for path in (
             f"/hsindex/real/time/{code}",
@@ -210,6 +239,10 @@ class MarketClient:
             parsed = _parse_index_quote(self._try_get(path))
             if parsed:
                 parsed["source"] = "live"
+                if ttl > 0:
+                    from src.market.slow_cache import write
+
+                    write(cache_key, parsed)
                 return parsed
         return {"p": None, "pc": None, "source": "unavailable"}
 

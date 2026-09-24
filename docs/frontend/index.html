@@ -67,6 +67,8 @@
       white-space: nowrap;
     }
     .board-item + .board-item { border-left: 1px solid #c5d9d5; }
+    .board-item[data-pool] { cursor: pointer; }
+    .board-item[data-pool]:hover { background: rgba(20, 90, 80, .06); }
     .board-item .name { font-size: 15px; font-weight: 700; color: var(--ink); }
     .board-item .px {
       font-size: 20px;
@@ -553,7 +555,9 @@
       <div class="board" id="boardBar" aria-label="核心指数">
         <div class="board-item"><span class="name">上证：</span><span class="px">—</span><span class="pc">—</span></div>
         <div class="board-item"><span class="name">深成：</span><span class="px">—</span><span class="pc">—</span></div>
+        <div class="board-item"><span class="name">北证：</span><span class="px">—</span><span class="pc">—</span></div>
         <div class="board-item"><span class="name">科创：</span><span class="px">—</span><span class="pc">—</span></div>
+        <div class="board-item"><span class="name">创业：</span><span class="px">—</span><span class="pc">—</span></div>
       </div>
       <div class="top-meta">
         <div class="user" id="userLabel">未登录</div>
@@ -1114,11 +1118,10 @@
 
     function renderBoard(items) {
       const list = (items && items.length) ? items : [
-        { short: "上证" }, { short: "深成" }, { short: "科创" },
+        { short: "上证" }, { short: "深成" }, { short: "北证" }, { short: "科创" }, { short: "创业" },
       ];
       document.getElementById("boardBar").innerHTML = list.map((it) => {
-        const pNum = Number(it.p);
-        const price = Number.isFinite(pNum) ? pNum.toFixed(2) : "—";
+        const isPool = it.kind === "pool";
         const pcNum = Number(it.pc);
         let pcCls = "flat";
         let pcText = "—";
@@ -1126,8 +1129,18 @@
           pcCls = pcNum > 0 ? "up" : (pcNum < 0 ? "down" : "flat");
           pcText = (pcNum > 0 ? "+" : "") + pcNum.toFixed(2) + "%";
         }
-        const title = [it.label || it.short || "", it.code || ""].filter(Boolean).join(" ");
-        return `<div class="board-item" title="${escAttr(title)}"><span class="name">${escHtml(it.short || "")}：</span><span class="px ${pcCls}">${escHtml(price)}</span><span class="pc ${pcCls}">${escHtml(pcText)}</span></div>`;
+        let price = "—";
+        if (isPool) {
+          const n = Number(it.count);
+          price = Number.isFinite(n) && n > 0 ? n + "只" : "—";
+        } else {
+          const pNum = Number(it.p);
+          price = Number.isFinite(pNum) ? pNum.toFixed(2) : "—";
+        }
+        const note = isPool ? (it.count ? "官方成份数量；麦蕊不提供该指数实时点位" : (it.reason || "暂无成份")) : "";
+        const title = [it.label || it.short || "", it.code || "", note].filter(Boolean).join(" · ");
+        const poolAttr = isPool && it.enabled ? ` data-pool="index:${escAttr(it.code || "")}"` : "";
+        return `<div class="board-item"${poolAttr} title="${escAttr(title)}"><span class="name">${escHtml(it.short || "")}：</span><span class="px ${pcCls}">${escHtml(price)}</span><span class="pc ${pcCls}">${isPool ? "" : escHtml(pcText)}</span></div>`;
       }).join("");
     }
 
@@ -2334,6 +2347,7 @@
     document.getElementById("indexChips").addEventListener("click", onPoolChipClick);
     document.getElementById("exchangeChips").addEventListener("click", onPoolChipClick);
     document.getElementById("boardChips").addEventListener("click", onPoolChipClick);
+    document.getElementById("boardBar").addEventListener("click", onPoolChipClick);
     document.getElementById("watchList").addEventListener("click", async (e) => {
       const rm = e.target.closest("[data-rm]");
       if (rm) {
