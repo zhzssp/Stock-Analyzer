@@ -2085,6 +2085,8 @@
       else state.lastQueryCodes = null;
       const hintEl = document.getElementById("queryHint");
       hintEl.textContent = "查询中…";
+      // 顶部指数先走：请求轻、返回快，让小板块先于大表刷新出来
+      loadBoard().catch(() => {});
       const refreshMode = o.refreshMode || "quote";
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       const payload = queryPayload(codes, { refreshMode, forceLive });
@@ -2984,13 +2986,27 @@
         .catch(() => {});
     }
 
+    // 抬头指数是小板块，请求轻（后端有 60 秒缓存），先把它请求出去并渲染好，
+    // 再去做大表查询，用户第一眼就能看到顶部有内容，而不是先对着一张空表等。
+    async function primeBoard(timeoutMs = 3000) {
+      try {
+        await Promise.race([
+          loadBoard(),
+          new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+        ]);
+      } catch {
+        /* 顶部失败不挡主流程：占位会保持「—」 */
+      }
+      startBoardClock(); // 之后交给定时轮询（此时前端缓存命中，不会重复打接口）
+    }
+
     async function afterLogin(username, token) {
       state.token = token;
       sessionStorage.setItem("sa_token", token);
       document.getElementById("userLabel").textContent = username + " · 已登录";
       document.getElementById("loginMask").style.display = "none";
       await loadHealth();
-      startBoardClock();
+      await primeBoard(); // 顶部指数优先
       await loadWatch();
       await loadPools();
       await bootTableQuery();
