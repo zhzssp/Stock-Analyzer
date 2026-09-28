@@ -170,6 +170,26 @@
     .stock-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
     .stock-row:last-child { border-bottom: 0; }
     .stock-row .k { width: 92px; flex-shrink: 0; color: var(--muted); }
+    .exp-block { margin-bottom: 12px; }
+    .exp-label { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+    .exp-count { font-weight: 400; color: var(--muted); margin-left: 6px; }
+    .exp-opts { display: flex; flex-direction: column; gap: 4px; }
+    .exp-opt {
+      display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px;
+      border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 13px;
+    }
+    .exp-opt input { margin-top: 2px; }
+    .exp-opt .t { font-weight: 600; }
+    .exp-opt .s { color: var(--muted); font-size: 12px; }
+    .exp-opt.off { opacity: 0.5; cursor: not-allowed; }
+    .exp-estimate {
+      padding: 8px 10px; border-radius: 8px; background: var(--teal-soft);
+      color: var(--ink); font-size: 13px; line-height: 1.5;
+    }
+    .exp-warn {
+      margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+      background: #fff4ed; border: 1px solid #f0c9a8; color: #8a4b1a; font-size: 13px; line-height: 1.5;
+    }
     .stock-row .v { flex: 1; min-width: 0; word-break: break-all; }
     .ctx-menu {
       position: fixed; z-index: 950; display: none; min-width: 140px;
@@ -1031,6 +1051,29 @@
       </div>
     </div>
   </div>
+  <div class="login-mask" id="exportMask" style="display:none;">
+    <div class="login-card stock-card">
+      <h2><span>导出 Excel</span><span id="exportTitleMount"></span></h2>
+      <div class="exp-block">
+        <div class="exp-label">导出范围<span id="expScopeCount" class="exp-count"></span></div>
+        <div class="exp-opts" id="expScopeOpts"></div>
+      </div>
+      <div class="exp-block">
+        <div class="exp-label">数据新鲜度</div>
+        <div class="exp-opts" id="expFreshOpts"></div>
+      </div>
+      <div class="exp-block">
+        <div class="exp-label">列</div>
+        <div class="exp-opts" id="expColOpts"></div>
+      </div>
+      <div class="exp-estimate" id="expEstimate"></div>
+      <div class="exp-warn" id="expWarn" style="display:none;"></div>
+      <div class="pick-actions" style="margin-top:12px;">
+        <button class="btn primary" id="expStart" type="button">开始导出</button>
+        <button class="btn ghost" id="expCancel" type="button">取消</button>
+      </div>
+    </div>
+  </div>
   <div class="login-mask" id="loginMask">
     <form class="login-card" id="loginForm">
       <h2><span data-help-tip="默认账号 hanish / change-me，仅绑定 127.0.0.1。">登录本机工作台</span></h2>
@@ -1113,6 +1156,9 @@
       dragCode: null,
       gsItems: [],
       stockCode: "",
+      exportOpts: null,
+      exportSnapshot: null,
+      exportHasSnapshot: false,
       sortKey: "",
       customConcepts: [],
       sortDir: "desc",
@@ -2101,6 +2147,180 @@
       }
     });
 
+    const EXPORT_FRESH = [
+      { id: "snapshot", label: "用上次快照", sub: "不消耗额度，几秒就好" },
+      { id: "cache", label: "缓存补全（推荐）", sub: "本机缓存直接用，只补缺的字段" },
+      { id: "full", label: "全部重拉", sub: "最准，也最费额度" },
+    ];
+
+    function expOptHtml(name, item, checked, disabled, why) {
+      return `<label class="exp-opt ${disabled ? "off" : ""}">
+          <input type="radio" name="${name}" value="${escAttr(item.id)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} />
+          <span><span class="t">${escHtml(item.label)}</span><br /><span class="s">${escHtml(disabled && why ? why : item.sub)}</span></span>
+        </label>`;
+    }
+
+    function expCount() {
+      // 当前池（或搜索批次）一共有多少只
+      if (state.lastQueryCodes && state.lastQueryCodes.length) return state.lastQueryCodes.length;
+      if (state.rowsRaw && state.rowsRaw.length) return state.rowsRaw.length;
+      const pool = (state.pools || []).find((p) => p.id === state.pool);
+      return (pool && pool.count) || 0;
+    }
+
+    function expEstimate(n, mode, hasSnapshot, cacheWarm) {
+      if (mode === "snapshot") {
+        return { level: "不消耗额度", text: "直接读本机上次的表快照，不向数据方发请求，几秒完成。" };
+      }
+      if (mode === "cache") {
+        if (hasSnapshot || cacheWarm) {
+          return { level: "少量", text: "本机已缓存的字段直接用，只补缺的几项。" };
+        }
+        return { level: "较多", text: "本机还没有缓存，这次实际会按全量拉取一遍。" };
+      }
+      const groups = new Set((state.fields || []).map((f) => f.group));
+      const slow = ["profile", "holders", "finance", "flow", "bottom"].filter((g) => groups.has(g)).length;
+      let level = "很少";
+      if (slow >= 3) level = "大量";
+      else if (slow === 2) level = "较多";
+      else if (slow === 1) level = "中等";
+      const extra = n > 40 ? "　只数超过 40，会自动转成后台任务，导出中不要关窗口。" : "";
+      return {
+        level,
+        text: `会重新拉取每只票的${slow ? "财务 / 股东 / 主营 / 日线等慢字段" : "行情"}，大致是「${level}」这个量级；额度有限，不要反复点。${extra}`,
+      };
+    }
+
+    async function openExport() {
+      state.exportOpts = { scope: "pool", fresh: "cache", cols: "current" };
+      const est = document.getElementById("expEstimate");
+      const warn = document.getElementById("expWarn");
+      if (est) est.textContent = "正在读取本机状态…";
+      if (warn) { warn.style.display = "none"; warn.innerHTML = ""; }
+      document.getElementById("exportMask").style.display = "flex";
+
+      let snap = null;
+      let health = null;
+      let prefs = null;
+      try {
+        const [storage, h, p] = await Promise.all([api("/storage"), api("/health"), api("/query/prefs")]);
+        snap = storage.query_snapshot || {};
+        health = h.market || h;
+        prefs = p;
+        state.colPresetDefs = p.presets || state.colPresetDefs || [];
+      } catch (err) {
+        toast(err.message);
+      }
+      if (document.getElementById("exportMask").style.display === "none") return;
+
+      const n = expCount();
+      const hasSnapshot = Boolean(snap && snap.has_snapshot);
+      const searchCount = (state.lastQueryCodes || []).length;
+      const pageCount = Math.min(n, state.tablePage * PAGE_SIZE);
+
+      const scopeOpts = [
+        { id: "pool", label: `当前池（${state.poolLabel || "自选"}）`, sub: searchCount ? "" : `共 ${n} 只` },
+        { id: "search", label: "搜索结果（筛选一次）", sub: searchCount ? `${searchCount} 只` : "", disabled: !searchCount },
+        { id: "page", label: "仅当前已显示的", sub: `${pageCount} 只`, disabled: n <= pageCount },
+      ];
+      document.getElementById("expScopeOpts").innerHTML = scopeOpts.map((it, i) =>
+        expOptHtml("expScope", it, i === 0, it.disabled, "当前没有可导的范围")
+      ).join("");
+      document.getElementById("expScopeCount").textContent = n ? `共 ${n} 只` : "";
+
+      document.getElementById("expFreshOpts").innerHTML = EXPORT_FRESH.map((it) => {
+        const disabled = it.id === "snapshot" && !hasSnapshot;
+        const why = "还没有快照，请先点一次「查询」生成";
+        return expOptHtml("expFresh", it, it.id === "cache", disabled, why);
+      }).join("");
+
+      const colOpts = [
+        { id: "current", label: "用当前列设置", sub: `${(state.fields || []).length} 列` },
+        { id: "watch", label: "看盘预设", sub: "只行情列" },
+        { id: "research", label: "研究预设", sub: "含财务 / 股东 / 底顶" },
+      ];
+      document.getElementById("expColOpts").innerHTML = colOpts.map((it, i) =>
+        expOptHtml("expCols", it, i === 0, false, "")
+      ).join("");
+      document.getElementById("exportTitleMount").innerHTML = helpTip("导出会按你选的范围与新鲜度取数，并写入档案库（每人保留最近 20 份）。列越多、只数越多，向数据方发的请求越多。");
+
+      ["expScope", "expFresh", "expCols"].forEach((name) => {
+        document.querySelectorAll(`input[name="${name}"]`).forEach((el) => {
+          el.addEventListener("change", () => {
+            const key = name === "expScope" ? "scope" : (name === "expFresh" ? "fresh" : "cols");
+            state.exportOpts[key] = el.value;
+            renderExportHint(hasSnapshot);
+          });
+        });
+      });
+      state.exportSnapshot = snap;
+      state.exportHasSnapshot = hasSnapshot;
+      renderExportHint(hasSnapshot);
+
+      // 市场状态警告：离线 / 探针失败 / 额度用尽
+      const notes = [];
+      const off = Boolean(health && (health.offline || health.mairui_offline));
+      if (off) notes.push(`现在是<b>离线样例</b>${health.offline_reason ? "（" + escHtml(health.offline_reason) + "）" : ""}，导出的表不会是真实行情。`);
+      if (health && health.status === "probe-failed") notes.push("行情探针失败（可能是证书额度用尽或网络不通），导出的表会大片空白。");
+      if (health && (health.sample_only || health.status === "demo-licence")) notes.push("当前只能用演示样本，导出的是样本数据。");
+      if (notes.length) {
+        const tip = hasSnapshot ? "　建议改选「用上次快照」。" : "";
+        warn.innerHTML = notes.join("<br />") + tip;
+        warn.style.display = "block";
+      }
+    }
+
+    function renderExportHint(hasSnapshot) {
+      const est = document.getElementById("expEstimate");
+      if (!est) return;
+      const o = state.exportOpts || {};
+      const n = expCount();
+      const count = o.scope === "search" ? (state.lastQueryCodes || []).length
+        : (o.scope === "page" ? Math.min(n, state.tablePage * PAGE_SIZE) : n);
+      const snap = state.exportSnapshot || {};
+      const info = expEstimate(count, o.fresh, hasSnapshot, Boolean(snap && snap.has_snapshot));
+      let text = `<b>${escHtml(info.level)}</b> · 约 ${count} 只<br />${escHtml(info.text)}`;
+      if (o.fresh === "snapshot" && hasSnapshot) {
+        text += `<br />快照时间：${escHtml(snap.saved_at || "—")}${snap.count ? `，${snap.count} 行` : ""}`;
+      }
+      if (o.scope === "page" && n > count) {
+        text += `<br /><b>只导当前显示的 ${count} 只</b>（共 ${n} 只）；要导全部请改选「当前池」。`;
+      }
+      est.innerHTML = text;
+    }
+
+    function closeExport() {
+      document.getElementById("exportMask").style.display = "none";
+    }
+
+    async function doExport() {
+      const o = state.exportOpts || { scope: "pool", fresh: "cache", cols: "current" };
+      const payload = {};
+      if (o.scope === "search") payload.codes = state.lastQueryCodes || [];
+      else if (o.scope === "page") {
+        payload.codes = sortedRows(state.rowsRaw)
+          .slice(0, state.tablePage * PAGE_SIZE)
+          .map((r) => r.code_full || r.code6)
+          .filter(Boolean);
+      } else {
+        payload.pool = currentExportPool();
+      }
+      if (!payload.codes || !payload.codes.length) delete payload.codes;
+      const xDate = (document.getElementById("xDate").value || "").trim();
+      if (xDate) payload.x_date = xDate.replace(/-/g, "");
+      payload.refresh_mode = o.fresh;
+      payload.force_live = o.fresh === "full";
+      if (o.cols === "watch" || o.cols === "research") {
+        const def = (state.colPresetDefs || []).find((p) => p.id === o.cols);
+        if (def && def.fields && def.fields.length) payload.fields = def.fields;
+      }
+      let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
+      if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+      await downloadArtifact(data.id, data.filename);
+      const rows = (data.rows && data.rows.length) || (data.row_count || 0);
+      toast(`已导出 ${rows || "这一批"} 行，写入档案库并下载 ${data.filename}`);
+    }
+
     async function exportXlsx() {
       const payload = queryPayload(
         state.lastQueryCodes && state.lastQueryCodes.length ? state.lastQueryCodes : null,
@@ -2571,7 +2791,19 @@
         toast(e.message);
       }
     });
-    document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));
+    document.getElementById("exportBtn").addEventListener("click", () => openExport().catch((e) => toast(e.message)));
+    document.getElementById("expStart").addEventListener("click", async () => {
+      closeExport();
+      try {
+        await doExport();
+      } catch (err) {
+        toast(err.message || "导出失败");
+      }
+    });
+    document.getElementById("expCancel").addEventListener("click", closeExport);
+    document.getElementById("exportMask").addEventListener("click", (e) => {
+      if (e.target.id === "exportMask") closeExport();
+    });
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
     document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
     document.getElementById("storageRefresh").addEventListener("click", () => loadStorage().catch((e) => toast(e.message)));
