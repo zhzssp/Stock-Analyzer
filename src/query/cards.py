@@ -23,6 +23,8 @@ def card_dict(item) -> dict:
         "buy_high": _num(getattr(item, "buy_high", None)),
         "reduce_price": _num(getattr(item, "reduce_price", None)),
         "invalid_if": getattr(item, "invalid_if", "") or "",
+        "remind_at": getattr(item, "remind_at", "") or "",
+        "remind_note": getattr(item, "remind_note", "") or "",
         "group": getattr(item, "group_name", "") or "自选",
     }
 

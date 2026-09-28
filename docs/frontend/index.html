@@ -122,29 +122,41 @@
       user-select: none;
     }
     .help-tip::before { content: "?"; }
-    .help-tip .help-bubble {
+    .help-bubble-float {
+      position: fixed;
+      z-index: 900;
       display: none;
-      position: absolute;
-      left: 50%;
-      bottom: calc(100% + 6px);
-      transform: translateX(-50%);
-      width: max-content;
-      max-width: min(320px, 70vw);
+      max-width: min(380px, 82vw);
       padding: 8px 10px;
       background: var(--ink);
       color: #fff;
       font-size: 12px;
       font-weight: 400;
-      line-height: 1.45;
+      line-height: 1.5;
       border-radius: 8px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-      z-index: 60;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
       text-align: left;
       white-space: normal;
       pointer-events: none;
     }
-    .help-tip:hover .help-bubble,
-    .help-tip:focus-visible .help-bubble { display: block; }
+    .table-more { display: flex; align-items: center; gap: 10px; padding: 10px 4px 2px; color: var(--muted); font-size: 13px; }
+    .search-box { display: inline-flex; align-items: center; gap: 4px; }
+    .search-box input {
+      width: 150px; padding: 5px 8px; border: 1px solid var(--line);
+      border-radius: 8px; font-size: 13px; background: #fff; color: var(--ink);
+    }
+    .ctx-menu {
+      position: fixed; z-index: 950; display: none; min-width: 140px;
+      background: #fff; border: 1px solid var(--line); border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); padding: 4px; font-size: 13px;
+    }
+    .ctx-menu button {
+      display: block; width: 100%; text-align: left; background: none; border: 0;
+      padding: 7px 10px; border-radius: 6px; cursor: pointer; color: var(--ink);
+    }
+    .ctx-menu button:hover { background: var(--teal-soft); }
+    .watch li.dragging { opacity: 0.45; }
+    .watch li.drag-over { outline: 2px dashed var(--teal); outline-offset: -2px; }
     .pool-hint {
       color: var(--muted);
       font-size: 13px;
@@ -609,6 +621,10 @@
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
             <button class="btn ghost" id="diffBtn" type="button">对照上一份</button>
             <label class="hint" for="xDate"><span data-help-tip="列设置勾选「X日价」时生效。">X日</span> <input id="xDate" type="date" style="margin-left:4px" /></label>
+            <span class="search-box">
+              <input id="globalSearch" type="search" placeholder="搜名称 / 代码，回车" aria-label="全市场搜索" />
+              <button class="btn ghost" id="searchBtn" type="button"><span data-help-tip="按名称或代码在全市场搜，结果显示在右侧表（最多 200 只）。此时「当前导出」变成“筛选一次”，导出 Excel 导的就是搜到的这批。">搜索</span></button>
+            </span>
             <span class="export-scope" id="exportScope">当前导出：自选</span>
             <span class="hint" id="queryHint">尚未查询</span>
           </div>
@@ -966,6 +982,10 @@
         <label>减仓价<input id="cardReduce" type="number" step="any" /></label>
       </div>
       <label>作废条件<input id="cardInvalid" placeholder="纯文本，暂不执行公式" /></label>
+      <div class="rule-grid">
+        <label><span data-help-tip="填了日期，到了这天会在「监控中心 → 今日」提一次（当天只提一次）。留空就是提醒。日期按自然日算，不按交易日。">提醒日期</span><input id="cardRemindAt" type="date" /></label>
+        <label>提醒备注<input id="cardRemindNote" placeholder="例如：这天看季报，核对持有逻辑" /></label>
+      </div>
       <div class="pick-actions" style="margin-top:12px;">
         <button class="btn primary" type="submit">保存决策卡</button>
         <button class="btn ghost" id="closeCard" type="button">关闭</button>
@@ -1027,6 +1047,9 @@
         return {};
       }
     }
+    // 列表与表格一次渲染多少条。只是显示分页，导出始终按整个池 / 整批。
+    const PAGE_SIZE = 100;
+
     const state = {
       token: sessionStorage.getItem("sa_token") || "",
       fields: [],
@@ -1045,6 +1068,10 @@
       lastQueryCodes: null,
       boardTimer: null,
       rowsRaw: [],
+      // 分页：只影响「显示多少条」，不影响导出（导出始终按整个池 / 整批）。
+      tablePage: 1,
+      poolPage: 1,
+      dragCode: null,
       sortKey: "",
       customConcepts: [],
       sortDir: "desc",
@@ -1215,7 +1242,56 @@
     function helpTip(text) {
       const t = String(text == null ? "" : text).trim();
       if (!t) return "";
-      return `<span class="help-tip" tabindex="0" role="button" aria-label="说明"><span class="help-bubble">${esc(t)}</span></span>`;
+      // 气泡改成挂在 body 上的 fixed 元素：原来 absolute 的气泡会被祖先的
+      // overflow:hidden / 顶栏边界裁掉（「刷新」「全量更新」提示显示不全）。
+      return `<span class="help-tip" tabindex="0" role="button" aria-label="说明" data-tip="${escAttr(t)}"></span>`;
+    }
+
+    let helpBubbleEl = null;
+
+    function ensureHelpBubble() {
+      if (helpBubbleEl) return helpBubbleEl;
+      helpBubbleEl = document.createElement("div");
+      helpBubbleEl.className = "help-bubble-float";
+      document.body.appendChild(helpBubbleEl);
+      return helpBubbleEl;
+    }
+
+    function showHelpBubble(anchor, text) {
+      if (!anchor || !text) return;
+      const box = ensureHelpBubble();
+      box.textContent = text;
+      box.style.display = "block";
+      const r = anchor.getBoundingClientRect();
+      const bw = box.offsetWidth;
+      const bh = box.offsetHeight;
+      let left = r.left + r.width / 2 - bw / 2;
+      left = Math.max(8, Math.min(left, window.innerWidth - bw - 8));
+      let top = r.top - bh - 8;
+      if (top < 8) top = r.bottom + 8;
+      box.style.left = left + "px";
+      box.style.top = top + "px";
+    }
+
+    function hideHelpBubble() {
+      if (helpBubbleEl) helpBubbleEl.style.display = "none";
+    }
+
+    function bindHelpBubble() {
+      document.addEventListener("mouseover", (e) => {
+        const el = e.target.closest ? e.target.closest(".help-tip[data-tip]") : null;
+        if (el) showHelpBubble(el, el.getAttribute("data-tip"));
+      });
+      document.addEventListener("mouseout", (e) => {
+        const el = e.target.closest ? e.target.closest(".help-tip[data-tip]") : null;
+        if (el) hideHelpBubble();
+      });
+      document.addEventListener("focusin", (e) => {
+        const el = e.target.closest ? e.target.closest(".help-tip[data-tip]") : null;
+        if (el) showHelpBubble(el, el.getAttribute("data-tip"));
+      });
+      document.addEventListener("focusout", hideHelpBubble);
+      window.addEventListener("scroll", hideHelpBubble, true);
     }
 
     function mountHelpTips(root) {
@@ -1376,14 +1452,10 @@
         ul.innerHTML = `<li class="code" style="display:block;">无匹配自选</li>`;
         return;
       }
+      // 自选全部展示；按住拖动可改顺序，右键出菜单（打开决策卡 / 移出自选）。
       ul.innerHTML = shown.map((it, i) =>
-        `<li class="${i === 0 ? "active" : ""} ${it.card_filled ? "filled" : ""}" data-code="${it.code6}">
-          <div class="rank">
-            <button class="btn sm ghost" type="button" data-watch-up="${it.code6}" title="上移">↑</button>
-            <button class="btn sm ghost" type="button" data-watch-down="${it.code6}" title="下移">↓</button>
-          </div>
+        `<li class="${i === 0 ? "active" : ""} ${it.card_filled ? "filled" : ""}" data-code="${it.code6}" draggable="true" title="拖动可调整顺序；右键可打开决策卡或移出自选">
           <span class="meta" style="flex:1;min-width:0;"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || marketLabel[it.market] || it.market || ""} · ${esc(it.group || "自选")}</span></span>
-          <button class="rm" type="button" data-rm="${it.code6}" title="移出自选">×</button>
         </li>`
       ).join("");
     }
@@ -1404,11 +1476,18 @@
         ul.innerHTML = `<li class="code" style="display:block;">${empty}</li>`;
         return;
       }
-      ul.innerHTML = shown.map((it, i) =>
-        `<li class="${i === 0 ? "active" : ""}">
-          <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || it.exchange || ""}</span></span>
-        </li>`
-      ).join("");
+      const limit = state.poolPage * PAGE_SIZE;
+      const page = shown.slice(0, limit);
+      const rest = shown.length - page.length;
+      ul.innerHTML =
+        page.map((it, i) =>
+          `<li class="${i === 0 ? "active" : ""}">
+            <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || it.exchange || ""}</span></span>
+          </li>`
+        ).join("") +
+        (rest > 0
+          ? `<li class="code" style="display:block;"><button class="btn sm ghost" type="button" data-pool-more="1">显示更多（还有 ${rest} 只）</button></li>`
+          : "");
     }
 
     function chipButtons(pools) {
@@ -1457,6 +1536,7 @@
 
     async function selectPool(poolId) {
       state.pool = poolId;
+      state.poolPage = 1;
       if (poolId !== "watch") {
         state.sortKey = "pct";
         state.sortDir = "desc";
@@ -1521,11 +1601,47 @@
       document.getElementById("pickerMask").style.display = "none";
     }
 
+    function ensureTableMore() {
+      let el = document.getElementById("tableMore");
+      if (el) return el;
+      el = document.createElement("div");
+      el.className = "table-more";
+      el.id = "tableMore";
+      el.style.display = "none";
+      const wrap = document.querySelector("#query .table-wrap");
+      if (wrap && wrap.parentNode) wrap.parentNode.insertBefore(el, wrap.nextSibling);
+      return el;
+    }
+
+    function renderTableMore(total, limit) {
+      const el = ensureTableMore();
+      if (!el) return;
+      if (total <= limit) {
+        el.style.display = "none";
+        el.innerHTML = "";
+        return;
+      }
+      el.style.display = "flex";
+      el.innerHTML =
+        `<span>已显示 ${limit} / ${total} 只。<b>导出 Excel 不受影响</b>，会导出这一批的全部。</span>` +
+        `<button class="btn sm" type="button" id="tableMoreBtn">加载更多</button>`;
+      const btn = document.getElementById("tableMoreBtn");
+      if (btn) {
+        btn.addEventListener("click", () => {
+          state.tablePage += 1;
+          renderTable(state.fields, state.rowsRaw);
+        });
+      }
+    }
+
     function renderTable(fields, rows) {
       state.fields = fields;
       state.rowsRaw = rows || [];
       applyColLayout(fields);
-      const shown = sortedRows(state.rowsRaw);
+      const all = sortedRows(state.rowsRaw);
+      const limit = state.tablePage * PAGE_SIZE;
+      const shown = all.slice(0, limit);
+      renderTableMore(all.length, limit);
       document.getElementById("tableHead").innerHTML =
         "<tr>" + fields.map((f) => {
           const w = colWidth(f);
@@ -1711,6 +1827,7 @@
         return;
       }
       try {
+        state.tablePage = 1;
         renderTable(fields, rows);
       } catch (renderErr) {
         hintEl.textContent = "表格渲染失败";
@@ -1765,6 +1882,28 @@
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+    }
+
+    async function runSearch() {
+      const input = document.getElementById("globalSearch");
+      const q = (input.value || "").trim();
+      if (!q) {
+        toast("请输入股票名称或代码");
+        return;
+      }
+      try {
+        const items = await api("/markets/instruments?q=" + encodeURIComponent(q) + "&limit=200");
+        const list = Array.isArray(items) ? items : (items.items || []);
+        if (!list.length) {
+          toast("没有匹配的股票");
+          return;
+        }
+        const codes = list.map((it) => it.code_full || it.code6).filter(Boolean);
+        await runQuery(codes, { refreshMode: "cache", forceLive: false });
+        toast(`搜到 ${codes.length} 只，已显示在右侧表；导出 Excel 会导出这批`);
+      } catch (err) {
+        toast(err.message);
+      }
     }
 
     async function exportXlsx() {
@@ -2116,6 +2255,8 @@
       document.getElementById("cardBuyHigh").value = card.buy_high == null ? "" : card.buy_high;
       document.getElementById("cardReduce").value = card.reduce_price == null ? "" : card.reduce_price;
       document.getElementById("cardInvalid").value = card.invalid_if || "";
+      document.getElementById("cardRemindAt").value = card.remind_at || "";
+      document.getElementById("cardRemindNote").value = card.remind_note || "";
       document.getElementById("cardMask").style.display = "flex";
     }
 
@@ -2236,6 +2377,13 @@
       }
     });
     document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));
+    document.getElementById("searchBtn").addEventListener("click", () => runSearch().catch((e) => toast(e.message)));
+    document.getElementById("globalSearch").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        runSearch().catch((err) => toast(err.message));
+      }
+    });
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
     document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
     document.getElementById("storageRefresh").addEventListener("click", () => loadStorage().catch((e) => toast(e.message)));
@@ -2347,47 +2495,136 @@
     document.getElementById("indexChips").addEventListener("click", onPoolChipClick);
     document.getElementById("exchangeChips").addEventListener("click", onPoolChipClick);
     document.getElementById("boardChips").addEventListener("click", onPoolChipClick);
-    document.getElementById("boardBar").addEventListener("click", onPoolChipClick);
-    document.getElementById("watchList").addEventListener("click", async (e) => {
-      const rm = e.target.closest("[data-rm]");
-      if (rm) {
-        try {
-          const data = await api("/watchlist/" + rm.dataset.rm, { method: "DELETE" });
-          renderWatch(data.items);
-          toast("已移出 " + rm.dataset.rm);
-          await runQuery();
-        } catch (err) {
-          toast(err.message);
-        }
-        return;
+    // 抬头里的池条目（如北证50）：先切到「行情」侧栏再选池，避免导出范围和屏幕上的表不一致。
+    document.getElementById("boardBar").addEventListener("click", (e) => {
+      const el = e.target.closest("[data-pool]");
+      if (!el) return;
+      setSide("quote");
+      selectPool(el.dataset.pool).catch((err) => toast(err.message));
+    });
+    async function removeWatch(code) {
+      try {
+        const data = await api("/watchlist/" + code, { method: "DELETE" });
+        renderWatch(data.items);
+        toast("已移出 " + code);
+        await runQuery();
+      } catch (err) {
+        toast(err.message);
       }
-      const up = e.target.closest("[data-watch-up]");
-      const down = e.target.closest("[data-watch-down]");
-      if (up || down) {
-        e.preventDefault();
-        e.stopPropagation();
-        const code = (up || down).dataset.watchUp || (up || down).dataset.watchDown;
-        const codes = (state.watch || []).map((it) => it.code6);
-        const idx = codes.indexOf(code);
-        if (idx < 0) return;
-        const next = idx + (up ? -1 : 1);
-        if (next < 0 || next >= codes.length) return;
-        const swapped = codes.slice();
-        const tmp = swapped[idx];
-        swapped[idx] = swapped[next];
-        swapped[next] = tmp;
-        try {
-          const items = await api("/watchlist/order", { method: "PUT", body: JSON.stringify({ codes: swapped }) });
-          renderWatch(items);
-          state.sortKey = "";
-          if (state.side === "watch" && !state.lastQueryCodes) await runQuery();
-        } catch (err) {
-          toast(err.message);
-        }
-        return;
+    }
+
+    async function moveWatch(from, to) {
+      const codes = (state.watch || []).map((it) => it.code6);
+      const i = codes.indexOf(from);
+      const j = codes.indexOf(to);
+      if (i < 0 || j < 0 || i === j) return;
+      codes.splice(i, 1);
+      codes.splice(j, 0, from);
+      try {
+        const items = await api("/watchlist/order", { method: "PUT", body: JSON.stringify({ codes }) });
+        renderWatch(items);
+        state.sortKey = "";
+        if (state.side === "watch" && !state.lastQueryCodes) await runQuery();
+      } catch (err) {
+        toast(err.message);
       }
+    }
+
+    let ctxMenuEl = null;
+
+    function ensureCtxMenu() {
+      if (ctxMenuEl) return ctxMenuEl;
+      ctxMenuEl = document.createElement("div");
+      ctxMenuEl.className = "ctx-menu";
+      document.body.appendChild(ctxMenuEl);
+      const close = () => { if (ctxMenuEl) ctxMenuEl.style.display = "none"; };
+      document.addEventListener("click", close, true);
+      window.addEventListener("scroll", close, true);
+      return ctxMenuEl;
+    }
+
+    function openCtxMenu(x, y, actions) {
+      const el = ensureCtxMenu();
+      el.innerHTML = "";
+      actions.forEach((a) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = a.label;
+        if (a.danger) b.style.color = "var(--danger)";
+        b.addEventListener("click", () => {
+          el.style.display = "none";
+          a.run();
+        });
+        el.appendChild(b);
+      });
+      el.style.display = "block";
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      el.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + "px";
+      el.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + "px";
+    }
+
+    const watchListEl = document.getElementById("watchList");
+
+    watchListEl.addEventListener("click", (e) => {
       const li = e.target.closest("li[data-code]");
       if (li) openCard(li.dataset.code);
+    });
+
+    watchListEl.addEventListener("contextmenu", (e) => {
+      const li = e.target.closest("li[data-code]");
+      if (!li) return;
+      e.preventDefault();
+      const code = li.dataset.code;
+      openCtxMenu(e.clientX, e.clientY, [
+        { label: "打开决策卡", run: () => openCard(code) },
+        { label: "移出自选", danger: true, run: () => removeWatch(code) },
+      ]);
+    });
+
+    watchListEl.addEventListener("dragstart", (e) => {
+      const li = e.target.closest("li[data-code]");
+      if (!li) return;
+      state.dragCode = li.dataset.code;
+      li.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", li.dataset.code); } catch (_) { /* 兼容 */ }
+    });
+
+    watchListEl.addEventListener("dragend", () => {
+      state.dragCode = null;
+      watchListEl.querySelectorAll("li").forEach((n) => n.classList.remove("dragging", "drag-over"));
+    });
+
+    watchListEl.addEventListener("dragover", (e) => {
+      if (!state.dragCode) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const li = e.target.closest("li[data-code]");
+      watchListEl.querySelectorAll("li.drag-over").forEach((n) => n.classList.remove("drag-over"));
+      if (li && li.dataset.code !== state.dragCode) li.classList.add("drag-over");
+    });
+
+    watchListEl.addEventListener("drop", (e) => {
+      if (!state.dragCode) return;
+      e.preventDefault();
+      const li = e.target.closest("li[data-code]");
+      const from = state.dragCode;
+      state.dragCode = null;
+      watchListEl.querySelectorAll("li").forEach((n) => n.classList.remove("dragging", "drag-over"));
+      if (!li || li.dataset.code === from) return;
+      moveWatch(from, li.dataset.code);
+    });
+
+    // 指数 / 交易所列表的「显示更多」（自选不分页，全部展示）
+    ["quoteList", "exchangeList"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("click", (e) => {
+        if (!e.target.closest("[data-pool-more]")) return;
+        state.poolPage += 1;
+        renderPoolList(state.quoteItems);
+      });
     });
     async function loadTaxonomyData() {
       if (state.taxonomyLoaded) return;
@@ -3368,6 +3605,8 @@
             buy_high: numOrNull("cardBuyHigh"),
             reduce_price: numOrNull("cardReduce"),
             invalid_if: document.getElementById("cardInvalid").value,
+            remind_at: document.getElementById("cardRemindAt").value || "",
+            remind_note: document.getElementById("cardRemindNote").value || "",
           }),
         });
         state.watch = (state.watch || []).map((it) => (it.code6 === saved.code6 ? saved : it));
@@ -3472,6 +3711,7 @@
     });
 
     mountHelpTips();
+    bindHelpBubble();
     setPoolHint(poolHintText("watch"));
     setAttachHint();
 

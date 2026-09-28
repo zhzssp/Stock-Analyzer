@@ -14,6 +14,8 @@ _COLUMNS = {
         ("buy_high", "FLOAT"),
         ("reduce_price", "FLOAT"),
         ("invalid_if", "TEXT DEFAULT ''"),
+        ("remind_at", "VARCHAR(16) DEFAULT ''"),
+        ("remind_note", "TEXT DEFAULT ''"),
         ("sort_order", "INTEGER DEFAULT 0"),
     ],
     "monitor_jobs": [

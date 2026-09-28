@@ -32,6 +32,9 @@ class WatchItem(Base):
     buy_high: Mapped[float | None] = mapped_column(Float, nullable=True)
     reduce_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     invalid_if: Mapped[str] = mapped_column(Text, default="")
+    # 决策卡提醒：到这天（YYYY-MM-DD）在「今日」提一次，当天不重复。空 = 不提醒。
+    remind_at: Mapped[str] = mapped_column(String(16), default="")
+    remind_note: Mapped[str] = mapped_column(Text, default="")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 

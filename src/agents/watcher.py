@@ -343,6 +343,9 @@ def _finish_watcher(
     from src.market.calendar import is_trading_day
 
     trading_today = is_trading_day(date.today().strftime("%Y%m%d"), market)
+    # 决策卡上填了「提醒日期」的：到这天提一次。它不依赖任何模板规则开关，
+    # 所以「立刻跑一轮」和 20:20 那轮都会带上；不按交易日跳过（日期是你自己定的）。
+    hits.extend(_rule_card_reminders(db, user, items, persist, preview_spec))
     active_keys = {j.job_key for j in jobs if j.enabled and not j.reason}
     limit_up_pool = market.limit_pool_codes("up") if "limit-up" in active_keys else set()
     limit_down_pool = market.limit_pool_codes("down") if "limit-down" in active_keys else set()
@@ -519,6 +522,41 @@ def _holder_items(row: dict | None, catalog: list[dict] | None) -> list[dict]:
         return normalize_holders(detail, catalog)
     names = [p.strip() for p in str(row.get("holders") or "").split("、") if p.strip()]
     return [{"name": n, "shares": None, "pct": None} for n in names]
+
+
+def _rule_card_reminders(db, user, items, persist: bool, preview_spec=None) -> list[dict]:
+    """决策卡提醒日期到期：当天每只只提一次（用已有 alert 去重，不新增状态列）。"""
+    if preview_spec is not None:
+        return []
+    today = date.today().isoformat()
+    out: list[dict] = []
+    for item in items or []:
+        raw = (getattr(item, "remind_at", "") or "").strip()
+        if not raw or raw > today:
+            continue
+        exists = (
+            db.query(Alert)
+            .filter_by(user_id=user.id, job_key="card-remind", code6=item.code6, hit_date=today)
+            .first()
+        )
+        if exists:
+            continue
+        note = (getattr(item, "remind_note", "") or "").strip() or "决策卡提醒日期到了"
+        detail = f"提醒日期 {raw}\n{note}"
+        hit = _alert(
+            db,
+            user.id,
+            "card-remind",
+            item.code6,
+            f"{item.name} · 决策卡提醒",
+            detail,
+            persist=persist,
+            severity="act",
+            rule_id="card-remind",
+        )
+        if hit:
+            out.append(hit)
+    return out
 
 
 def _rule_holders(db, user, ctx, inst, params: dict, catalog: list[dict], persist: bool) -> dict | None:

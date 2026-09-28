@@ -166,6 +166,8 @@ class CardIn(BaseModel):
     buy_high: float | None = None
     reduce_price: float | None = None
     invalid_if: str = ""
+    remind_at: str = ""
+    remind_note: str = ""
     group: str | None = None
 
 
@@ -455,6 +457,21 @@ def put_watch_order(body: WatchOrderIn, user: User = Depends(current_user), db: 
     return [_watch_payload(i) for i in _watch_ordered(db, user)]
 
 
+def _norm_remind_date(raw: str) -> str:
+    """只接受 YYYY-MM-DD 或 YYYYMMDD；空串表示不提醒。不符合就拒绝，不猜。"""
+    token = (raw or "").strip()
+    if not token:
+        return ""
+    digits = token.replace("-", "").replace("/", "")
+    if len(digits) == 8 and digits.isdigit():
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    if len(token) == 10 and token[4] == "-" and token[7] == "-":
+        head = token.replace("-", "")
+        if head.isdigit():
+            return token
+    raise HTTPException(status_code=400, detail="提醒日期须为 YYYY-MM-DD 或 YYYYMMDD")
+
+
 @router.put("/watchlist/{code6}/card")
 def put_watch_card(code6: str, body: CardIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     item = db.query(WatchItem).filter_by(user_id=user.id, code6=code6).first()
@@ -469,6 +486,8 @@ def put_watch_card(code6: str, body: CardIn, user: User = Depends(current_user),
     item.buy_high = body.buy_high
     item.reduce_price = body.reduce_price
     item.invalid_if = (body.invalid_if or "")[:500]
+    item.remind_at = _norm_remind_date(body.remind_at)
+    item.remind_note = (body.remind_note or "")[:200]
     if body.group:
         item.group_name = body.group
     db.commit()

@@ -106,7 +106,13 @@ def test_workbench_pct_column_sorts_index_constituents():
     assert "/watchlist/order" in html
     assert 'id="ruleCode"' in html
     assert "一只" in html
-    assert "data-watch-up" in html
+    # 自选排序改为按住拖动，删除改为右键菜单
+    assert 'draggable="true"' in html
+    assert "function moveWatch" in html
+    assert "function openCtxMenu" in html
+    # 列表 / 表格分页（导出不受分页影响）
+    assert "data-pool-more" in html
+    assert "PAGE_SIZE" in html
     assert 'id="colPresets"' in html
     assert "预设「看盘」" in html
     assert 'id="customConceptAdd"' in html
