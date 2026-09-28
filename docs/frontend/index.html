@@ -283,7 +283,7 @@
       flex-shrink: 0;
     }
     .toolbar .hint { margin-left: auto; color: var(--muted); white-space: normal; }
-    .toolbar .toolbar-help { margin-left: auto; display: flex; align-items: center; }
+    .toolbar .toolbar-help { margin-left: auto; display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: 13px; }
     .view { display: none; flex: 1; min-height: 0; overflow: hidden; }
     .view.on { display: flex; flex-direction: column; }
     .table-wrap { overflow: auto; padding: 0 16px 16px; flex: 1; min-height: 0; isolation: isolate; }
@@ -740,7 +740,7 @@
               <button class="subtab" data-monitor="prefs" type="button">偏好</button>
             </div>
             <button class="btn primary" id="monitorRun" type="button">立刻跑一轮</button>
-            <span class="toolbar-help" data-help-tip="交易日 09:00–15:00 每 5 分钟扫盘中实时规则；20:20 跑日终规则并给昨天的命中打次日标签。期货行情、彭博检索未接则保持未启用。"></span>
+            <span class="toolbar-help"><span data-help-tip="交易日 09:00–15:00 每 5 分钟扫盘中实时规则；20:20 跑日终规则并给昨天的命中打次日标签。期货行情、彭博检索未接则保持未启用。">排程</span></span>
           </div>
           <div class="panel monitor-body">
             <div id="monitorToday" class="monitor-pane on">
@@ -808,7 +808,7 @@
             <button class="btn" id="storageRefresh" type="button">刷新占用</button>
             <button class="btn" id="cacheClear" type="button">清空行情缓存</button>
             <button class="btn" id="artifactPrune" type="button">只留最近导出</button>
-            <span class="toolbar-help" data-help-tip="数据在软件根目录的 data/。缓存可删；自选、对话、提醒在 app.db，不要手删整个文件夹。"></span>
+            <span class="toolbar-help"><span data-help-tip="数据在软件根目录的 data/。缓存可删；自选、对话、提醒在 app.db，不要手删整个文件夹。">数据位置</span></span>
           </div>
           <div class="panel" style="flex:1; overflow:auto;">
             <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="日线只缓存你查过的股票，同一文件覆盖写，默认最多 500 根。缓存超过上限会先删最久未用的日线，名单缓存尽量留到最后。每人默认最多留 20 份 Excel。">存储占用</span></div>
@@ -1401,7 +1401,10 @@
       scope.querySelectorAll("[data-help-tip]").forEach((el) => {
         const tip = el.getAttribute("data-help-tip");
         if (!tip) return;
-        el.insertAdjacentHTML("afterend", helpTip(tip));
+        if (el.querySelector(".help-tip")) return; // 幂等：重复挂载不再插第二个
+        // 放进被提示元素「内部」而不是后面：父级是 flex + space-between 时
+        // （例如 .side-title），插在后面会被推到整行最右，看起来离文字很远。
+        el.insertAdjacentHTML("beforeend", helpTip(tip));
         el.removeAttribute("data-help-tip");
       });
     }
