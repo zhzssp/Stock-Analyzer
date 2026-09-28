@@ -1173,6 +1173,114 @@
         return {};
       }
     }
+    // ---- 调试支持 ----
+    // 开启方式（二选一，都不影响正常使用）：
+    //   1) 地址栏加 ?debug=1        例：http://127.0.0.1:8765/?debug=1
+    //   2) 控制台执行 localStorage.setItem("sa_debug","1") 然后刷新
+    // 关闭：localStorage.removeItem("sa_debug") 后刷新。
+    const SA_DEBUG = (() => {
+      try {
+        return new URLSearchParams(location.search).has("debug")
+          || localStorage.getItem("sa_debug") === "1";
+      } catch (_) {
+        return false;
+      }
+    })();
+
+    const saDebug = {
+      enabled: SA_DEBUG,
+      lastPayload: null,
+      lastResult: null,
+      streamEvents: [],
+      cols: {},
+      board: null,
+    };
+    window.saDebug = saDebug;
+
+    function dbg(...args) {
+      if (!SA_DEBUG) return;
+      console.log("%c[SA]", "color:#0a7a5a;font-weight:700", ...args);
+    }
+
+    // 统计每列有多少行真的有值 —— 一眼看出「为什么全是 —」
+    function collectColStats(fields, rows) {
+      const stats = {};
+      (fields || []).forEach((f) => {
+        let filled = 0;
+        (rows || []).forEach((r) => {
+          const v = r ? r[f.key] : null;
+          if (v !== null && v !== undefined && v !== "" && v !== "—") filled += 1;
+        });
+        stats[f.key] = { label: f.label, filled, total: (rows || []).length };
+      });
+      saDebug.cols = stats;
+      if (SA_DEBUG) {
+        const empty = Object.entries(stats).filter(([, s]) => s.filled === 0).map(([k]) => k);
+        dbg(
+          `列填充情况（共 ${(fields || []).length} 列 / ${(rows || []).length} 行）`,
+          empty.length ? `全空列：${empty.join(", ")}` : "所有列都有值"
+        );
+      }
+      return stats;
+    }
+
+    // 除名称 / 代码外整张表都空 → 这不是渲染 bug，是没取到数，直接说清楚
+    function warnIfAllEmpty(fields, rows) {
+      const dataFields = (fields || []).filter((f) => f.key !== "name" && f.key !== "code");
+      if (!dataFields.length || !(rows || []).length) return;
+      const filled = dataFields.filter((f) =>
+        (rows || []).some((r) => {
+          const v = r ? r[f.key] : null;
+          return v !== null && v !== undefined && v !== "" && v !== "—";
+        })
+      ).length;
+      if (filled > 0) return;
+      const hint = document.getElementById("queryHint");
+      if (hint) hint.textContent += " · 取数失败：除名称 / 代码外全部为空";
+      if (state.emptyWarned) return;
+      state.emptyWarned = true;
+      toast("没取到任何字段：通常是证书额度用尽或网络不通。按 F12 打开控制台，执行 saDiag() 看详情");
+      dbg("整表为空：先看 saDebug.lastResult.market（探针状态、证书池），再执行 saDiag()");
+    }
+
+    // 一键诊断：出问题让用户直接跑这个，把输出贴出来
+    async function saDiag() {
+      console.group("%c[SA] 一键诊断", "color:#0a7a5a;font-weight:700");
+      let health = null;
+      try {
+        health = await api("/health");
+        const m = health.market || {};
+        console.log("market:", {
+          status: m.status,
+          offline: m.offline,
+          offline_reason: m.offline_reason,
+          sample_only: m.sample_only,
+          has_licence: m.has_licence,
+          licence_switches: m.licence_switches,
+          licence_unusable: m.licence_unusable,
+        });
+        console.log("证书池 licence_pools:", m.licence_pools);
+      } catch (err) {
+        console.warn("health 请求失败：", err);
+      }
+      try {
+        const board = await api("/markets/board");
+        saDebug.board = board.items || [];
+        console.log("顶栏指数:", (board.items || []).map(
+          (x) => `${x.short}=${x.p != null ? x.p : (x.count != null ? x.count + "只" : "—")} [${x.kind || "quote"}/${x.source || ""}]`
+        ));
+      } catch (err) {
+        console.warn("board 请求失败：", err);
+      }
+      console.log("最近一次查询 payload:", saDebug.lastPayload);
+      console.log("最近一次查询结果:", saDebug.lastResult);
+      console.log("每列填充统计:", saDebug.cols);
+      console.log("流式事件序列:", saDebug.streamEvents.map((e) => e.event + (e.rows != null ? `(${e.rows})` : "")));
+      console.groupEnd();
+      return { health, board: saDebug.board, lastResult: saDebug.lastResult, cols: saDebug.cols };
+    }
+    window.saDiag = saDiag;
+
     // 列表与表格一次渲染多少条。只是显示分页，导出始终按整个池 / 整批。
     const PAGE_SIZE = 100;
 
@@ -1201,6 +1309,7 @@
       gsItems: [],
       stockCode: "",
       justDragged: false,
+      emptyWarned: false,
       exportOpts: null,
       exportSnapshot: null,
       exportHasSnapshot: false,
@@ -1818,6 +1927,8 @@
       renderTableHead(fields);
       document.getElementById("tableBody").innerHTML = shown.map((row) => `<tr>${rowCellsHtml(fields, row)}</tr>`).join("");
       state.rowTr = {};
+      collectColStats(fields, state.rowsRaw);
+      warnIfAllEmpty(fields, state.rowsRaw);
     }
 
     // ---- 流式查询：骨架屏 + 边收边填 ----
@@ -1842,6 +1953,7 @@
     function applyStreamRows(rows, stage) {
       const fields = state.fields || [];
       const body = document.getElementById("tableBody");
+      if (stage === "quote") dbg("首批行情示例行（若这里就是空的，说明行情没取到）", rows && rows[0]);
       const limit = state.tablePage * PAGE_SIZE;
       if (stage === "quote") {
         // 首批：只有行情，按顺序把骨架行替换成真行
@@ -1882,6 +1994,13 @@
 
     function handleStreamEvent(event, data) {
       const hint = document.getElementById("queryHint");
+      saDebug.streamEvents.push({
+        event,
+        rows: ((data && data.rows) || []).length,
+        stage: data && data.stage,
+        done: data && data.done,
+      });
+      dbg("流式事件", event, data);
       if (event === "meta") {
         renderSkeleton(data.fields || [], data.total || 0);
         if (hint) hint.textContent = `共 ${data.total || 0} 只 · 正在取行情…`;
@@ -2091,6 +2210,8 @@
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       const payload = queryPayload(codes, { refreshMode, forceLive });
       if (refreshMode === "cache" && !forceLive) payload.force_live = false;
+      saDebug.lastPayload = payload;
+      dbg("发起查询", payload, "| 侧栏:", state.side, "| 池:", state.pool, "| 流式:", Boolean(o.stream));
       let data;
       try {
         if (o.stream && refreshMode !== "snapshot") {
@@ -2164,6 +2285,17 @@
       const fetchIssue = quoteFetchIssue(data);
       const warn = fetchIssue ? ` · ${fetchIssue}` : "";
       document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}${qsrc}${asOf}${warn}`;
+      saDebug.lastResult = {
+        pool: data.pool,
+        refresh_mode: data.refresh_mode || refreshMode,
+        rows: (data.rows || []).length,
+        fields: (data.fields || []).length,
+        market: data.market,
+        clock,
+        note: data.note || "",
+        sampleRow: (data.rows || [])[0] || null,
+      };
+      dbg("查询返回", saDebug.lastResult);
       if (state.lastQueryCodes) updateExportScope("筛选一次");
       else updateExportScope(data.pool || scope);
     }
