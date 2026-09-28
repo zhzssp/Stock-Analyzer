@@ -311,6 +311,12 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    /* 虚拟滚动：行高必须固定，否则占位高度算不准会出现跳动 / 空档 */
+    #queryTable tbody tr { height: 38px; }
+    #queryTable tbody td { padding-top: 6px; padding-bottom: 6px; }
+    #queryTable tr.vspacer, #queryTable tr.vspacer td {
+      height: auto; padding: 0; border: 0; background: transparent;
+    }
     #queryTable th {
       z-index: 1;
       overflow: visible;
@@ -1289,6 +1295,11 @@
 
     // 列表与表格一次渲染多少条。只是显示分页，导出始终按整个池 / 整批。
     const PAGE_SIZE = 100;
+    // 方案 C：超过这么多行就切「后端分页 + 虚拟滚动」。
+    // 低于阈值时保持老逻辑（一次性渲染），小表没必要上虚拟滚动。
+    const VSCROLL_MIN = 200;
+    // 每次向后端要多少行（= 一页）
+    const PAGE_LIMIT = 100;
 
     const state = {
       token: sessionStorage.getItem("sa_token") || "",
@@ -1308,6 +1319,12 @@
       lastQueryCodes: null,
       boardTimer: null,
       rowsRaw: [],
+      // 方案 C（后端分页 + 虚拟滚动）相关状态
+      paged: false,        // 后端还有下一页没拉
+      vscroll: false,      // 行数超过阈值，只渲染可视区
+      totalRows: 0,        // 整池行数（后端返回的 total，不是已加载数）
+      loadingMore: false,
+      lastRefreshMode: "quote",
       // 分页：只影响「显示多少条」，不影响导出（导出始终按整个池 / 整批）。
       tablePage: 1,
       poolPage: 1,
@@ -1688,6 +1705,12 @@
         } else {
           state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
         }
+        if (state.paged || state.vscroll) {
+          // 分页后前端手里只有一页，前端排序只会排已加载那段 —— 回到后端重排并从第 0 页开始
+          runQuery(state.lastQueryCodes, { refreshMode: state.lastRefreshMode || "quote", forceLive: false })
+            .catch(() => {});
+          return;
+        }
         renderTable(state.fields, state.rowsRaw);
       });
     }
@@ -1892,6 +1915,11 @@
       const btn = document.getElementById("tableMoreBtn");
       if (btn) {
         btn.addEventListener("click", () => {
+          // 后端还有下一页时，要去后端拉，光在本机翻页是翻不出来的
+          if (state.paged) {
+            loadMorePage();
+            return;
+          }
           state.tablePage += 1;
           renderTable(state.fields, state.rowsRaw);
         });
@@ -1922,19 +1950,121 @@
       }).join("");
     }
 
-    function renderTable(fields, rows) {
+    function renderTable(fields, rows, opts) {
+      const o = opts && typeof opts === "object" ? opts : {};
       state.fields = fields;
-      state.rowsRaw = rows || [];
+      // append=true 是「滚动加载下一页」：接在已加载的行后面，不覆盖
+      state.rowsRaw = o.append ? (state.rowsRaw || []).concat(rows || []) : (rows || []);
       applyColLayout(fields);
-      const all = sortedRows(state.rowsRaw);
-      const limit = state.tablePage * PAGE_SIZE;
-      const shown = all.slice(0, limit);
-      renderTableMore(all.length, limit);
-      renderTableHead(fields);
-      document.getElementById("tableBody").innerHTML = shown.map((row) => `<tr>${rowCellsHtml(fields, row)}</tr>`).join("");
-      state.rowTr = {};
+      if (state.vscroll) {
+        renderTableHead(fields);
+        renderVirtual();
+      } else {
+        const all = sortedRows(state.rowsRaw);
+        const limit = state.tablePage * PAGE_SIZE;
+        const shown = all.slice(0, limit);
+        renderTableMore(all.length, limit);
+        renderTableHead(fields);
+        document.getElementById("tableBody").innerHTML = shown.map((row) => `<tr>${rowCellsHtml(fields, row)}</tr>`).join("");
+        state.rowTr = {};
+      }
       collectColStats(fields, state.rowsRaw);
       warnIfAllEmpty(fields, state.rowsRaw);
+    }
+
+    // ---- 方案 C：虚拟滚动 ----
+    // 只把可视区那几十行放进 DOM，上下各用一个占位行撑出滚动条高度。
+    // 2228 行时 DOM 节点从 2 万多个降到几十个，内存里也只有已加载的页。
+
+    let measuredRowH = 0;
+    let vscrollRaf = 0;
+
+    function measureRowHeight() {
+      const tr = document.querySelector("#tableBody tr:not(.vspacer)");
+      if (tr && tr.offsetHeight) measuredRowH = tr.offsetHeight;
+      return measuredRowH || 38;
+    }
+
+    function tableScrollWrap() {
+      return document.querySelector(".table-wrap");
+    }
+
+    function renderVirtual() {
+      const fields = state.fields || [];
+      const all = sortedRows(state.rowsRaw);
+      const wrap = tableScrollWrap();
+      const rowH = measureRowHeight();
+      const scrollTop = wrap ? wrap.scrollTop : 0;
+      const viewH = wrap ? wrap.clientHeight : 600;
+      const start = Math.max(0, Math.floor(scrollTop / rowH) - 6);
+      const end = Math.min(all.length, start + Math.ceil(viewH / rowH) + 12);
+      const shown = all.slice(start, end);
+      const cols = Math.max(1, fields.length);
+      const topPad = start > 0 ? `<tr class="vspacer" style="height:${start * rowH}px"><td colspan="${cols}"></td></tr>` : "";
+      const rest = all.length - end;
+      const bottomPad = rest > 0 ? `<tr class="vspacer" style="height:${rest * rowH}px"><td colspan="${cols}"></td></tr>` : "";
+      document.getElementById("tableBody").innerHTML =
+        topPad
+        + shown.map((row) => `<tr data-code="${escAttr(row.code6 || "")}">${rowCellsHtml(fields, row)}</tr>`).join("")
+        + bottomPad;
+      state.rowTr = {};
+      // 渲染完再量一次：行高和预估值不一致时（字体/缩放）不会留空档
+      measureRowHeight();
+      renderPagedHint(all.length);
+      maybeLoadMore();
+    }
+
+    function onTableScroll() {
+      if (!state.vscroll) return;
+      if (vscrollRaf) cancelAnimationFrame(vscrollRaf);
+      vscrollRaf = requestAnimationFrame(() => {
+        vscrollRaf = 0;
+        renderVirtual();
+      });
+    }
+
+    function renderPagedHint(loadedCount) {
+      const el = ensureTableMore();
+      if (!el) return;
+      if (!state.paged && !state.vscroll) return;
+      el.style.display = "flex";
+      const loaded = state.rowsRaw.length;
+      const btn = state.loadingMore
+        ? `<span>加载中…</span>`
+        : `<button class="btn sm" type="button" id="tableMoreBtn">加载更多</button>`;
+      el.innerHTML = `<span>已加载 ${loaded} / ${state.totalRows || loaded} 只${state.paged ? "，继续往下滚会自动加载" : ""}。<b>导出 Excel 不受影响</b>，会导出这一批的全部。</span>${btn}`;
+      const b = document.getElementById("tableMoreBtn");
+      if (b) b.addEventListener("click", () => loadMorePage());
+    }
+
+    function maybeLoadMore() {
+      if (!state.paged || state.loadingMore) return;
+      if (state.rowsRaw.length >= state.totalRows) return;
+      const wrap = tableScrollWrap();
+      if (!wrap) return;
+      // 只有真的滚到底部附近才预取下一页，否则一打开就会把整池全拉下来
+      if (wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight > 300) return;
+      loadMorePage();
+    }
+
+    async function loadMorePage() {
+      if (state.loadingMore || !state.paged) return;
+      if (state.rowsRaw.length >= state.totalRows) return;
+      state.loadingMore = true;
+      renderPagedHint();
+      try {
+        await runQuery(state.lastQueryCodes, {
+          append: true,
+          refreshMode: state.lastRefreshMode || "quote",
+          forceLive: state.lastRefreshMode === "full",
+          offset: state.rowsRaw.length,
+          limit: PAGE_LIMIT,
+        });
+      } catch (err) {
+        if (err && err.name !== "AbortError") toast("加载下一页失败：" + (err.message || ""));
+      } finally {
+        state.loadingMore = false;
+      }
     }
 
     // ---- 流式查询：骨架屏 + 边收边填 ----
@@ -1945,7 +2075,8 @@
       applyColLayout(fields);
       renderTableHead(fields);
       const limit = state.tablePage * PAGE_SIZE;
-      const n = Math.max(1, Math.min(total || 0, limit));
+      // 虚拟滚动下骨架也只画可视的那一屏，2228 行不会先造 2228 个空行
+      const n = state.vscroll ? Math.max(1, Math.min(total || 0, 40)) : Math.max(1, Math.min(total || 0, limit));
       const trs = [];
       for (let i = 0; i < n; i += 1) {
         trs.push(`<tr class="skel-row">${fields.map(() => '<td class="skel">&nbsp;</td>').join("")}</tr>`);
@@ -1958,8 +2089,21 @@
 
     function applyStreamRows(rows, stage) {
       const fields = state.fields || [];
-      const body = document.getElementById("tableBody");
       if (stage === "quote") dbg("首批行情示例行（若这里就是空的，说明行情没取到）", rows && rows[0]);
+      if (state.vscroll) {
+        // 虚拟滚动下 DOM 只有可视的几十行，不能靠 tr 映射去补格子：
+        // 只维护数据，再让 renderVirtual 重画可视区。
+        const map = state.streamRows || {};
+        rows.forEach((row) => {
+          if (row.code6 == null) return;
+          map[row.code6] = map[row.code6] ? Object.assign({}, map[row.code6], row) : row;
+        });
+        state.streamRows = map;
+        state.rowsRaw = Object.values(map);
+        renderVirtual();
+        return;
+      }
+      const body = document.getElementById("tableBody");
       const limit = state.tablePage * PAGE_SIZE;
       if (stage === "quote") {
         // 首批：只有行情，按顺序把骨架行替换成真行
@@ -2008,6 +2152,9 @@
       });
       dbg("流式事件", event, data);
       if (event === "meta") {
+        // meta.total 是整池行数（不是本页），据此决定是否启用虚拟滚动
+        state.totalRows = data.total || 0;
+        state.vscroll = state.totalRows > VSCROLL_MIN;
         renderSkeleton(data.fields || [], data.total || 0);
         if (hint) hint.textContent = `共 ${data.total || 0} 只 · 正在取行情…`;
         return;
@@ -2021,11 +2168,17 @@
         return;
       }
       if (event === "done") {
+        // 流式只流了一页，剩下的靠滚动加载
+        state.paged = Boolean(data.has_more) || state.rowsRaw.length < (state.totalRows || 0);
         state.tablePage = 1;
         renderTable(state.fields, state.rowsRaw);
         if (hint) {
           const sec = ((data.elapsed_ms || 0) / 1000).toFixed(1);
-          hint.textContent = `${data.rows_count || state.rowsRaw.length} 只 · 用时 ${sec} 秒`;
+          const loaded = state.rowsRaw.length;
+          const total = state.totalRows || loaded;
+          hint.textContent = loaded < total
+            ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载`
+            : `${data.rows_count || loaded} 只 · 用时 ${sec} 秒`;
         }
         return;
       }
@@ -2038,7 +2191,13 @@
       if (state.streamAbort) state.streamAbort.abort();
       const ctrl = new AbortController();
       state.streamAbort = ctrl;
-      const payload = queryPayload(codes, opts);
+      // 流式同样只流一页：首屏更快，前端也不用把整池攒在内存里
+      const payload = queryPayload(codes, {
+        refreshMode: (opts && opts.refreshMode) || "quote",
+        forceLive: opts ? opts.forceLive : undefined,
+        limit: opts && opts.append ? opts.limit : PAGE_LIMIT,
+        offset: opts && opts.append ? opts.offset : 0,
+      });
       const headers = { "Content-Type": "application/json" };
       if (state.token) headers.Authorization = "Bearer " + state.token;
       const res = await fetch("/api/query/stream", {
@@ -2124,6 +2283,16 @@
       const refreshMode = o.refreshMode || "quote";
       base.refresh_mode = refreshMode;
       if (o.fields && o.fields.length) base.fields = o.fields;
+      // 后端分页：让后端只回这一段（total / has_more 由后端算好）
+      if (o.limit) {
+        base.limit = o.limit;
+        base.offset = o.offset || 0;
+      }
+      // 排序交给后端：分页后前端手里只有一页，前端排序只会排已加载的那段
+      if (o.sortKey) {
+        base.sort_key = o.sortKey;
+        base.sort_dir = o.sortDir || "desc";
+      }
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       if (forceLive) base.force_live = true;
       else if (refreshMode === "cache") base.force_live = false;
@@ -2211,21 +2380,34 @@
 
     async function runQuery(codes, opts) {
       const o = opts && typeof opts === "object" ? opts : { forceLive: !!opts, refreshMode: opts ? "full" : "quote" };
-      if (codes && codes.length) state.lastQueryCodes = codes;
-      else state.lastQueryCodes = null;
+      const appending = Boolean(o.append); // 滚动加载下一页，不重置已有内容
+      if (!appending) {
+        if (codes && codes.length) state.lastQueryCodes = codes;
+        else state.lastQueryCodes = null;
+      }
       const hintEl = document.getElementById("queryHint");
-      hintEl.textContent = "查询中…";
+      if (!appending) hintEl.textContent = "查询中…";
       // 顶部指数先走：请求轻、返回快，让小板块先于大表刷新出来
-      loadBoard().catch(() => {});
+      if (!appending) loadBoard().catch(() => {});
       const refreshMode = o.refreshMode || "quote";
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
-      const payload = queryPayload(codes, { refreshMode, forceLive });
+      state.lastRefreshMode = refreshMode;
+      const payload = queryPayload(codes, {
+        refreshMode,
+        forceLive,
+        // 首屏只拉一页；后端会一起回 total / has_more，滚动到底再拉下一页
+        limit: appending ? o.limit : PAGE_LIMIT,
+        offset: appending ? o.offset : 0,
+        sortKey: state.sortKey || "",
+        sortDir: state.sortDir || "desc",
+      });
       if (refreshMode === "cache" && !forceLive) payload.force_live = false;
       saDebug.lastPayload = payload;
-      dbg("发起查询", payload, "| 侧栏:", state.side, "| 池:", state.pool, "| 流式:", Boolean(o.stream));
+      dbg("发起查询", payload, "| 侧栏:", state.side, "| 池:", state.pool, "| 流式:", Boolean(o.stream), "| 追加:", appending);
       let data;
       try {
-        if (o.stream && refreshMode !== "snapshot") {
+        // 排序时必须走一次性查询：流式是按池顺序边算边发，没法先排好再发
+        if (o.stream && refreshMode !== "snapshot" && !state.sortKey) {
           // 流式：先出骨架与行情，再逐只补齐；失败自动退回一次性查询
           try {
             await runQueryStream(codes, o);
@@ -2257,7 +2439,16 @@
       }
       const fields = data.fields || [];
       let rows = data.rows || [];
-      if (refreshMode === "quote" && state.rowsRaw && state.rowsRaw.length) {
+      // 后端分页元信息：total 是整池行数，has_more 表示后面还有
+      if (appending) {
+        state.paged = (state.rowsRaw.length + rows.length) < (state.totalRows || 0);
+      } else {
+        state.totalRows = data.total || rows.length;
+        state.paged = Boolean(data.has_more);
+        state.vscroll = state.totalRows > VSCROLL_MIN || rows.length > VSCROLL_MIN;
+      }
+      dbg("分页状态", { total: state.totalRows, loaded: rows.length, paged: state.paged, vscroll: state.vscroll });
+      if (refreshMode === "quote" && !appending && state.rowsRaw && state.rowsRaw.length) {
         rows = mergeQuoteRefreshRows(state.rowsRaw, rows);
       }
       if (!fields.length) {
@@ -2266,8 +2457,8 @@
         return;
       }
       try {
-        state.tablePage = 1;
-        renderTable(fields, rows);
+        if (!appending) state.tablePage = 1;
+        renderTable(fields, rows, { append: appending });
       } catch (renderErr) {
         hintEl.textContent = "表格渲染失败";
         toast(renderErr.message || "表格渲染失败");
@@ -2526,6 +2717,8 @@
     function expCount() {
       // 当前池（或搜索批次）一共有多少只
       if (state.lastQueryCodes && state.lastQueryCodes.length) return state.lastQueryCodes.length;
+      // 分页模式下 rowsRaw 只是已加载的那几页，整池行数看 total
+      if (state.totalRows) return state.totalRows;
       if (state.rowsRaw && state.rowsRaw.length) return state.rowsRaw.length;
       const pool = (state.pools || []).find((p) => p.id === state.pool);
       return (pool && pool.count) || 0;
@@ -3311,6 +3504,9 @@
     document.getElementById("indexChips").addEventListener("click", onPoolChipClick);
     document.getElementById("exchangeChips").addEventListener("click", onPoolChipClick);
     document.getElementById("boardChips").addEventListener("click", onPoolChipClick);
+    // 虚拟滚动：表格区滚动时重画可视区，接近底部时预取下一页
+    const tableWrapEl = document.querySelector(".table-wrap");
+    if (tableWrapEl) tableWrapEl.addEventListener("scroll", onTableScroll, { passive: true });
     // 抬头里的池条目（如北证50）：先切到「行情」侧栏再选池，避免导出范围和屏幕上的表不一致。
     document.getElementById("boardBar").addEventListener("click", (e) => {
       const el = e.target.closest("[data-pool]");

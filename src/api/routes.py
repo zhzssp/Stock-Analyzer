@@ -109,6 +109,13 @@ class QueryIn(BaseModel):
     x_date: str | None = None
     force_live: bool = False
     refresh_mode: str = "full"
+    # 分页：offset / limit 只对返回的行生效，池本身照旧全量计算（total 仍是整池行数）。
+    # limit=0 表示不分页（兼容旧行为）。
+    offset: int = 0
+    limit: int = 0
+    # 排序交给后端：分页后前端只拿到一页，前端排序只能排已加载的那一段，会排错。
+    sort_key: str = ""
+    sort_dir: str = "desc"
 
 
 class DiffIn(BaseModel):
@@ -634,6 +641,37 @@ def _user_preset(user: User, db: Session) -> str:
     return (pref.preset or PRESET_WATCH).strip().lower()
 
 
+def _sort_rows(rows: list[dict], key: str, direction: str) -> list[dict]:
+    """按某一列排序，空值永远排在最后（不管升序降序）。"""
+    key = (key or "").strip()
+    if not key or not rows:
+        return rows
+    desc = (direction or "desc").strip().lower() != "asc"
+
+    def sortable(row: dict):
+        v = row.get(key)
+        if v is None or v == "" or v == "—":
+            return None
+        if isinstance(v, bool):
+            return float(v)
+        if isinstance(v, (int, float)):
+            return float(v)
+        text = str(v).strip().replace(",", "").replace("%", "")
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def sort_key(row: dict):
+        num = sortable(row)
+        return num if num is not None else float("-inf")
+
+    filled = [r for r in rows if sortable(r) is not None]
+    empty = [r for r in rows if sortable(r) is None]
+    filled.sort(key=sort_key, reverse=desc)
+    return filled + empty
+
+
 def _prepare_query(body: QueryIn, user: User, db: Session):
     fields = body.fields or _user_fields(user, db)
     if body.codes:
@@ -661,6 +699,11 @@ def _execute_query(
     refresh_mode: str = "full",
     on_quotes: Any = None,
     on_row: Any = None,
+    offset: int = 0,
+    limit: int = 0,
+    sort_key: str = "",
+    sort_dir: str = "desc",
+    persist_snapshot: bool = True,
 ) -> dict:
     ensure_market()
     mode = (refresh_mode or "full").strip().lower()
@@ -676,11 +719,16 @@ def _execute_query(
             raise HTTPException(status_code=404, detail="尚无表级快照，请先点「查询」或「全量更新」")
         rows = rows_from_snapshot(snap, insts, fields, cards)
         clock_meta = snap.get("clock") or {}
+        # 快照读出来就是整表，分页字段按「一页装完」填，保持响应形状和 /query/run 一致。
         out = {
             "fields": _field_view(fields),
             "rows": rows,
             "pool": pool_name,
             "count": len(rows),
+            "total": len(rows),
+            "offset": 0,
+            "limit": len(rows),
+            "has_more": False,
             "market": market.health(),
             "clock": {
                 "as_of": clock_meta.get("as_of") or "",
@@ -727,11 +775,21 @@ def _execute_query(
     )
     codes = [i.code_full for i in insts]
     clock_meta = engine.last_clock_meta or {}
+    # 排序 + 分页：字段值先算出来才排得准，切片只影响返回给前端的那一段。
+    ordered = _sort_rows(rows, sort_key, sort_dir)
+    total = len(ordered)
+    start = max(0, int(offset or 0))
+    page = ordered[start : start + limit] if limit and limit > 0 else ordered
     out = {
         "fields": _field_view(fields),
-        "rows": rows,
+        "rows": page,
         "pool": pool_name,
-        "count": len(rows),
+        "count": len(page),
+        # total 是整池行数（不是本页行数），前端据此判断还要不要再拉下一页。
+        "total": total,
+        "offset": start,
+        "limit": int(limit or 0) or total,
+        "has_more": start + len(page) < total,
         "market": market.health(),
         "clock": {
             "as_of": clock_meta.get("as_of") or ((rows[0].get("as_of") if rows else "") or ""),
@@ -743,7 +801,9 @@ def _execute_query(
     }
     if mode == "cache":
         out["slow_cache"] = engine.last_slow_cache or {}
-    if mode in ("cache", "full"):
+    # 快照存的是整表（切片前）。分页只是少传给前端，不能把快照也切了。
+    # 流式分页时 insts 本身就是一段，这时不写快照，避免把半张表当成整表存下来。
+    if mode in ("cache", "full") and persist_snapshot:
         from src.query.snapshot import save_table_snapshot
 
         save_table_snapshot(
@@ -751,7 +811,7 @@ def _execute_query(
             pool=pool_name,
             field_keys=fields,
             codes=codes,
-            rows=rows,
+            rows=ordered,
             clock=out.get("clock"),
             refresh_mode=mode,
         )
@@ -795,6 +855,10 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
             x_date=body.x_date,
             force_live=body.force_live,
             refresh_mode=body.refresh_mode,
+            offset=body.offset,
+            limit=body.limit,
+            sort_key=body.sort_key,
+            sort_dir=body.sort_dir,
         )
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
@@ -859,6 +923,13 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     insts, fields, pool_name, meta, cards = _prepare_query(body, user, db)
     extra = extra_for(db, user)
     started = time.time()
+    # 流式同样分页：只算、只流这一段，首屏更快，前端也不用把整池攒在内存里。
+    # meta.total 仍然报整池行数，前端据此决定要不要再拉下一页。
+    total_insts = len(insts)
+    paged = bool(body.limit and body.limit > 0)
+    if paged:
+        start = max(0, int(body.offset or 0))
+        insts = insts[start : start + body.limit]
 
     def frame(event: str, data: dict) -> bytes:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
@@ -887,8 +958,17 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 refresh_mode=body.refresh_mode,
                 on_quotes=on_quotes,
                 on_row=on_row,
+                persist_snapshot=not paged,
             )
-            out.put(("done", {"rows_count": len(result.get("rows") or []), "elapsed_ms": int((time.time() - started) * 1000)}))
+            out.put((
+                "done",
+                {
+                    "rows_count": len(result.get("rows") or []),
+                    "total": total_insts,
+                    "has_more": bool(paged and start + len(insts) < total_insts),
+                    "elapsed_ms": int((time.time() - started) * 1000),
+                },
+            ))
         except Exception as exc:  # noqa: BLE001 - 流式中途出错也要让前端收尾
             out.put(("error", {"message": str(exc) or "查询失败", "partial": True}))
         finally:
@@ -897,7 +977,7 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     threading.Thread(target=pump, name="query-stream", daemon=True).start()
 
     def events():
-        yield frame("meta", {"fields": fields, "total": len(insts), "pool": pool_name, "note": meta.get("note") or ""})
+        yield frame("meta", {"fields": fields, "total": total_insts, "pool": pool_name, "note": meta.get("note") or ""})
         pending: list[dict] = []
         sent = 0
         while True:
