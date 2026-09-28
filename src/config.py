@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # 网络慢（走代理 / 公司网）的机器会在 .env 里调大，例如 PROBE_TIMEOUT_SEC=20、PROBE_BUDGET_SEC=45。
     probe_timeout_sec: float = 10.0
     probe_budget_sec: float = 20.0
+    # 查询时并发取数的线程数（逐只并行拉慢字段）。保守值 4：够快又不撞数据方限频。
+    query_workers: int = 4
 
     @field_validator("mairui_licence", mode="before")
     @classmethod

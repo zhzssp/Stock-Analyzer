@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.config import settings
 from src.market.client import MarketClient
 from src.market.normalize import Instrument
 from src.query.bottom import compute_bottom
@@ -115,8 +116,8 @@ class QueryEngine:
                 extra_codes=quote_extra,
             )
         self.last_clock_meta = clock_meta
-        rows = []
-        for inst in instruments:
+
+        def build_row(inst: Instrument) -> dict:
             bag: dict[str, Any] = {
                 "quote": quotes.get(inst.code6) or {},
                 "profile": {},
@@ -160,7 +161,18 @@ class QueryEngine:
             bag["card"] = derived
             for spec in specs:
                 row[spec.key] = self._value(spec.key, inst, bag)
-            rows.append(row)
+            return row
+
+        # 逐只取数并发化：冷缓存时每只最多 9 次 HTTP，串行会让首屏等很久。
+        # 并发数刻意保守（默认 4），配合服务端的限频；可在 .env 用 QUERY_WORKERS 调。
+        workers = max(1, int(getattr(settings, "query_workers", 0) or 4))
+        if workers > 1 and len(instruments) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=min(workers, len(instruments))) as pool:
+                rows = list(pool.map(build_row, instruments))
+        else:
+            rows = [build_row(i) for i in instruments]
         self.last_slow_cache = dict(getattr(self.market, "slow_cache_stats", {}) or {})
         return rows
 

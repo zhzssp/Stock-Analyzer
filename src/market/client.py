@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from datetime import date
 from typing import Any
@@ -28,6 +29,8 @@ class MarketClient:
 
     # 单次请求超时（秒）。启动探针会临时调小；探针结束恢复。
     _timeout = 30.0
+    # 换证要改共享状态（池 / 当前证 / 日志），查询已并发，必须串行。
+    _quota_lock = threading.Lock()
 
     def __init__(self) -> None:
         self.offline = not settings.use_live_market
@@ -75,15 +78,17 @@ class MarketClient:
             url = self._url(path, lic)
             try:
                 resp = httpx.get(url, timeout=self._timeout)
+                if resp.status_code == 429:
+                    # 429 是被限频，不等于这张证额度用尽：缓一下，同一张再试一次。
+                    time.sleep(0.8)
+                    resp = httpx.get(url, timeout=self._timeout)
                 if is_quota_error(resp.status_code, resp.text):
                     last_error = f"Licence 额度已用尽: {lic[:8]}…"
-                    self._log_licence(f"额度用尽 → 换下一张（HTTP {resp.status_code}，{lic[:8]}…）")
-                    self.licence = reg.mark_quota_exhausted(lic)
+                    self._switch_licence(reg, lic, "quota", f"额度/限频用尽 → 换下一张（HTTP {resp.status_code}）")
                     continue
                 if is_licence_unusable(resp.status_code, resp.text):
                     last_error = f"Licence 不可用: {lic[:8]}…"
-                    self._unusable.add(lic)
-                    self._log_licence(f"证书不可用 → 本进程跳过（HTTP {resp.status_code}，{lic[:8]}…）")
+                    self._switch_licence(reg, lic, "unusable", f"证书不可用 → 本进程跳过（HTTP {resp.status_code}）")
                     continue
                 resp.raise_for_status()
                 self.licence = lic
@@ -93,18 +98,25 @@ class MarketClient:
                 code = exc.response.status_code if exc.response is not None else 0
                 if is_quota_error(code, body):
                     last_error = f"Licence 额度已用尽: {lic[:8]}…"
-                    self._log_licence(f"额度用尽 → 换下一张（HTTP {code}，{lic[:8]}…）")
-                    self.licence = reg.mark_quota_exhausted(lic)
+                    self._switch_licence(reg, lic, "quota", f"额度/限频用尽 → 换下一张（HTTP {code}）")
                     continue
                 if is_licence_unusable(code, body):
                     last_error = f"Licence 不可用: {lic[:8]}…"
-                    self._unusable.add(lic)
-                    self._log_licence(f"证书不可用 → 本进程跳过（HTTP {code}，{lic[:8]}…）")
+                    self._switch_licence(reg, lic, "unusable", f"证书不可用 → 本进程跳过（HTTP {code}）")
                     continue
                 raise MarketError(str(exc)) from exc
             except Exception as exc:
                 raise MarketError(str(exc)) from exc
         raise MarketError(last_error)
+
+    def _switch_licence(self, reg, lic: str, kind: str, detail: str) -> None:
+        """换证/标记不可用：查询已并发，改共享状态必须串行。"""
+        with self._quota_lock:
+            if kind == "quota":
+                self.licence = reg.mark_quota_exhausted(lic)
+            else:
+                self._unusable.add(lic)
+            self._log_licence(f"{detail}（{lic[:8]}…）")
 
     def _log_licence(self, message: str) -> None:
         """换证留痕，便于判断「到底有没有自动切换」（写 data/logs/licence.log）。"""

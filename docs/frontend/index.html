@@ -1804,6 +1804,7 @@
       if (xDate) base.x_date = xDate.replace(/-/g, "");
       const refreshMode = o.refreshMode || "quote";
       base.refresh_mode = refreshMode;
+      if (o.fields && o.fields.length) base.fields = o.fields;
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       if (forceLive) base.force_live = true;
       else if (refreshMode === "cache") base.force_live = false;
@@ -2739,12 +2740,31 @@
       );
     }
 
+    // 首屏只拉「快列」（只依赖行情那一批），慢字段（财务/股东/主营/日线）后台再补齐。
+    // 冷缓存时慢字段每只约 9 次请求，是首屏卡顿的主因。
+    const FAST_FIELDS = ["name", "code", "price", "pct", "pe", "pb"];
+
     async function bootTableQuery() {
       try {
         await runQuery(null, { refreshMode: "snapshot", forceLive: false });
+        return; // 有快照：零请求，秒开
+      } catch {
+        /* 没有快照，走下面的快列首查 */
+      }
+      try {
+        await runQuery(null, { refreshMode: "cache", forceLive: false, fields: FAST_FIELDS });
       } catch {
         await runQuery(null, { refreshMode: "cache", forceLive: false });
+        return;
       }
+      const current = (state.fields || []).map((f) => f.key);
+      const needSlow = !current.length || current.some((k) => FAST_FIELDS.indexOf(k) < 0);
+      if (!needSlow) return;
+      const hint = document.getElementById("queryHint");
+      if (hint) hint.textContent = "已显示行情列，正在后台补齐财务 / 股东 / 底顶…";
+      runQuery(null, { refreshMode: "cache", forceLive: false })
+        .then(() => toast("财务 / 股东等字段已补齐"))
+        .catch(() => {});
     }
 
     async function afterLogin(username, token) {
