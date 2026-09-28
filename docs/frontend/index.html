@@ -1271,10 +1271,24 @@
       renderBoard(state.boardCache.items);
     }
 
+    // 后端点位缓存 60 秒，前端没必要 20 秒刷一次（那多数是空跑）。
+    // 页面切到后台就完全不请求，切回来再补一次。
+    const BOARD_POLL_MS = 60000;
+
     function startBoardClock() {
       loadBoard().catch((e) => toast(e.message));
       if (state.boardTimer) clearInterval(state.boardTimer);
-      state.boardTimer = setInterval(() => loadBoard().catch(() => {}), 20000);
+      state.boardTimer = setInterval(() => {
+        if (document.hidden) return;
+        loadBoard().catch(() => {});
+      }, BOARD_POLL_MS);
+      if (!state.boardVisibilityBound) {
+        state.boardVisibilityBound = true;
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden) return;
+          loadBoard(true).catch(() => {});
+        });
+      }
     }
 
     async function api(path, options = {}) {

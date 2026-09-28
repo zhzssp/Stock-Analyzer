@@ -45,9 +45,17 @@ def start_scheduler():
         finally:
             db.close()
 
+    from src.config import settings
+
+    # 频率可配：低性能机器或额度吃紧时把这两个调大，能明显降 CPU 与请求量。
+    session_minutes = max(1, int(getattr(settings, "monitor_session_minutes", 0) or 5))
+    clock_minutes = max(1, int(getattr(settings, "clock_align_minutes", 0) or 1))
+    session_trigger = CronTrigger(minute=f"*/{session_minutes}", hour="9-15", day_of_week="mon-fri")
+    clock_trigger = CronTrigger(minute=f"*/{clock_minutes}", hour="9-15", day_of_week="mon-fri")
+
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
-    sched.add_job(_tick, CronTrigger(minute="*/5", hour="9-15", day_of_week="mon-fri"), kwargs={"schedule": "session"}, id="session-tick")
+    sched.add_job(_tick, session_trigger, kwargs={"schedule": "session"}, id="session-tick")
     sched.add_job(_tick, CronTrigger(hour=20, minute=20, day_of_week="mon-fri"), kwargs={"schedule": "eod"}, id="eod-scan")
-    sched.add_job(_clock_tick, CronTrigger(minute="*", hour="9-15", day_of_week="mon-fri"), id="clock-align")
+    sched.add_job(_clock_tick, clock_trigger, id="clock-align")
     sched.start()
     return sched

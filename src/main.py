@@ -78,10 +78,45 @@ if web_dir.exists():
     app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
 
 
+def _service_already_running(port: int) -> bool:
+    """端口能连上，而且 /api/health 返回的是本软件，就说明已经有一个实例在跑。
+
+    重复启动是资源占用翻倍的头号原因：每个实例都自带调度器（每 5 分钟各扫一轮），
+    既吃 CPU 也吃授权额度。与其等 uvicorn 报 address in use，不如早一步说清楚。
+    """
+    import json
+    import socket
+    import urllib.request
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.8):
+            pass
+    except OSError:
+        return False
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2.0) as resp:
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return bool(payload.get("ok")) and isinstance(payload.get("market"), dict)
+
+
 def run() -> None:
     import uvicorn
 
     from src.platform.tray import start_tray
+
+    if _service_already_running(settings.app_port):
+        print("")
+        print("助手已经在运行了，不需要再启动一次。")
+        print(f"请直接打开：http://{settings.app_host}:{settings.app_port}/")
+        print("")
+        print("重复启动会多出一个服务进程，每个都在定时扫描，既占资源也费额度。")
+        print("要重启：先从右下角托盘选「退出助手」，或在原来那个窗口按 Ctrl+C，再双击 run.cmd。")
+        print("")
+        return
 
     config = uvicorn.Config(
         "src.main:app",

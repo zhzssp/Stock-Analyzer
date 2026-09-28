@@ -713,6 +713,8 @@ try {
         }
         Start-Sleep -Milliseconds 300
         $proc.Refresh()
+        # 进程已经死了就别再干等：立刻跳出去报错并指向日志，避免「等满 60 秒才知道失败」
+        if ($proc -and $proc.HasExited) { break }
     }
 
     if (Test-SaStopRequested) {

@@ -48,8 +48,13 @@ class Settings(BaseSettings):
     slow_cache_finance_ttl_sec: int = 86_400
     slow_cache_flow_ttl_sec: int = 3_600
     slow_cache_indicators_ttl_sec: int = 3_600
-    # 抬头指数点位 TTL（秒）。前端 20 秒轮询，靠这层缓存兜住额度，不打满 hsindex。
+    # 抬头指数点位 TTL（秒）。前端 60 秒轮询，靠这层缓存兜住额度，不打满 hsindex。
     board_quote_ttl_sec: int = 60
+    # 定时任务频率（分钟）。低性能机器 / 额度吃紧时调大：
+    #   MONITOR_SESSION_MINUTES=15   盘中扫描 5 → 15 分钟一轮
+    #   CLOCK_ALIGN_MINUTES=5        墙钟落档 1 → 5 分钟一轮（只在配了账本目录时才跑）
+    monitor_session_minutes: int = 5
+    clock_align_minutes: int = 1
     # 启动探针：单次超时与总预算（秒）。网络不通时别把服务启动卡住（端口迟迟不监听）。
     # 网络慢（走代理 / 公司网）的机器会在 .env 里调大，例如 PROBE_TIMEOUT_SEC=20、PROBE_BUDGET_SEC=45。
     probe_timeout_sec: float = 10.0
