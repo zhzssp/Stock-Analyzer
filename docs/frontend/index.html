@@ -170,6 +170,13 @@
     .stock-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
     .stock-row:last-child { border-bottom: 0; }
     .stock-row .k { width: 92px; flex-shrink: 0; color: var(--muted); }
+    /* 流式查询：骨架占位 → 首批淡入 → 后续逐格点亮 */
+    td.skel { background: linear-gradient(90deg, #eee 25%, #f6f6f6 37%, #eee 63%); background-size: 400% 100%; animation: skel 1.2s ease infinite; }
+    @keyframes skel { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+    tr.row-in { animation: rowIn 0.25s ease; }
+    @keyframes rowIn { from { opacity: 0.25; } to { opacity: 1; } }
+    td.cell-in { animation: cellIn 0.8s ease; }
+    @keyframes cellIn { 0% { background: var(--teal-soft); } 100% { background: transparent; } }
     .exp-block { margin-bottom: 12px; }
     .exp-label { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
     .exp-count { font-weight: 400; color: var(--muted); margin-left: 6px; }
@@ -1776,14 +1783,7 @@
       }
     }
 
-    function renderTable(fields, rows) {
-      state.fields = fields;
-      state.rowsRaw = rows || [];
-      applyColLayout(fields);
-      const all = sortedRows(state.rowsRaw);
-      const limit = state.tablePage * PAGE_SIZE;
-      const shown = all.slice(0, limit);
-      renderTableMore(all.length, limit);
+    function renderTableHead(fields) {
       document.getElementById("tableHead").innerHTML =
         "<tr>" + fields.map((f) => {
           const w = colWidth(f);
@@ -1795,16 +1795,155 @@
           const tip = sortable ? `${f.label} · 点击按${f.label}排序` : f.label;
           return `<th class="${cls}" data-key="${escAttr(f.key)}" style="width:${w}px" title="${escAttr(tip)}"${aria}><span class="col-label">${escHtml(f.label)}${mark}</span><span class="col-resizer" data-key="${escAttr(f.key)}"></span></th>`;
         }).join("") + "</tr>";
-      document.getElementById("tableBody").innerHTML = shown.map((row) => {
-        const tds = fields.map((f) => {
-          const raw = row[f.key];
-          const display = String(fmt(f.key, raw));
-          let cls = "";
-          if (SIGNED_KEYS[f.key]) cls = signedClass(raw);
-          return `<td class="${cls}" title="${escAttr(display)}">${escHtml(display)}</td>`;
-        }).join("");
-        return `<tr>${tds}</tr>`;
+    }
+
+    function rowCellsHtml(fields, row) {
+      return fields.map((f) => {
+        const raw = row[f.key];
+        const display = String(fmt(f.key, raw));
+        let cls = "";
+        if (SIGNED_KEYS[f.key]) cls = signedClass(raw);
+        return `<td class="${cls}" title="${escAttr(display)}">${escHtml(display)}</td>`;
       }).join("");
+    }
+
+    function renderTable(fields, rows) {
+      state.fields = fields;
+      state.rowsRaw = rows || [];
+      applyColLayout(fields);
+      const all = sortedRows(state.rowsRaw);
+      const limit = state.tablePage * PAGE_SIZE;
+      const shown = all.slice(0, limit);
+      renderTableMore(all.length, limit);
+      renderTableHead(fields);
+      document.getElementById("tableBody").innerHTML = shown.map((row) => `<tr>${rowCellsHtml(fields, row)}</tr>`).join("");
+      state.rowTr = {};
+    }
+
+    // ---- 流式查询：骨架屏 + 边收边填 ----
+
+    function renderSkeleton(fields, total) {
+      state.fields = fields;
+      state.rowsRaw = [];
+      applyColLayout(fields);
+      renderTableHead(fields);
+      const limit = state.tablePage * PAGE_SIZE;
+      const n = Math.max(1, Math.min(total || 0, limit));
+      const trs = [];
+      for (let i = 0; i < n; i += 1) {
+        trs.push(`<tr class="skel-row">${fields.map(() => '<td class="skel">&nbsp;</td>').join("")}</tr>`);
+      }
+      document.getElementById("tableBody").innerHTML = trs.join("");
+      state.rowTr = {};
+      state.streamRows = {};
+      renderTableMore(total || 0, 0);
+    }
+
+    function applyStreamRows(rows, stage) {
+      const fields = state.fields || [];
+      const body = document.getElementById("tableBody");
+      const limit = state.tablePage * PAGE_SIZE;
+      if (stage === "quote") {
+        // 首批：只有行情，按顺序把骨架行替换成真行
+        const trs = body.querySelectorAll("tr");
+        rows.slice(0, limit).forEach((row, i) => {
+          const tr = trs[i];
+          if (!tr) return;
+          tr.className = "row-in";
+          tr.innerHTML = rowCellsHtml(fields, row);
+          if (row.code6) {
+            state.rowTr[row.code6] = tr;
+            state.streamRows[row.code6] = row;
+          }
+        });
+      } else {
+        // 后续：慢字段补齐，只改对应的格子
+        rows.forEach((row) => {
+          const tr = state.rowTr[row.code6];
+          if (!tr) return;
+          const tds = tr.querySelectorAll("td");
+          fields.forEach((f, idx) => {
+            const val = row[f.key];
+            const display = String(fmt(f.key, val));
+            if (!display || display === "—") return;
+            const td = tds[idx];
+            if (!td || td.classList.contains("skel") === false && td.textContent === display) return;
+            td.classList.remove("skel");
+            td.textContent = display;
+            if (SIGNED_KEYS[f.key]) td.className = signedClass(val);
+            td.classList.add("cell-in");
+            setTimeout(() => td.classList.remove("cell-in"), 800);
+          });
+          state.streamRows[row.code6] = Object.assign({}, state.streamRows[row.code6], row);
+        });
+      }
+      state.rowsRaw = Object.values(state.streamRows || {});
+    }
+
+    function handleStreamEvent(event, data) {
+      const hint = document.getElementById("queryHint");
+      if (event === "meta") {
+        renderSkeleton(data.fields || [], data.total || 0);
+        if (hint) hint.textContent = `共 ${data.total || 0} 只 · 正在取行情…`;
+        return;
+      }
+      if (event === "batch") {
+        applyStreamRows(data.rows || [], data.stage || "full");
+        return;
+      }
+      if (event === "progress") {
+        if (hint) hint.textContent = `已出 ${data.done || 0}/${data.total || 0} 只 · 继续补齐…`;
+        return;
+      }
+      if (event === "done") {
+        state.tablePage = 1;
+        renderTable(state.fields, state.rowsRaw);
+        if (hint) {
+          const sec = ((data.elapsed_ms || 0) / 1000).toFixed(1);
+          hint.textContent = `${data.rows_count || state.rowsRaw.length} 只 · 用时 ${sec} 秒`;
+        }
+        return;
+      }
+      if (event === "error") {
+        throw new Error(data.message || "查询失败");
+      }
+    }
+
+    async function runQueryStream(codes, opts) {
+      if (state.streamAbort) state.streamAbort.abort();
+      const ctrl = new AbortController();
+      state.streamAbort = ctrl;
+      const payload = queryPayload(codes, opts);
+      const headers = { "Content-Type": "application/json" };
+      if (state.token) headers.Authorization = "Bearer " + state.token;
+      const res = await fetch("/api/query/stream", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: ctrl.signal,
+      });
+      if (!res.ok || !res.body) throw new Error("流式查询不可用");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buf = "";
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buf += decoder.decode(chunk.value, { stream: true });
+        let idx = buf.indexOf("\n\n");
+        while (idx >= 0) {
+          const raw = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const evMatch = /event:\s*(\S+)/.exec(raw);
+          const dataMatch = /data:\s*([\s\S]*)/.exec(raw);
+          if (evMatch && dataMatch) {
+            let data = {};
+            try { data = JSON.parse(dataMatch[1]); } catch { data = {}; }
+            handleStreamEvent(evMatch[1], data);
+          }
+          idx = buf.indexOf("\n\n");
+        }
+      }
     }
 
     async function loadWatch() {
@@ -1952,9 +2091,32 @@
       if (refreshMode === "cache" && !forceLive) payload.force_live = false;
       let data;
       try {
-        data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
-        if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+        if (o.stream && refreshMode !== "snapshot") {
+          // 流式：先出骨架与行情，再逐只补齐；失败自动退回一次性查询
+          try {
+            await runQueryStream(codes, o);
+          } catch (streamErr) {
+            if (streamErr && streamErr.name === "AbortError") throw streamErr;
+            data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
+            if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+          }
+          if (data) {
+            const fields = data.fields || [];
+            if (!fields.length) {
+              hintEl.textContent = "查询失败：未返回列定义";
+              throw new Error("查询未返回列定义");
+            }
+            state.tablePage = 1;
+            renderTable(fields, data.rows || []);
+          } else {
+            return; // 流式路径已自行渲染完成
+          }
+        } else {
+          data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
+          if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+        }
       } catch (err) {
+        if (err && err.name === "AbortError") throw err;
         hintEl.textContent = "查询失败";
         toast(err.message || "查询失败");
         throw err;
@@ -2817,7 +2979,7 @@
       if (!needSlow) return;
       const hint = document.getElementById("queryHint");
       if (hint) hint.textContent = "已显示行情列，正在后台补齐财务 / 股东 / 底顶…";
-      runQuery(null, { refreshMode: "cache", forceLive: false })
+      runQuery(null, { refreshMode: "cache", forceLive: false, stream: true })
         .then(() => toast("财务 / 股东等字段已补齐"))
         .catch(() => {});
     }
@@ -2854,10 +3016,10 @@
     bindColResize();
     bindColumnSort();
     document.getElementById("queryBtn").addEventListener("click", () =>
-      runQuery(null, { refreshMode: "cache", forceLive: false }).catch((e) => toast(e.message))
+      runQuery(null, { refreshMode: "cache", forceLive: false, stream: true }).catch((e) => toast(e.message))
     );
     document.getElementById("fullQueryBtn").addEventListener("click", () =>
-      runQuery(null, { refreshMode: "full", forceLive: true }).catch((e) => toast(e.message))
+      runQuery(null, { refreshMode: "full", forceLive: true, stream: true }).catch((e) => toast(e.message))
     );
     document.getElementById("refreshBtn").addEventListener("click", async () => {
       try {

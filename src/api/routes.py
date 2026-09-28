@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -658,6 +659,8 @@ def _execute_query(
     x_date: str | None = None,
     force_live: bool = False,
     refresh_mode: str = "full",
+    on_quotes: Any = None,
+    on_row: Any = None,
 ) -> dict:
     ensure_market()
     mode = (refresh_mode or "full").strip().lower()
@@ -719,6 +722,8 @@ def _execute_query(
         x_date=x_date,
         force_live=force_live,
         refresh_mode=mode,
+        on_quotes=on_quotes,
+        on_row=on_row,
     )
     codes = [i.code_full for i in insts]
     clock_meta = engine.last_clock_meta or {}
@@ -835,6 +840,92 @@ def query_run(body: QueryIn, user: User = Depends(current_user), db: Session = D
 @router.post("/query/export")
 def query_export(body: QueryIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     return _run_or_enqueue(body, user, db, do_export=True)
+
+
+@router.post("/query/stream")
+def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """流式查询：先送一批只有行情的行，再逐只补齐慢字段。
+
+    只是为了「早点看见东西」，请求总数与普通查询完全一样，不省额度。
+    事件以 SSE 帧发出，前端用 fetch + getReader 解析（和 /agent/chat 一致）。
+    """
+    import json
+    import queue
+    import threading
+    import time
+
+    from src.platform.concepts import extra_for
+
+    insts, fields, pool_name, meta, cards = _prepare_query(body, user, db)
+    extra = extra_for(db, user)
+    started = time.time()
+
+    def frame(event: str, data: dict) -> bytes:
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    out: "queue.Queue[tuple[str, dict] | None]" = queue.Queue()
+
+    def pump() -> None:
+        def on_quotes(rows: list) -> None:
+            out.put(("batch", {"rows": rows, "stage": "quote"}))
+
+        def on_row(row: dict) -> None:
+            out.put(("batch", {"rows": [row], "stage": "full"}))
+
+        try:
+            result = _execute_query(
+                insts,
+                fields,
+                False,
+                pool_name,
+                user.id,
+                cards=cards,
+                writer=user.username,
+                concept_extra=extra,
+                x_date=body.x_date,
+                force_live=body.force_live,
+                refresh_mode=body.refresh_mode,
+                on_quotes=on_quotes,
+                on_row=on_row,
+            )
+            out.put(("done", {"rows_count": len(result.get("rows") or []), "elapsed_ms": int((time.time() - started) * 1000)}))
+        except Exception as exc:  # noqa: BLE001 - 流式中途出错也要让前端收尾
+            out.put(("error", {"message": str(exc) or "查询失败", "partial": True}))
+        finally:
+            out.put(None)
+
+    threading.Thread(target=pump, name="query-stream", daemon=True).start()
+
+    def events():
+        yield frame("meta", {"fields": fields, "total": len(insts), "pool": pool_name, "note": meta.get("note") or ""})
+        pending: list[dict] = []
+        sent = 0
+        while True:
+            item = out.get()
+            if item is None:
+                if pending:
+                    yield frame("batch", {"rows": pending, "stage": "full"})
+                break
+            event, data = item
+            if event == "batch":
+                rows = data.get("rows") or []
+                pending.extend(rows)
+                # 进度只统计「慢字段已补齐的只数」，首批行情不算，否则会显示 200%
+                if data.get("stage") == "full":
+                    sent += len(rows)
+                if len(pending) >= 10:
+                    yield frame("batch", {"rows": pending, "stage": data.get("stage", "full")})
+                    yield frame("progress", {"done": sent, "total": len(insts)})
+                    pending = []
+            else:
+                if pending:
+                    yield frame("batch", {"rows": pending, "stage": "full"})
+                    pending = []
+                yield frame(event, data)
+                if event in ("done", "error"):
+                    break
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @router.get("/query/jobs/{job_id}")

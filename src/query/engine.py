@@ -60,7 +60,13 @@ class QueryEngine:
         x_date: str | None = None,
         force_live: bool = False,
         refresh_mode: str = REFRESH_FULL,
+        on_quotes: Any = None,
+        on_row: Any = None,
     ) -> list[dict]:
+        """on_quotes / on_row 用于流式查询：先送一批只有行情的行，再逐只送完整行。
+
+        两者都在 worker 线程里被调用（取数已并发），调用方要自己做线程安全。
+        """
         keys = field_keys or registry.default_keys()
         specs = [registry.get(k) for k in keys]
         column_need = {dep for spec in specs for dep in spec.requires}
@@ -85,6 +91,8 @@ class QueryEngine:
                 concept_extra,
                 x_date,
                 force_live,
+                on_quotes=on_quotes,
+                on_row=on_row,
             )
         finally:
             self.market.query_refresh_mode = prev_mode
@@ -101,6 +109,8 @@ class QueryEngine:
         concept_extra: dict | None,
         x_date: str | None,
         force_live: bool,
+        on_quotes: Any = None,
+        on_row: Any = None,
     ) -> list[dict]:
         quotes: dict[str, dict] = {}
         clock_meta = {"as_of": "", "source": "", "enabled": False, "reason": ""}
@@ -116,6 +126,44 @@ class QueryEngine:
                 extra_codes=quote_extra,
             )
         self.last_clock_meta = clock_meta
+
+        if on_quotes is not None:
+            # 现价是批量取的（1~3 次请求），这里就已经有全部行的行情；
+            # 先把只有行情的行送出去，界面立刻有东西可看，慢字段随后逐只补。
+            FAST_KEYS = ("name", "code", "price", "pct", "pe", "pb")
+            fast_specs = [s for s in specs if s.key in FAST_KEYS]
+            if fast_specs:
+                fast_rows = []
+                for inst in instruments:
+                    q = quotes.get(inst.code6) or {}
+                    row = {
+                        "code6": inst.code6,
+                        "code_full": inst.code_full,
+                        "name": inst.name,
+                        "market": inst.market,
+                        "as_of": q.get("as_of") or clock_meta.get("as_of") or "",
+                        "quote_source": q.get("source") or clock_meta.get("source") or "",
+                    }
+                    for spec in fast_specs:
+                        row[spec.key] = self._value(
+                            spec.key,
+                            inst,
+                            {
+                                "quote": q,
+                                "profile": {},
+                                "holders": {},
+                                "finance": {},
+                                "flow": {},
+                                "bottom": {},
+                                "indicators": {},
+                                "card": derive_card_metrics(q.get("p"), (cards or {}).get(inst.code6), None),
+                            },
+                        )
+                    fast_rows.append(row)
+                try:
+                    on_quotes(fast_rows)
+                except Exception:
+                    pass
 
         def build_row(inst: Instrument) -> dict:
             bag: dict[str, Any] = {
@@ -161,6 +209,11 @@ class QueryEngine:
             bag["card"] = derived
             for spec in specs:
                 row[spec.key] = self._value(spec.key, inst, bag)
+            if on_row is not None:
+                try:
+                    on_row(row)
+                except Exception:
+                    pass
             return row
 
         # 逐只取数并发化：冷缓存时每只最多 9 次 HTTP，串行会让首屏等很久。
