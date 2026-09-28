@@ -629,7 +629,7 @@
           <button class="btn sm chip-btn" id="sideExchange" type="button" data-side="exchange">交易所</button>
         </div>
         <div class="side-pane" id="watchPane">
-          <div class="side-title"><span data-help-tip="查询和导出只含你勾过的票。左侧可上下移动排序；点名称打开决策卡。自选里若同时有沪、深、北，会在同一张表。">自选池</span> <button class="btn sm ghost" id="openPicker" type="button">+ 添加 / 筛选</button></div>
+          <div class="side-title"><span data-help-tip="查询和导出只含你勾过的票。**按住某一行拖动**可改顺序（右侧表跟着动）；**左键单击**打开决策卡；**右键**出菜单，可打开决策卡或移出自选。自选里若同时有沪、深、北，会在同一张表。">自选池</span> <button class="btn sm ghost" id="openPicker" type="button">+ 添加 / 筛选</button></div>
           <input id="watchFilter" placeholder="搜索当前自选" />
           <ul class="watch" id="watchList"></ul>
         </div>
@@ -1156,6 +1156,7 @@
       dragCode: null,
       gsItems: [],
       stockCode: "",
+      justDragged: false,
       exportOpts: null,
       exportSnapshot: null,
       exportHasSnapshot: false,
@@ -1541,7 +1542,7 @@
       }
       // 自选全部展示；按住拖动可改顺序，右键出菜单（打开决策卡 / 移出自选）。
       ul.innerHTML = shown.map((it, i) =>
-        `<li class="${i === 0 ? "active" : ""} ${it.card_filled ? "filled" : ""}" data-code="${it.code6}" draggable="true" title="拖动可调整顺序；右键可打开决策卡或移出自选">
+        `<li class="${i === 0 ? "active" : ""} ${it.card_filled ? "filled" : ""}" data-code="${it.code6}" draggable="true" title="按住拖动改顺序 · 左键单击打开决策卡 · 右键移出自选">
           <span class="meta" style="flex:1;min-width:0;"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || marketLabel[it.market] || it.market || ""} · ${esc(it.group || "自选")}</span></span>
         </li>`
       ).join("");
@@ -3007,6 +3008,11 @@
     const watchListEl = document.getElementById("watchList");
 
     watchListEl.addEventListener("click", (e) => {
+      // 刚拖完的那一下不要再当成单击打开决策卡（个别浏览器拖完仍会补一个 click）
+      if (state.justDragged) {
+        state.justDragged = false;
+        return;
+      }
       const li = e.target.closest("li[data-code]");
       if (li) openCard(li.dataset.code);
     });
@@ -3032,7 +3038,9 @@
     });
 
     watchListEl.addEventListener("dragend", () => {
+      const moved = Boolean(state.dragCode);
       state.dragCode = null;
+      state.justDragged = moved;
       watchListEl.querySelectorAll("li").forEach((n) => n.classList.remove("dragging", "drag-over"));
     });
 
