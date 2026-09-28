@@ -140,11 +140,37 @@
       pointer-events: none;
     }
     .table-more { display: flex; align-items: center; gap: 10px; padding: 10px 4px 2px; color: var(--muted); font-size: 13px; }
-    .search-box { display: inline-flex; align-items: center; gap: 4px; }
-    .search-box input {
-      width: 150px; padding: 5px 8px; border: 1px solid var(--line);
-      border-radius: 8px; font-size: 13px; background: #fff; color: var(--ink);
+    .global-search {
+      position: relative; display: flex; align-items: center; gap: 8px;
+      padding: 8px 2px 0; flex-wrap: wrap;
     }
+    .global-search input {
+      flex: 1 1 260px; min-width: 200px; max-width: 420px;
+      padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px;
+      font-size: 14px; background: #fff; color: var(--ink);
+    }
+    .global-search .hint { font-size: 12px; }
+    .gs-results {
+      position: absolute; z-index: 70; top: calc(100% + 4px); left: 0; right: 0;
+      max-height: 320px; overflow: auto; background: #fff;
+      border: 1px solid var(--line); border-radius: 10px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+    }
+    .gs-item {
+      display: flex; align-items: center; gap: 8px; width: 100%;
+      padding: 9px 12px; background: none; border: 0; border-bottom: 1px solid var(--line);
+      text-align: left; cursor: pointer; font-size: 13px; color: var(--ink);
+    }
+    .gs-item:last-child { border-bottom: 0; }
+    .gs-item:hover { background: var(--teal-soft); }
+    .gs-item .gs-name { font-weight: 700; }
+    .gs-item .gs-sub { color: var(--muted); }
+    .stock-card { max-width: 560px; }
+    .stock-body { max-height: 56vh; overflow: auto; }
+    .stock-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+    .stock-row:last-child { border-bottom: 0; }
+    .stock-row .k { width: 92px; flex-shrink: 0; color: var(--muted); }
+    .stock-row .v { flex: 1; min-width: 0; word-break: break-all; }
     .ctx-menu {
       position: fixed; z-index: 950; display: none; min-width: 140px;
       background: #fff; border: 1px solid var(--line); border-radius: 8px;
@@ -612,6 +638,12 @@
         </nav>
 
         <div id="query" class="view on">
+          <div class="global-search">
+            <input id="gsInput" type="search" autocomplete="off" placeholder="搜索企业名称或代码（全市场），回车搜索" aria-label="全市场搜索" />
+            <button class="btn primary" id="gsBtn" type="button"><span data-help-tip="按名称或代码在全市场搜。点结果可看这只票的详情，并决定是否加入自选。">搜索</span></button>
+            <span class="hint" id="gsHint">支持名称、代码、拼音缩写以外还包含行业与概念关键词</span>
+            <div class="gs-results" id="gsResults" style="display:none;"></div>
+          </div>
           <div class="toolbar">
             <button class="btn primary" id="queryBtn" type="button"><span data-help-tip="按列设置查表：现价优先墙钟；财务/股东等未过期则用本机分项缓存，少打麦蕊。">查询</span></button>
             <button class="btn" id="refreshBtn" type="button"><span data-help-tip="只更新现价相关列，优先读墙钟档口；行业/财务/股东等请用「查询」或「全量更新」。">刷新</span></button>
@@ -621,10 +653,6 @@
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
             <button class="btn ghost" id="diffBtn" type="button">对照上一份</button>
             <label class="hint" for="xDate"><span data-help-tip="列设置勾选「X日价」时生效。">X日</span> <input id="xDate" type="date" style="margin-left:4px" /></label>
-            <span class="search-box">
-              <input id="globalSearch" type="search" placeholder="搜名称 / 代码，回车" aria-label="全市场搜索" />
-              <button class="btn ghost" id="searchBtn" type="button"><span data-help-tip="按名称或代码在全市场搜，结果显示在右侧表（最多 200 只）。此时「当前导出」变成“筛选一次”，导出 Excel 导的就是搜到的这批。">搜索</span></button>
-            </span>
             <span class="export-scope" id="exportScope">当前导出：自选</span>
             <span class="hint" id="queryHint">尚未查询</span>
           </div>
@@ -992,6 +1020,17 @@
       </div>
     </form>
   </div>
+  <div class="login-mask" id="stockMask" style="display:none;">
+    <div class="login-card stock-card">
+      <h2><span id="stockTitle">个股详情</span><span id="stockTitleMount"></span></h2>
+      <div id="stockBody" class="stock-body"><div class="meta">正在读取…</div></div>
+      <div class="pick-actions" style="margin-top:12px;">
+        <button class="btn primary" id="stockAdd" type="button">加入自选</button>
+        <button class="btn" id="stockView" type="button">在右侧表查看</button>
+        <button class="btn ghost" id="stockClose" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
   <div class="login-mask" id="loginMask">
     <form class="login-card" id="loginForm">
       <h2><span data-help-tip="默认账号 hanish / change-me，仅绑定 127.0.0.1。">登录本机工作台</span></h2>
@@ -1072,6 +1111,8 @@
       tablePage: 1,
       poolPage: 1,
       dragCode: null,
+      gsItems: [],
+      stockCode: "",
       sortKey: "",
       customConcepts: [],
       sortDir: "desc",
@@ -1884,27 +1925,181 @@
       URL.revokeObjectURL(url);
     }
 
-    async function runSearch() {
-      const input = document.getElementById("globalSearch");
-      const q = (input.value || "").trim();
-      if (!q) {
-        toast("请输入股票名称或代码");
+    function gsClose() {
+      const box = document.getElementById("gsResults");
+      if (box) {
+        box.style.display = "none";
+        box.innerHTML = "";
+      }
+    }
+
+    function gsRender(items) {
+      const box = document.getElementById("gsResults");
+      const hint = document.getElementById("gsHint");
+      if (!box) return;
+      if (!items.length) {
+        box.style.display = "block";
+        box.innerHTML = `<div class="gs-sub" style="padding:10px 12px;">没有匹配的股票，换个名称或代码再试</div>`;
+        if (hint) hint.textContent = "没有匹配";
         return;
       }
+      if (hint) hint.textContent = `找到 ${items.length} 只，点一条看详情`;
+      box.style.display = "block";
+      box.innerHTML = items.slice(0, 30).map((it) => {
+        const code = it.code_full || it.code6;
+        const inWatch = (state.watch || []).some((w) => w.code6 === it.code6);
+        const sub = [code, marketLabel[it.market] || it.market, it.sector || it.sw_l1 || it.industry]
+          .filter(Boolean).join(" · ");
+        return `<button class="gs-item" type="button" data-gs="${escAttr(code)}">
+            <span class="gs-name">${escHtml(it.name || code)}</span>
+            <span class="gs-sub">${escHtml(sub)}</span>
+            ${inWatch ? '<span class="chip">已在自选</span>' : ""}
+          </button>`;
+      }).join("");
+    }
+
+    async function runSearch() {
+      const input = document.getElementById("gsInput");
+      const q = (input.value || "").trim();
+      if (!q) {
+        toast("请输入企业名称或代码");
+        return;
+      }
+      const hint = document.getElementById("gsHint");
+      if (hint) hint.textContent = "搜索中…";
       try {
-        const items = await api("/markets/instruments?q=" + encodeURIComponent(q) + "&limit=200");
-        const list = Array.isArray(items) ? items : (items.items || []);
-        if (!list.length) {
-          toast("没有匹配的股票");
-          return;
-        }
-        const codes = list.map((it) => it.code_full || it.code6).filter(Boolean);
-        await runQuery(codes, { refreshMode: "cache", forceLive: false });
-        toast(`搜到 ${codes.length} 只，已显示在右侧表；导出 Excel 会导出这批`);
+        const data = await api("/markets/instruments?q=" + encodeURIComponent(q) + "&limit=50");
+        state.gsItems = Array.isArray(data) ? data : (data.items || []);
+        gsRender(state.gsItems);
       } catch (err) {
+        gsClose();
         toast(err.message);
       }
     }
+
+    function stockRow(k, v) {
+      if (v == null || v === "") return "";
+      return `<div class="stock-row"><span class="k">${escHtml(k)}</span><span class="v">${escHtml(String(v))}</span></div>`;
+    }
+
+    async function openStockDetail(codeFull, base) {
+      const mask = document.getElementById("stockMask");
+      const body = document.getElementById("stockBody");
+      const addBtn = document.getElementById("stockAdd");
+      state.stockCode = codeFull;
+      document.getElementById("stockTitle").textContent = (base && base.name ? base.name + " · " : "") + codeFull;
+      document.getElementById("stockTitleMount").innerHTML = helpTip("详情优先读本机缓存；缺的字段才向数据方取，只查这一只，不会扫全市场。");
+      body.innerHTML = `<div class="meta">正在读取…</div>`;
+      mask.style.display = "flex";
+
+      const code6 = String(codeFull || "").split(".")[0];
+      const inWatch = (state.watch || []).some((w) => w.code6 === code6);
+      addBtn.textContent = inWatch ? "已在自选中" : "加入自选";
+      addBtn.disabled = inWatch;
+      addBtn.classList.toggle("ghost", inWatch);
+
+      // 先画搜索结果里已有的字段，再异步补详情
+      if (base) {
+        body.innerHTML =
+          stockRow("名称", base.name) +
+          stockRow("代码", codeFull) +
+          stockRow("市场", marketLabel[base.market] || base.market) +
+          stockRow("板块", base.sector) +
+          stockRow("申万一级", base.sw_l1) +
+          stockRow("行业", base.industry) +
+          stockRow("2026 概念", base.hot_concepts) +
+          `<div class="meta" style="padding-top:8px;">正在补充行情与主营…</div>`;
+      }
+
+      try {
+        const data = await api("/query/run", {
+          method: "POST",
+          body: JSON.stringify({
+            codes: [codeFull],
+            refresh_mode: "cache",
+            force_live: false,
+            fields: ["name", "code", "price", "pct", "pe", "pb", "mcap", "industry", "concept", "business", "holders"],
+          }),
+        });
+        if (state.stockCode !== codeFull) return;
+        const row = (data.rows || [])[0] || {};
+        const val = (k) => (row[k] == null || row[k] === "" || row[k] === "—" ? null : row[k]);
+        body.innerHTML =
+          stockRow("名称", val("name") || (base && base.name)) +
+          stockRow("代码", val("code") || codeFull) +
+          stockRow("最新价", val("price")) +
+          stockRow("涨跌幅", val("pct") == null ? null : val("pct") + "%") +
+          stockRow("市盈率", val("pe")) +
+          stockRow("市净率", val("pb")) +
+          stockRow("总市值", val("mcap")) +
+          stockRow("所属行业", val("industry") || (base && base.industry)) +
+          stockRow("所属概念", val("concept") || (base && base.hot_concepts)) +
+          stockRow("主营业务", val("business")) +
+          stockRow("前十大股东", val("holders")) +
+          (inWatch ? `<div class="meta" style="padding-top:8px;">这只已经在你的自选里了。</div>` : "");
+        if (!Object.keys(row).length) {
+          body.innerHTML += `<div class="meta" style="padding-top:8px;">没取到更多字段（可能离线或缓存为空），上面是名单里的信息。</div>`;
+        }
+      } catch (err) {
+        if (state.stockCode === codeFull) {
+          body.innerHTML += `<div class="meta" style="padding-top:8px;">详情读取失败：${escHtml(err.message)}</div>`;
+        }
+      }
+    }
+
+    function closeStock() {
+      document.getElementById("stockMask").style.display = "none";
+      state.stockCode = "";
+    }
+
+    document.getElementById("gsBtn").addEventListener("click", () => runSearch().catch((e) => toast(e.message)));
+    document.getElementById("gsInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        runSearch().catch((err) => toast(err.message));
+      }
+      if (e.key === "Escape") gsClose();
+    });
+    document.getElementById("gsResults").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-gs]");
+      if (!btn) return;
+      const code = btn.dataset.gs;
+      const base = (state.gsItems || []).find((it) => (it.code_full || it.code6) === code) || { code_full: code };
+      gsClose();
+      openStockDetail(code, base).catch((err) => toast(err.message));
+    });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".global-search")) gsClose();
+    });
+    document.getElementById("stockClose").addEventListener("click", closeStock);
+    document.getElementById("stockMask").addEventListener("click", (e) => {
+      if (e.target.id === "stockMask") closeStock();
+    });
+    document.getElementById("stockView").addEventListener("click", async () => {
+      const code = state.stockCode;
+      if (!code) return;
+      closeStock();
+      await runQuery([code], { refreshMode: "cache", forceLive: false });
+      toast("已在右侧表显示这只票；导出 Excel 会导出它");
+    });
+    document.getElementById("stockAdd").addEventListener("click", async () => {
+      const code = state.stockCode;
+      if (!code) return;
+      try {
+        const data = await api("/watchlist/items", {
+          method: "POST",
+          body: JSON.stringify({ items: [{ code }] }),
+        });
+        renderWatch(data.items);
+        const addBtn = document.getElementById("stockAdd");
+        addBtn.textContent = "已在自选中";
+        addBtn.disabled = true;
+        toast(`已加入自选（新增 ${data.added.length} 只）`);
+        if (state.side === "watch") await runQuery(null, { refreshMode: "cache", forceLive: false });
+      } catch (err) {
+        toast(err.message);
+      }
+    });
 
     async function exportXlsx() {
       const payload = queryPayload(
@@ -2377,13 +2572,6 @@
       }
     });
     document.getElementById("exportBtn").addEventListener("click", () => exportXlsx().catch((e) => toast(e.message)));
-    document.getElementById("searchBtn").addEventListener("click", () => runSearch().catch((e) => toast(e.message)));
-    document.getElementById("globalSearch").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        runSearch().catch((err) => toast(err.message));
-      }
-    });
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
     document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
     document.getElementById("storageRefresh").addEventListener("click", () => loadStorage().catch((e) => toast(e.message)));
