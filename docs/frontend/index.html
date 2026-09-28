@@ -530,6 +530,28 @@
     .subtabs .subtab.on { color: var(--ink); border-bottom-color: var(--teal); font-weight: 600; }
     .monitor-pane { display: none; }
     .monitor-pane.on { display: block; }
+    /* 「新增」按钮固定在板块右上角：sticky 相对 .monitor-body（overflow:auto），
+       列表怎么滚它都不动；底色与面板一致，避免内容从下面透出来。 */
+    .pane-add-bar {
+      position: sticky;
+      top: 0;
+      z-index: 6;
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      padding: 8px 0 10px;
+      margin-bottom: 6px;
+      background: #faf9f6;
+      border-bottom: 1px solid var(--line);
+    }
+    .pane-add-bar .add-btn {
+      font-size: 14px;
+      font-weight: 700;
+      padding: 9px 18px;
+      border-radius: 10px;
+      box-shadow: 0 4px 14px rgba(31, 122, 77, 0.28);
+    }
+    .pane-add-bar .add-btn:hover { transform: translateY(-1px); }
     .policy-bar {
       color: var(--muted);
       font-size: 13px;
@@ -750,9 +772,12 @@
               <div id="monitorAlerts" class="meta">尚未跑过</div>
             </div>
             <div id="monitorRules" class="monitor-pane">
+              <div class="pane-add-bar">
+                <button class="btn primary add-btn" id="ruleAdd" type="button">＋ 新增规则</button>
+              </div>
               <div class="side-title"><span data-help-tip="开关和阈值仍管自动扫描。决策卡只存这只票的买区 / 减仓价等数字；真响铃在「今日」。规则定义 / 监控需求点开才显示，写给问答助手当守则。">模板规则</span></div>
               <div id="monitorJobs"></div>
-              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="可以增删，范围可限定全部、某一分组或一只自选。可以只写文字给问答用，也可以再配指标阈值让盘中/日终扫描。">我的规则</span> <button class="btn sm" id="ruleAdd" type="button">添加规则</button></div>
+              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="可以增删，范围可限定全部、某一分组或一只自选。可以只写文字给问答用，也可以再配指标阈值让盘中/日终扫描。新增按钮固定在板块右上角，不随列表滚动。">我的规则</span></div>
               <div id="customRules" class="meta">还没有自定义规则</div>
             </div>
             <div id="monitorReview" class="monitor-pane">
