@@ -21,6 +21,10 @@ class MarketError(RuntimeError):
     pass
 
 
+class LicenceExhaustedError(MarketError):
+    """池里还有证，但今天一张都派不出来。与「没配证书 / 网络不通」要分开报。"""
+
+
 class MarketClient:
     """Only module allowed to talk to Mairui.
 
@@ -54,23 +58,34 @@ class MarketClient:
         return f"{settings.mairui_base}{path}/{key}"
 
     def refresh_pool(self) -> None:
-        if self.offline or not self._registry:
+        reg = getattr(self, "_registry", None)
+        if self.offline or not reg:
             return
-        self._registry.repair()
+        reg.repair()
         # 池子空到要 repair 了，说明之前判「不可用」的判断可能只是暂时的，给一次重试机会。
         self._unusable.clear()
         self.licence = self._registry.active() or self.licence
         if self.status in ("unchecked", "offline", "sample-only", "probe-failed"):
+            # 今天全耗尽：再探也只是白烧请求（每一张都要真发一次才知道它用尽），等次日恢复。
+            if reg.all_exhausted_today():
+                self.status = "quota-exhausted"
+                return
             self._probe()
 
     def _get(self, path: str) -> Any:
         if self.offline:
             raise MarketError("offline mode: live API disabled")
-        reg = self._registry
+        reg = getattr(self, "_registry", None)
         if not reg:
             raise MarketError("未配置麦蕊证书")
         if not reg.iteration_plan():
             self.refresh_pool()
+        if not reg.iteration_plan():
+            # 到这里说明池里真的派不出证了。分清「今天用尽」和「压根没配」，别让界面只显示探针失败。
+            if reg.all_exhausted_today():
+                self.status = "quota-exhausted"
+                raise LicenceExhaustedError("所有证书今日额度已用尽（每日刷新池次日自动恢复；长期池用尽后需重新添加）")
+            raise MarketError("证书池为空：请在工作台「证书池」中添加证书")
         last_error = "麦蕊证书池已全部用尽"
         for _pool_kind, lic in list(reg.iteration_plan()):
             if not lic or lic in self._unusable:
@@ -107,6 +122,9 @@ class MarketClient:
                 raise MarketError(str(exc)) from exc
             except Exception as exc:
                 raise MarketError(str(exc)) from exc
+        if reg.all_exhausted_today():
+            self.status = "quota-exhausted"
+            raise LicenceExhaustedError("所有证书今日额度已用尽（每日刷新池次日自动恢复；长期池用尽后需重新添加）")
         raise MarketError(last_error)
 
     def _switch_licence(self, reg, lic: str, kind: str, detail: str) -> None:
@@ -148,6 +166,11 @@ class MarketClient:
             if stamp is not None and slot_start() == slot_start(stamp):
                 self.status = "live"
                 return
+        # 池里还有证但今天全耗尽：别再发请求去试，试一次烧一次。
+        reg = getattr(self, "_registry", None)
+        if reg is not None and reg.all_exhausted_today():
+            self.status = "quota-exhausted"
+            return
         if self.licence == settings.demo_licence:
             self.sample_only = True
             self.status = "demo-licence"
@@ -243,6 +266,9 @@ class MarketClient:
             "licence_switches": getattr(self, "licence_switches", 0),
             "licence_unusable": sorted({x[:8] + "…" for x in getattr(self, "_unusable", set())}),
             "licence_active_pool": pools.get("active_pool") if pools else "",
+            # 池里还有证、但今天一张都派不出来。与「没配证书」「网络不通」分开，界面才能说清。
+            "licence_exhausted_all": bool(pools and pools.get("all_exhausted_today")),
+            "licence_exhaust_counts": (pools or {}).get("exhaust_counts_today") or {},
             "licence_pools": pools,
             "licence_pool": legacy_pool,
         }

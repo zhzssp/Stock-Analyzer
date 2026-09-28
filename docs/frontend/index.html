@@ -1236,10 +1236,16 @@
       ).length;
       if (filled > 0) return;
       const hint = document.getElementById("queryHint");
-      if (hint) hint.textContent += " · 取数失败：除名称 / 代码外全部为空";
+      const mk = (saDebug.lastResult && saDebug.lastResult.market) || {};
+      const exhausted = mk.licence_exhausted_all || mk.status === "quota-exhausted";
+      if (hint) hint.textContent += exhausted ? " · 证书今日额度已用尽" : " · 取数失败：除名称 / 代码外全部为空";
       if (state.emptyWarned) return;
       state.emptyWarned = true;
-      toast("没取到任何字段：通常是证书额度用尽或网络不通。按 F12 打开控制台，执行 saDiag() 看详情");
+      if (exhausted) {
+        toast("证书今日额度已用尽：每日刷新池次日自动恢复，长期池用尽需重新添加。可在「证书池」查看剩余。");
+      } else {
+        toast("没取到任何字段：通常是证书额度用尽或网络不通。按 F12 打开控制台，执行 saDiag() 看详情");
+      }
       dbg("整表为空：先看 saDebug.lastResult.market（探针状态、证书池），再执行 saDiag()");
     }
 
@@ -2130,14 +2136,19 @@
         const why = m.offline_reason || data.note || "";
         return why ? `离线样例（${why}）` : "离线切片（非实盘）";
       }
-      if (m.status === "probe-failed") return "行情探针失败";
-      if (m.sample_only || m.status === "demo-licence") return "演示证样本";
+      // 「证书额度已用尽」要排在 probe-failed 前面：证书全耗尽时探针必然失败，
+      // 只报「探针失败」会让人以为是网络问题，其实是额度没了。
       const pools = m.licence_pools || {};
       const ren = pools.renewable || {};
       const cons = pools.consumable || {};
       const renAvail = (ren.available || []).length;
       const consAvail = (cons.available || []).length;
-      if ((ren.total || 0) + (cons.total || 0) > 0 && !renAvail && !consAvail) return "证书额度已用尽";
+      if (m.licence_exhausted_all || m.status === "quota-exhausted"
+        || ((ren.total || 0) + (cons.total || 0) > 0 && !renAvail && !consAvail)) {
+        return "证书额度已用尽";
+      }
+      if (m.status === "probe-failed") return "行情探针失败";
+      if (m.sample_only || m.status === "demo-licence") return "演示证样本";
       const pool = m.licence_pool || {};
       if (pool.total && !(pool.available || []).length && !consAvail) return "证书额度已用尽";
       const src = (data.clock && data.clock.source) || "";
