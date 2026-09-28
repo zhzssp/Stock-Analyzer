@@ -10,7 +10,7 @@ from src.market import fixtures
 from src.platform.storage import read_cache_json, trim_bars, write_cache_json
 from src.market.holders_diff import normalize_holders, summarize
 from src.market.normalize import Instrument, code6_of, normalize_instrument
-from src.market.licence_pool import is_quota_error
+from src.market.licence_pool import is_licence_unusable, is_quota_error
 from src.market.licence_registry import LicenceRegistry
 from src.market.taxonomy import classify, search_needles
 
@@ -31,6 +31,9 @@ class MarketClient:
         self.licence = self._registry.active() if self._registry else ""
         self.sample_only = False
         self.status = "offline" if self.offline else "unchecked"
+        # 进程内判定为「证书本身不可用」的证：直接跳过，不再浪费次数重试。
+        self._unusable: set[str] = set()
+        self.licence_switches = 0
         self.query_refresh_mode: str = "full"
         self.slow_cache_stats: dict[str, int] = {"hits": 0, "misses": 0}
         if not self.offline:
@@ -45,6 +48,8 @@ class MarketClient:
         if self.offline or not self._registry:
             return
         self._registry.repair()
+        # 池子空到要 repair 了，说明之前判「不可用」的判断可能只是暂时的，给一次重试机会。
+        self._unusable.clear()
         self.licence = self._registry.active() or self.licence
         if self.status in ("unchecked", "offline", "sample-only", "probe-failed"):
             self._probe()
@@ -59,28 +64,55 @@ class MarketClient:
             self.refresh_pool()
         last_error = "麦蕊证书池已全部用尽"
         for _pool_kind, lic in list(reg.iteration_plan()):
-            if not lic:
+            if not lic or lic in self._unusable:
                 continue
             url = self._url(path, lic)
             try:
                 resp = httpx.get(url, timeout=30.0)
                 if is_quota_error(resp.status_code, resp.text):
                     last_error = f"Licence 额度已用尽: {lic[:8]}…"
+                    self._log_licence(f"额度用尽 → 换下一张（HTTP {resp.status_code}，{lic[:8]}…）")
                     self.licence = reg.mark_quota_exhausted(lic)
+                    continue
+                if is_licence_unusable(resp.status_code, resp.text):
+                    last_error = f"Licence 不可用: {lic[:8]}…"
+                    self._unusable.add(lic)
+                    self._log_licence(f"证书不可用 → 本进程跳过（HTTP {resp.status_code}，{lic[:8]}…）")
                     continue
                 resp.raise_for_status()
                 self.licence = lic
                 return resp.json()
             except httpx.HTTPStatusError as exc:
                 body = exc.response.text if exc.response is not None else ""
-                if is_quota_error(exc.response.status_code if exc.response else 0, body):
+                code = exc.response.status_code if exc.response is not None else 0
+                if is_quota_error(code, body):
                     last_error = f"Licence 额度已用尽: {lic[:8]}…"
+                    self._log_licence(f"额度用尽 → 换下一张（HTTP {code}，{lic[:8]}…）")
                     self.licence = reg.mark_quota_exhausted(lic)
+                    continue
+                if is_licence_unusable(code, body):
+                    last_error = f"Licence 不可用: {lic[:8]}…"
+                    self._unusable.add(lic)
+                    self._log_licence(f"证书不可用 → 本进程跳过（HTTP {code}，{lic[:8]}…）")
                     continue
                 raise MarketError(str(exc)) from exc
             except Exception as exc:
                 raise MarketError(str(exc)) from exc
         raise MarketError(last_error)
+
+    def _log_licence(self, message: str) -> None:
+        """换证留痕，便于判断「到底有没有自动切换」（写 data/logs/licence.log）。"""
+        self.licence_switches += 1
+        try:
+            from datetime import datetime
+
+            log_dir = settings.data_dir / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with (log_dir / "licence.log").open("a", encoding="utf-8") as fh:
+                fh.write(f"{stamp} {message}\n")
+        except Exception:
+            pass
 
     def _try_get(self, path: str) -> Any | None:
         try:
@@ -174,6 +206,9 @@ class MarketClient:
             "status": self.status,
             "has_licence": bool(self.licence),
             "licence_active": self.licence,
+            # 进程内因为额度/不可用而换过多少次证书；配合 data/logs/licence.log 排查。
+            "licence_switches": getattr(self, "licence_switches", 0),
+            "licence_unusable": sorted({x[:8] + "…" for x in getattr(self, "_unusable", set())}),
             "licence_active_pool": pools.get("active_pool") if pools else "",
             "licence_pools": pools,
             "licence_pool": legacy_pool,

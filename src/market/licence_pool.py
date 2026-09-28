@@ -22,13 +22,50 @@ def parse_licences(*chunks: str | None) -> list[str]:
     return out
 
 
+_LICENCE_WORDS = ("licence", "license", "证书")
+_QUOTA_WORDS = ("额度", "次数", "超限", "超出", "已超", "上限", "配额", "用尽")
+
+
 def is_quota_error(status_code: int, body: str = "") -> bool:
+    """当日额度 / 调用次数用尽：命中就该换下一张证书。
+
+    麦蕊的额度提示没有统一格式，见过 `101:Licence…已超限`，也见过只带「额度 / 超限」
+    而没有 licence 字样的写法。原写法要求「101 且含 licence/证书」或「次数且含超出/超限」，
+    漏掉的组合会让它一直卡在同一张已经用尽的证书上，看起来就是「没有自动切换」。
+    宁可多换一张（代价最多一次重试），也不要卡住。
+    """
     if status_code == 429:
         return True
     text = str(body or "")
-    if "101" in text and ("Licence" in text or "licence" in text or "证书" in text):
+    if not text:
+        return False
+    lowered = text.lower()
+    has_licence = any(k in lowered for k in _LICENCE_WORDS)
+    has_quota = any(k in text for k in _QUOTA_WORDS)
+    if "101" in text and (has_licence or has_quota):
         return True
-    return "次数" in text and ("超出" in text or "超限" in text or "已超" in text)
+    if has_licence and has_quota:
+        return True
+    # 没有 101 也没有 licence 字样时，只认这几个强特征，避免误判正常响应。
+    return any(k in text for k in ("额度已用尽", "当日次数", "调用次数已超", "超出当日", "次数已超"))
+
+
+def is_licence_unusable(status_code: int, body: str = "") -> bool:
+    """证书本身不可用（无效 / 未授权 / 过期）：换下一张，但**不**记为额度用尽。
+
+    额度用尽次日会恢复，证书无效恢复不了——两者不能混为一谈。
+    """
+    if status_code in (401, 402, 403):
+        return True
+    text = str(body or "")
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(k in lowered for k in _LICENCE_WORDS) and any(
+        k in text for k in ("无效", "未授权", "过期", "到期", "禁用", "不存在", "错误")
+    ):
+        return True
+    return False
 
 
 class LicencePool:
