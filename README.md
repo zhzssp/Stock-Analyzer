@@ -25,9 +25,10 @@ Stock-Analyzer/
 ├── tests/
 ├── requirements.txt
 └── scripts/
-    ├── run.cmd               # 推荐：先检查环境再启动服务
+    ├── run.cmd               # 日常（连真实数据）：先检查环境再启动服务
+    ├── run-offline.cmd       # 仅测试人员：强制离线样例，不连数据商、不耗授权次数
     ├── setup.cmd             # 只做环境检查/配置（已配好则只校验）
-    ├── run-server.cmd        # 只启动本机服务（缺环境时仍会调用 setup）
+    ├── run-server.cmd        # 高级：只启动服务、跳过日常检查（一般用 run.cmd）
     ├── Verify-Api.ps1        # 接口实测
     └── Verify-Index.ps1      # S0：指数成份探针
 ```
@@ -97,6 +98,12 @@ Stock-Analyzer/
 
 ```bat
 .\scripts\run-server.cmd
+```
+
+测试人员要用离线样例时，改用这个（数据不是真实行情，日常不要用）：
+
+```bat
+.\scripts\run-offline.cmd
 ```
 
 若坚持用 PowerShell 且执行策略较严：
