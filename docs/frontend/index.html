@@ -552,6 +552,10 @@
       box-shadow: 0 4px 14px rgba(31, 122, 77, 0.28);
     }
     .pane-add-bar .add-btn:hover { transform: translateY(-1px); }
+    /* 同一 pane 里有多条 add-bar 时，越靠后的层级越高：滚到那一区就由它接管顶部，
+       不会因为两个 sticky 都停在 top:0 而糊在一起。 */
+    .pane-add-bar[data-bar="inst"] { z-index: 6; }
+    .pane-add-bar[data-bar="src"] { z-index: 7; }
     .policy-bar {
       color: var(--muted);
       font-size: 13px;
@@ -789,27 +793,35 @@
               <div id="reviewDone" class="meta">还没有次日标签</div>
             </div>
             <div id="monitorPrefs" class="monitor-pane">
-              <div class="side-title"><span data-help-tip="监控对照用的名字表，不是持仓实况。可取消勾选，也可追加名字。">关注机构白名单</span></div>
+              <div class="pane-add-bar" data-bar="inst">
+                <button class="btn primary add-btn" id="instAddToggle" type="button">＋ 追加机构</button>
+              </div>
+              <div class="side-title"><span data-help-tip="监控对照用的名字表，不是持仓实况。可取消勾选，也可追加名字。追加按钮固定在板块右上角，不随列表滚动。">关注机构白名单</span></div>
               <div id="instList" class="meta-list">尚未加载</div>
-              <div class="composer-row" style="margin:8px 0;">
+              <div class="composer-row" id="instAddRow" style="margin:8px 0; display:none;">
                 <input id="instCustom" placeholder="追加机构名，如 某某基金" style="flex:1;" />
                 <button class="btn sm" id="instAdd" type="button">追加</button>
                 <button class="btn sm primary" id="instSave" type="button">保存白名单</button>
               </div>
-              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="只抓你填的 http(s) 页面或 RSS。日终或「资讯冲击 / 产业政策」点只跑这条时拉取。标题或正文命中自选名称、代码，或不少于三个字的行业名，才进今日。不是全网搜索，也不做摘要。内网和 file 地址会被拒绝。">检索源</span></div>
-              <div id="sourceList" class="meta-list">尚未加载</div>
-              <div class="composer-row" style="margin:8px 0;">
-                <input id="srcName" placeholder="名称，如 交易所公告" style="width:140px;" />
-                <input id="srcUrl" placeholder="https://..." style="flex:1;" />
+              <div class="pane-add-bar" data-bar="src">
+                <button class="btn primary add-btn" id="srcAddToggle" type="button">＋ 添加检索源</button>
               </div>
-              <div class="composer-row" style="margin:8px 0;">
-                <select id="srcKind">
-                  <option value="news">资讯</option>
-                  <option value="policy">政策</option>
-                </select>
-                <input id="srcKw" placeholder="可选关键词，逗号分隔；留空则只盯自选" style="flex:1;" />
-                <button class="btn sm" id="srcAdd" type="button">追加</button>
-                <button class="btn sm primary" id="srcSave" type="button">保存检索源</button>
+              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="只抓你填的 http(s) 页面或 RSS。日终或「资讯冲击 / 产业政策」点只跑这条时拉取。标题或正文命中自选名称、代码，或不少于三个字的行业名，才进今日。不是全网搜索，也不做摘要。内网和 file 地址会被拒绝。添加按钮固定在板块右上角，不随列表滚动。">检索源</span></div>
+              <div id="sourceList" class="meta-list">尚未加载</div>
+              <div id="srcAddRow" style="display:none;">
+                <div class="composer-row" style="margin:8px 0;">
+                  <input id="srcName" placeholder="名称，如 交易所公告" style="width:140px;" />
+                  <input id="srcUrl" placeholder="https://..." style="flex:1;" />
+                </div>
+                <div class="composer-row" style="margin:8px 0;">
+                  <select id="srcKind">
+                    <option value="news">资讯</option>
+                    <option value="policy">政策</option>
+                  </select>
+                  <input id="srcKw" placeholder="可选关键词，逗号分隔；留空则只盯自选" style="flex:1;" />
+                  <button class="btn sm" id="srcAdd" type="button">追加</button>
+                  <button class="btn sm primary" id="srcSave" type="button">保存检索源</button>
+                </div>
               </div>
               <div class="side-title" style="margin:16px 0 8px;">提醒通道</div>
               <div id="channelBox" class="meta-list">尚未加载</div>
@@ -4021,6 +4033,23 @@
       }
     });
     document.getElementById("ruleAdd").addEventListener("click", () => showBuilder(null));
+
+    // 「＋」按钮展开对应的输入行；再点一次收起。展开后自动聚焦第一个输入框。
+    function bindAddToggle(btnId, rowId, focusId) {
+      const btn = document.getElementById(btnId);
+      const row = document.getElementById(rowId);
+      if (!btn || !row) return;
+      btn.addEventListener("click", () => {
+        const open = row.style.display === "none";
+        row.style.display = open ? "" : "none";
+        if (open) {
+          const target = document.getElementById(focusId);
+          if (target) target.focus();
+        }
+      });
+    }
+    bindAddToggle("instAddToggle", "instAddRow", "instCustom");
+    bindAddToggle("srcAddToggle", "srcAddRow", "srcName");
     document.getElementById("ruleCancel").addEventListener("click", hideBuilder);
     document.getElementById("ruleMask").addEventListener("click", (e) => {
       if (e.target.id === "ruleMask") hideBuilder();
