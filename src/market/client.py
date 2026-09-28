@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date
 from typing import Any
 
@@ -25,6 +26,9 @@ class MarketClient:
     Demo licence responses are never persisted as live cache.
     """
 
+    # 单次请求超时（秒）。启动探针会临时调小；探针结束恢复。
+    _timeout = 30.0
+
     def __init__(self) -> None:
         self.offline = not settings.use_live_market
         self._registry: LicenceRegistry | None = LicenceRegistry.shared() if not self.offline else None
@@ -36,6 +40,8 @@ class MarketClient:
         self.licence_switches = 0
         self.query_refresh_mode: str = "full"
         self.slow_cache_stats: dict[str, int] = {"hits": 0, "misses": 0}
+        # 请求超时。启动探针会临时调小，避免网络不通时把服务启动卡住（端口迟迟不监听）。
+        self._timeout = 30.0
         if not self.offline:
             self._probe()
 
@@ -68,7 +74,7 @@ class MarketClient:
                 continue
             url = self._url(path, lic)
             try:
-                resp = httpx.get(url, timeout=30.0)
+                resp = httpx.get(url, timeout=self._timeout)
                 if is_quota_error(resp.status_code, resp.text):
                     last_error = f"Licence 额度已用尽: {lic[:8]}…"
                     self._log_licence(f"额度用尽 → 换下一张（HTTP {resp.status_code}，{lic[:8]}…）")
@@ -137,14 +143,29 @@ class MarketClient:
         self.sample_only = False
         prices: list[Any] = []
         errors = 0
-        for code in ("000001", "600038", "002230"):
-            try:
-                data = self._get(f"/hsrl/ssjy/{code}")
-                row = data[0] if isinstance(data, list) else data
-                prices.append(row.get("p"))
-            except Exception:
-                errors += 1
-                prices.append("ERR")
+        # 启动探针有总预算：网络不通时宁可标记 probe-failed，也不能让端口迟迟不监听
+        # （uvicorn 先跑 lifespan 再 bind，卡在这里用户看到的就是「拒绝连接」）。
+        budget = float(getattr(settings, "probe_budget_sec", 0) or 0)
+        deadline = time.monotonic() + budget if budget > 0 else None
+        saved_timeout = self._timeout
+        self._timeout = float(getattr(settings, "probe_timeout_sec", 0) or saved_timeout)
+        try:
+            for code in ("000001", "600038", "002230"):
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                try:
+                    data = self._get(f"/hsrl/ssjy/{code}")
+                    row = data[0] if isinstance(data, list) else data
+                    prices.append(row.get("p"))
+                except Exception:
+                    errors += 1
+                    prices.append("ERR")
+        finally:
+            self._timeout = saved_timeout
+        if len(prices) < 3:
+            # 预算用完了，剩下的算失败
+            errors += 3 - len(prices)
+            prices.extend(["ERR"] * (3 - len(prices)))
         distinct = {p for p in prices if p not in (None, "ERR")}
         ok = 3 - errors
         if ok == 0:
