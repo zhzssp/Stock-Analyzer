@@ -17,15 +17,19 @@ PHASE3_GAPS: tuple[dict[str, Any], ...] = (
         "id": "U2",
         "name": "Agent 全网资讯检索",
         "kind": "tool",
-        "status": "placeholder",
-        "reason": "麦蕊无新闻/检索接口；web_finance_search 保持关闭。监控可配白名单 URL，不等于 Agent 检索。",
+        "status": "wired_whitelist",
+        "reason": (
+            "2026-09-29（S4）：web_finance_search 已接监控侧同一套白名单检索"
+            "（scan_sources + sources_for），数据源就是用户在「偏好」里登记的 URL / RSS；"
+            "未配源时明确报错。**仍不是全网搜索**——全网检索无数据源，保持不做。"
+        ),
     },
     {
         "id": "U3",
         "name": "Agent 产业政策检索",
         "kind": "tool",
-        "status": "placeholder",
-        "reason": "同 U2；policy_news 保持关闭。",
+        "status": "wired_whitelist",
+        "reason": "同 U2：policy_news 已接同一套白名单（kind=policy），未配源时明确报错，不是全网检索。",
     },
     {
         "id": "U4",

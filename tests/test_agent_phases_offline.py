@@ -12,12 +12,27 @@ def _auth(client: TestClient) -> dict:
 
 
 def test_reserved_tools_stay_disabled():
-    for tool_id in ("futures_quote", "web_finance_search", "policy_news"):
-        spec = registry.get(tool_id)
-        assert spec.enabled is False
-        assert spec.reason
+    """期货行情仍占位（没有行情源，U1）。"""
+    spec = registry.get("futures_quote")
+    assert spec.enabled is False
+    assert spec.reason
+    # 期货「品种映射」是另一回事：已实现，只给品种不报价格
+    assert registry.get("futures_map").enabled is True
     assert registry.get("fund_holding").enabled is True
     assert registry.get("export_share").enabled is True
+
+
+def test_web_tools_are_wired_to_user_sources():
+    """S4：资讯 / 政策工具已接上监控侧同一套白名单检索（以前是空壳）。
+
+    数据源是用户在「偏好」里配的 URL / RSS，没配源时工具会明确报错，不编内容。
+    """
+    for tool_id in ("web_finance_search", "policy_news"):
+        spec = registry.get(tool_id)
+        assert spec.enabled is True, f"{tool_id} 应已启用"
+        fn = registry.fn_of(tool_id)
+        assert fn is not None
+        assert not getattr(fn, "is_disabled_placeholder", False), f"{tool_id} 不能还是空壳"
 
 
 def test_session_followup_uses_history():

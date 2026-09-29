@@ -129,6 +129,70 @@ _schema = {
     },
 }
 
+def _scan_user_sources(args: dict, ctx: ToolContext, kind: str, label: str) -> ToolResult:
+    """走用户在监控「偏好」里配的白名单 URL / RSS —— 与监控侧同一条链路、同一份源。
+
+    不是全网搜索：只抓用户自己登记过的源，命中标题/正文里出现关键词的条目。
+    """
+    from src.platform.monitor_prefs import sources_for
+    from src.platform.web_sources import scan_sources, watch_needles
+
+    sources = sources_for(ctx.db, ctx.user_id)
+    if not sources:
+        return ToolResult(
+            ok=False,
+            error="还没配检索源：请到监控「偏好」里添加白名单 URL / RSS",
+            source="web_sources",
+            cite="检索源",
+        )
+
+    name = str(args.get("name") or args.get("query") or "").strip()
+    code6 = str(args.get("code") or "").strip()
+    needles = watch_needles(name, code6, str(args.get("industry") or ""), str(args.get("concept") or ""))
+
+    if needles:
+        watches = [(code6 or "ALL", name or "查询", needles)]
+    else:
+        # 没给关键词：按自选清单来，和监控默认行为一致
+        from src.tools.market_tools import watch_instruments
+
+        watches = [
+            (i.code6, i.name, watch_needles(i.name, i.code6, "", ""))
+            for i in watch_instruments(ctx)
+        ]
+    if not watches:
+        return ToolResult(ok=False, error="没有可检索的标的", source="web_sources", cite="检索源")
+
+    hits = scan_sources(sources, kind, watches, ctx.user_id)
+    rows = [
+        {
+            "code6": h.code6,
+            "name": h.name,
+            "title": h.title,
+            "url": h.url,
+            "snippet": h.snippet,
+            "source": h.source_name,
+        }
+        for h in hits[:20]
+    ]
+    return ToolResult(
+        ok=True,
+        data=rows,
+        source="web_sources",
+        cite=f"检索源 · {label}",
+    )
+
+
+def web_finance_search(args: dict, ctx: ToolContext) -> ToolResult:
+    """资讯检索：只查用户配的白名单源，不做全网搜索。"""
+    return _scan_user_sources(args, ctx, "news", "资讯")
+
+
+def policy_news(args: dict, ctx: ToolContext) -> ToolResult:
+    """产业政策：同样是白名单源，只是 kind=policy。"""
+    return _scan_user_sources(args, ctx, "policy", "产业政策")
+
+
 registry.register(ToolSpec("taxonomy_lookup", "板块分类", "compute", "申万一级、七大板块、2026概念", _schema), taxonomy_lookup)
 registry.register(ToolSpec("fund_holding", "基金持仓", "market", "基金持股，并对照汇金/点名基金/投行白名单", _schema), fund_holding)
 registry.register(
@@ -138,4 +202,14 @@ registry.register(
 registry.register(
     ToolSpec("export_share", "出口占比", "web", "读取 data/export_share.csv 手工表；无文件则空", _schema),
     export_share,
+)
+# 以前这两个是空壳（_disabled_run）。现在接上监控侧同一套白名单检索：
+# 用户在「偏好」里配的源就是数据源，没配源会明确报错，不编内容。
+registry.register(
+    ToolSpec("web_finance_search", "资讯检索", "web", "按自选/关键词检索已配白名单的资讯（不是全网搜索）", _schema),
+    web_finance_search,
+)
+registry.register(
+    ToolSpec("policy_news", "产业政策", "web", "按行业/关键词检索已配白名单的政策信息（不是全网搜索）", _schema),
+    policy_news,
 )

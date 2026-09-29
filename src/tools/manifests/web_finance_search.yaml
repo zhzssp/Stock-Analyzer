@@ -1,10 +1,10 @@
 id: web_finance_search
 name: 资讯检索
 version: 0.1.0
-enabled: false
-reason: 等待检索数据源
+enabled: true
+reason: 数据源就是用户在监控「偏好」里配的白名单 URL / RSS；没配源时会提示去添加
 kind: web
-description: 按公司名检索微博/财经快讯。数据源未接时保持关闭。
+description: 按自选或关键词检索已配白名单的资讯。不是全网搜索，只查用户登记过的源。
 input_schema:
   type: object
   properties:
