@@ -596,6 +596,16 @@ class MarketClient:
             pool = fixtures.LIMIT_UP if key == "up" else fixtures.LIMIT_DOWN
             return set(pool)
         d = day or date.today().isoformat()
+        # 池子几分钟内不会变，但监控每 5 分钟扫一次 —— 加一层短 TTL，别每次都打接口。
+        # 不走 _slow_load：那条要求 refresh_mode=cache（只服务慢字段），而池是盘中实时数据。
+        ttl = int(getattr(settings, "limit_pool_ttl_sec", 0) or 0)
+        cache_key = f"limit_pool_{key}_{d}"
+        if ttl > 0:
+            from src.market.slow_cache import read_fresh
+
+            cached = read_fresh(cache_key, ttl)
+            if isinstance(cached, list) and cached:
+                return {str(x) for x in cached}
         path = "/hslt/ztgc" if key == "up" else "/hslt/dtgc"
         data = self._try_get(f"{path}/{d}") or []
         codes: set[str] = set()
@@ -606,6 +616,11 @@ class MarketClient:
             c6 = code6_of(dm) if dm else ""
             if c6:
                 codes.add(c6)
+        # 取空不缓存：否则一次网络抖动会把「今天没有涨停」这个假结论缓存住
+        if ttl > 0 and codes:
+            from src.market.slow_cache import write
+
+            write(cache_key, sorted(codes))
         return codes
 
     def finance(self, inst: Instrument) -> dict:

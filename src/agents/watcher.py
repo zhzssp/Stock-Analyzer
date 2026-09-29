@@ -329,10 +329,15 @@ def run_watcher(
             break
     previous_as_of = _CURRENT_AS_OF
     _CURRENT_AS_OF = clock_as_of
+    # 逐只规则（股东 / 资金 / 公告 / 竞价）以前跑在 full 模式：每轮日终都重打一遍接口，
+    # 而批量取数那一段一直是 cache。这里统一成 cache —— 慢字段本来就带 TTL，不影响现价。
+    from src.tools.base import market_cache_mode
+
     try:
-        return _finish_watcher(
-            db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits
-        )
+        with market_cache_mode(ctx):
+            return _finish_watcher(
+                db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits
+            )
     finally:
         _CURRENT_AS_OF = previous_as_of
 

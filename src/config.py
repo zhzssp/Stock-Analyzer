@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     slow_cache_indicators_ttl_sec: int = 3_600
     # 抬头指数点位 TTL（秒）。前端 60 秒轮询，靠这层缓存兜住额度，不打满 hsindex。
     board_quote_ttl_sec: int = 60
+    # 涨跌停池 TTL（秒）。盘中每 5 分钟扫一次，池子不会几分钟变一次，没必要每次都打接口。
+    limit_pool_ttl_sec: int = 300
+    # 工具（问答 / Agent）默认走本机慢字段缓存。只影响档案 / 股东 / 财务 / 资金流，不影响现价。
+    agent_tool_cache_default: bool = True
     # 定时任务频率（分钟）。低性能机器 / 额度吃紧时调大：
     #   MONITOR_SESSION_MINUTES=15   盘中扫描 5 → 15 分钟一轮
     #   CLOCK_ALIGN_MINUTES=5        墙钟落档 1 → 5 分钟一轮（只在配了账本目录时才跑）

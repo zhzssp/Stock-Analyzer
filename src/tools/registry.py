@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.tools.base import ToolContext, ToolFn, ToolResult, ToolSpec
+from src.tools.base import ToolContext, ToolFn, ToolResult, ToolSpec, market_cache_mode
 
 
 class ToolRegistry:
@@ -42,10 +42,12 @@ class ToolRegistry:
             return ToolResult(ok=False, error=f"未知 Tool: {tool_id}", source="registry")
         if not spec.enabled:
             return ToolResult(ok=False, error=f"Tool 未启用: {tool_id}", source=spec.id, cite=spec.name)
-        try:
-            return self._fns[tool_id](args or {}, ctx)
-        except Exception as exc:
-            return ToolResult(ok=False, error=str(exc), source=spec.id, cite=spec.name)
+        # 工具默认走缓存（只影响慢字段，不影响现价）：watcher 早就这么干，问答一直没跟上
+        with market_cache_mode(ctx):
+            try:
+                return self._fns[tool_id](args or {}, ctx)
+            except Exception as exc:
+                return ToolResult(ok=False, error=str(exc), source=spec.id, cite=spec.name)
 
 
 registry = ToolRegistry()
