@@ -102,6 +102,10 @@ def test_sarunhost_compiles_and_job_kills_child(tmp_path):
         ],
         capture_output=True,
         text=True,
+        # 必须指定编码：不指定就用系统默认（中文 Windows 是 gbk），
+        # PowerShell 的输出里含非 gbk 字节时会在后台读线程里抛 UnicodeDecodeError。
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
         check=False,
     )
