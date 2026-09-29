@@ -3181,9 +3181,18 @@
       await loadExportShare();
     }
 
+    // 校验不过的自定义规则以前是静默跳过：界面显示「已启用」，实际永远不跑。
+    function toastInvalidRules(data) {
+      const bad = data && data.invalid_rules;
+      if (!bad || !bad.length) return;
+      const names = bad.map((r) => r.name || `#${r.id}`).join("、");
+      toast(`${bad.length} 条自定义规则没生效（${names}）：${bad[0].error}。请到「规则」页改好再开。`);
+    }
+
     async function runMonitor() {
       const data = await api("/monitor/run", { method: "POST", body: "{}" });
       toast(data.count ? `本轮 ${data.count} 条提醒` : "本轮没有新提醒");
+      toastInvalidRules(data);
       await loadMonitor();
     }
 
@@ -3460,6 +3469,7 @@
         try {
           const data = await api("/monitor/jobs/" + run.dataset.run + "/run", { method: "POST" });
           toast(data.count ? `本条 ${data.count} 条提醒` : "这条没有新提醒");
+          toastInvalidRules(data);
           await loadMonitor();
         } catch (err) {
           toast(err.message);
@@ -4511,6 +4521,7 @@
         try {
           const data = await api("/monitor/jobs/" + run.dataset.run + "/run", { method: "POST" });
           toast(data.count ? `本条 ${data.count} 条提醒` : "这条没有新提醒");
+          toastInvalidRules(data);
           await loadMonitor();
         } catch (err) {
           toast(err.message);

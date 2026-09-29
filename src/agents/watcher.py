@@ -204,6 +204,7 @@ def _alert(
         rule_id=rule_id or job_key,
         hit_price=hit_price,
         hit_date=hit_date,
+        as_of=stamp,
         review_status="pending",
     )
     db.add(rec)
@@ -295,6 +296,8 @@ def run_watcher(
     hits: list[dict] = []
     needed = {"price", "off_low", "target", "low_note", "reduce_at", "buy_low", "buy_high", "dist_buy", "dist_reduce", "vs_cost", "cost"}
     custom_specs: list[tuple[UserRule | None, dict]] = []
+    # 校验不过的规则以前是静默 continue：界面显示「已启用」，实际永远不跑，也没人知道。
+    invalid_rules: list[dict] = []
     if preview_spec is not None:
         spec = validate_custom_spec(preview_spec)
         custom_specs.append((None, spec))
@@ -306,7 +309,10 @@ def run_watcher(
                 continue
             try:
                 spec = validate_custom_spec(parse_json(row.spec, {}))
-            except ValueError:
+            except ValueError as exc:
+                invalid_rules.append(
+                    {"id": row.id, "name": getattr(row, "name", "") or "", "error": str(exc)}
+                )
                 continue
             custom_specs.append((row, spec))
             if spec.get("metric"):
@@ -336,14 +342,16 @@ def run_watcher(
     try:
         with market_cache_mode(ctx):
             return _finish_watcher(
-                db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits
+                db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits,
+                invalid_rules=invalid_rules,
             )
     finally:
         _CURRENT_AS_OF = previous_as_of
 
 
 def _finish_watcher(
-    db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits
+    db, user, market, jobs, custom_specs, items, inst_by_code, ctx, catalog, rows_by_code, persist, preview_spec, job_key, schedule, hits,
+    invalid_rules: list[dict] | None = None,
 ):
     from src.market.calendar import is_trading_day
 
@@ -352,8 +360,11 @@ def _finish_watcher(
     # 所以「立刻跑一轮」和 20:20 那轮都会带上；不按交易日跳过（日期是你自己定的）。
     hits.extend(_rule_card_reminders(db, user, items, persist, preview_spec))
     active_keys = {j.job_key for j in jobs if j.enabled and not j.reason}
-    limit_up_pool = market.limit_pool_codes("up") if "limit-up" in active_keys else set()
-    limit_down_pool = market.limit_pool_codes("down") if "limit-down" in active_keys else set()
+    # 涨跌停是盘中任务：非交易日（或周末手动跑）时后面会跳过，别先把接口打了。
+    want_limit_up = trading_today and "limit-up" in active_keys
+    want_limit_down = trading_today and "limit-down" in active_keys
+    limit_up_pool = market.limit_pool_codes("up") if want_limit_up else set()
+    limit_down_pool = market.limit_pool_codes("down") if want_limit_down else set()
     dragon_pool = market.dragon_tiger_codes() if "dragon-tiger" in active_keys else set()
     for job in jobs:
         if job.reason:
@@ -516,7 +527,11 @@ def _finish_watcher(
     else:
         ran = [j.job_key for j in jobs if j.enabled and not j.reason]
         ran += ["custom:preview"] if preview_spec is not None else [f"custom:{r.id}" for r, _ in custom_specs if r]
-    return {"ran": ran, "hits": hits, "count": len(hits)}
+    out = {"ran": ran, "hits": hits, "count": len(hits)}
+    # 校验不过的自定义规则要报出来：否则界面显示「已启用」，实际永远不跑且无人知晓
+    if invalid_rules:
+        out["invalid_rules"] = invalid_rules
+    return out
 
 
 def _holder_items(row: dict | None, catalog: list[dict] | None) -> list[dict]:
@@ -734,15 +749,27 @@ def _rule_web_sources(db, user, job, items, ctx, persist: bool) -> list[dict]:
     out: list[dict] = []
     for code6, rows in grouped.items():
         name = rows[0].name
+        # 以前只靠「按天去重」：同一篇文章隔天会再提醒一次。
+        # 这里补上跨轮次的 URL 指纹，只有没提醒过的文章才进今日。
+        # 预览（persist=False）时不做去重：用户要看的是「会命中什么」，历史不该挡住它
+        snap = _snap(db, user.id, code6, f"web_{job.job_key}") if persist else None
+        old_urls = set(json.loads(snap.payload or "{}").get("urls") or []) if snap else set()
         bits = []
         seen = set()
+        fresh_urls: list[str] = []
         for row in rows:
             if row.url in seen:
                 continue
             seen.add(row.url)
+            if row.url and row.url in old_urls:
+                continue
             bits.append(f"{row.source_name} · {row.title}\n{row.url}\n{row.snippet}".strip())
+            if row.url:
+                fresh_urls.append(row.url)
             if len(bits) >= 8:
                 break
+        if not bits:
+            continue
         hit = _alert(
             db,
             user.id,
@@ -755,4 +782,6 @@ def _rule_web_sources(db, user, job, items, ctx, persist: bool) -> list[dict]:
         )
         if hit:
             out.append(hit)
+            if persist and fresh_urls:
+                _write_snap(db, user.id, code6, f"web_{job.job_key}", {"urls": sorted(old_urls | set(fresh_urls))})
     return out

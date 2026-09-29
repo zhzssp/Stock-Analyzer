@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 from src.db import SessionLocal
 from src.main import app
-from src.models import Alert, User
+from src.models import Alert, Snapshot, User
 from src.platform.web_sources import (
     Document,
     check_url,
@@ -114,6 +114,9 @@ def test_monitor_prefs_sources_unlock_news_and_scan(monkeypatch):
             try:
                 user = db.query(User).filter_by(username="hanish").first()
                 db.query(Alert).filter_by(user_id=user.id, job_key="news").delete()
+                # 资讯去重会写快照（跨轮次记住提醒过的 URL），测试要连它一起清，
+                # 否则留下的快照会让本用例第二轮起再也命中不了。
+                db.query(Snapshot).filter_by(user_id=user.id).delete()
                 db.commit()
             finally:
                 db.close()
@@ -124,6 +127,11 @@ def test_monitor_prefs_sources_unlock_news_and_scan(monkeypatch):
             assert "news" in body["ran"]
             assert any(h["job_key"] == "news" and "中直" in h["title"] for h in body["hits"])
             assert "https://example.com/hit" in " ".join(h["detail"] for h in body["hits"])
+
+            # 同一篇文章不该隔天再提醒一次（以前只按天去重，跨轮次没有指纹）
+            ran2 = client.post("/api/monitor/jobs/news/run", json={}, headers=headers)
+            body2 = ran2.json()
+            assert [h for h in body2["hits"] if h["job_key"] == "news"] == [], "已提醒过的文章不应重复进今日"
         finally:
             client.put("/api/monitor/prefs", json={"sources": []}, headers=headers)
         jobs2 = client.get("/api/monitor/jobs", headers=headers)

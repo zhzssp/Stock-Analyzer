@@ -42,6 +42,9 @@ class ToolContext:
     history: list[dict] = field(default_factory=list)
     agent_name: str = "analyst"
     llm_notice: str | None = None
+    # 模型没调工具、直接用自然语言作答时的原文。以前这段被丢掉，
+    # 结果用户看到「没有调用到可用 Tool」——其实模型已经回答了。
+    llm_direct_answer: str = ""
 
 
 @dataclass

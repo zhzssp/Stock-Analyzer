@@ -1539,6 +1539,7 @@ def _alert_payload(i: Alert) -> dict:
         "created_at": i.created_at.isoformat() if i.created_at else None,
         "hit_price": i.hit_price,
         "hit_date": i.hit_date or "",
+        "as_of": i.as_of or "",
         "review_status": i.review_status or "pending",
         "review_label": REVIEW_LABELS.get(i.review_status or "pending", i.review_status or "pending"),
         "review_return_pct": i.review_return_pct,

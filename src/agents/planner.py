@@ -281,9 +281,10 @@ def _prepend_llm_notice(ctx, text: str) -> str:
     return f"⚠️ {notice}\n\n{text}"
 
 
-def llm_plan(question: str, observations: list[dict], called: set[str], ctx) -> list[dict] | None:
+def llm_plan(question: str, observations: list[dict], called: set[str], ctx) -> tuple[list[dict], str]:
+    """返回 (工具调用列表, 模型直接作答的原文)。两者都可以为空。"""
     if not llm_available() or not llm_supports_tools():
-        return None
+        return [], ""
     allow = _allowed(ctx)
     tools = [
         s
@@ -291,7 +292,7 @@ def llm_plan(question: str, observations: list[dict], called: set[str], ctx) -> 
         if s["function"]["name"] not in called and (allow is None or s["function"]["name"] in allow)
     ]
     if not tools:
-        return []
+        return [], ""
     extra = ""
     if ctx.attachments:
         extra = f"\n用户附带了 {len(ctx.attachments)} 个表格/文件，优先调用 excel_parse。"
@@ -317,11 +318,19 @@ def llm_plan(question: str, observations: list[dict], called: set[str], ctx) -> 
     result = chat_completions(messages, tools=tools)
     if result.error:
         _note_llm_error(ctx, result.error)
-        return None
+        return [], ""
     msg = result.message
     if msg is None:
-        return None
+        return [], ""
+    # 模型可能不调工具、直接用自然语言回答。以前这段原文被丢掉，
+    # 于是用户看到「没有调用到可用 Tool」——其实答案就在 content 里。
+    direct = str(msg.get("content") or "").strip()
     raw = msg.get("tool_calls") or []
+    if not raw and not observations:
+        # 第一轮就没给工具调用：强制一次，让它必须选一个工具再试。
+        forced = chat_completions(messages, tools=tools, tool_choice="required")
+        if not forced.error and forced.message is not None:
+            raw = forced.message.get("tool_calls") or []
     calls = []
     for item in raw:
         fn = item.get("function") or {}
@@ -333,15 +342,21 @@ def llm_plan(question: str, observations: list[dict], called: set[str], ctx) -> 
         try:
             args = json.loads(fn.get("arguments") or "{}")
         except json.JSONDecodeError:
-            args = {"question": question}
+            # 以前是拿原话盲调一次工具，用户只看到工具报错，看不到真正原因
+            _note_llm_error(ctx, f"Tool 参数不是合法 JSON，已跳过该调用：{name}")
+            continue
         calls.append({"id": name, "args": args})
-    return calls
+    return calls, direct
 
 
 def plan(question: str, observations: list[dict], ctx) -> list[dict]:
     called = {str(o.get("id")) for o in observations}
-    llm_calls = llm_plan(question, observations, called, ctx)
-    if llm_calls is not None:
+    llm_calls, direct = llm_plan(question, observations, called, ctx)
+    if ctx is not None and direct:
+        ctx.llm_direct_answer = direct
+    # 空列表也要回退启发式：以前 `if llm_calls is not None` 会把 [] 当成有效结果，
+    # 导致「有 Key、有 28 个工具，却一个都不调」。
+    if llm_calls:
         return llm_calls
     return heuristic_plan(question, called, ctx, observations)
 
@@ -357,9 +372,18 @@ def _cites(observations: list[dict]) -> list[dict]:
     return cites
 
 
+def _no_observation_answer(ctx) -> str | None:
+    """没调到工具时：如果模型自己写好了回答就用它，别再报「没有可用 Tool」。"""
+    direct = (getattr(ctx, "llm_direct_answer", "") or "").strip() if ctx is not None else ""
+    return direct or None
+
+
 def write_answer(question: str, observations: list[dict], agent: str = "analyst", ctx=None) -> tuple[str, list[dict]]:
     cites = _cites(observations)
     if not observations:
+        direct = _no_observation_answer(ctx)
+        if direct:
+            return _prepend_llm_notice(ctx, direct), cites
         return "没有调用到可用 Tool，也没有现成数字可报。请点名自选里的股票，或先导出一张表。", cites
     drafted = _draft_lines(observations)
     if llm_available():
@@ -373,7 +397,8 @@ def write_answer(question: str, observations: list[dict], agent: str = "analyst"
 def write_answer_iter(question: str, observations: list[dict], agent: str = "analyst", ctx=None):
     cites = _cites(observations)
     if not observations:
-        yield "没有调用到可用 Tool，也没有现成数字可报。请点名自选里的股票，或先导出一张表。", cites
+        direct = _no_observation_answer(ctx)
+        yield (_prepend_llm_notice(ctx, direct) if direct else "没有调用到可用 Tool，也没有现成数字可报。请点名自选里的股票，或先导出一张表。"), cites
         return
     drafted = _draft_lines(observations)
     fallback = "\n".join(drafted) if drafted else "Tool 已执行，但没有可展示的字段。"
