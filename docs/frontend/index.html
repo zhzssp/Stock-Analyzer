@@ -3941,6 +3941,10 @@
                   state.sessionId = ev.session_id;
                   sessionStorage.setItem("sa_session", String(ev.session_id));
                 }
+              } else if (ev.type === "error") {
+                // 服务端把流里的异常变成 error 事件，前端要显示出来，而不是当作断流
+                bot.innerHTML = `⚠️ ${escHtml(ev.message || "对话失败")}`;
+                toast(ev.message || "对话失败");
               }
             }
           }

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from src.agents.planner import plan, write_answer, write_answer_iter
-from src.agents.policy import load_policy, research_hints, tools_for
+from src.agents.policy import guard_answer, load_policy, research_hints, tools_for
 from src.tools.base import ToolContext
 from src.tools.registry import registry
 
@@ -61,11 +61,18 @@ def iter_agent(
     observations: list[dict] = []
     traces: list[dict] = []
     rounds = max_rounds if max_rounds is not None else policy.max_rounds
+    # always_tools：YAML 一直写着「必调」，但运行时从没执行过，只有启发式分支偶然满足
+    always = [t for t in (policy.always_tools or ()) if t in allowed]
 
-    for _ in range(rounds):
+    for idx in range(rounds):
         calls = plan(question, observations, ctx)
         if not calls:
             break
+        if idx == 0 and always:
+            missing = [t for t in always if t not in {c["id"] for c in calls}]
+            if missing:
+                # 放在最前面：后面的工具（如行情）常常依赖它先确定标的
+                calls = [{"id": t, "args": {}} for t in missing] + calls
         for call in calls:
             payload, trace = _run_one(call, ctx, allowed)
             observations.append(payload)

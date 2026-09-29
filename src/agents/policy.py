@@ -118,10 +118,36 @@ def _from_dict(data: dict, fallback: AgentPolicy) -> AgentPolicy:
     )
 
 
+# 输出守门：这些表述一旦出现就加注记。以前 forbidden 只是写给模型看的文字，
+# 输出层面没有任何检查 —— 实测报告里已出现过一次「不该减仓」这类操作性判断。
+ADVICE_WORDS = (
+    "建议买入", "建议卖出", "推荐买入", "推荐卖出",
+    "可以加仓", "可以满仓", "建议满仓", "建议清仓",
+    "必涨", "稳赚", "包赚", "无风险",
+)
+
+
+def guard_answer(text: str, forbidden: tuple[str, ...] = ()) -> str:
+    """命中禁用表述时追加注记。
+
+    不删内容：误删会破坏正常回答，先做到「出现就有提示」，后续再收紧。
+    """
+    body = text or ""
+    hits = [w for w in ADVICE_WORDS if w in body]
+    hits += [w for w in (forbidden or ()) if w and w in body]
+    if not hits:
+        return body
+    words = "、".join(sorted(set(hits)))
+    return f"{body}\n\n⚠️ 注：回答含「{words}」相关表述。本助手不提供买卖建议，以上仅为数据整理。"
+
+
 @lru_cache(maxsize=8)
 def load_policy(name: str) -> AgentPolicy:
     key = (name or "analyst").strip().lower()
-    fallback = _FALLBACK.get(key) or _FALLBACK["analyst"]
+    fallback = _FALLBACK.get(key)
+    if fallback is None:
+        # 以前会静默读 analyst 的配置：agent=reviewer 这类错误完全看不出来
+        raise ValueError(f"未知 agent：{name}（可用：{', '.join(sorted(_FALLBACK))}）")
     path = POLICY_DIR / f"{fallback.id}.yaml"
     if not path.exists():
         return fallback

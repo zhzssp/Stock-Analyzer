@@ -33,8 +33,14 @@ def get_session(db: Session, user: User, session_id: int | None) -> AgentSession
     return db.query(AgentSession).filter_by(id=session_id, user_id=user.id).first()
 
 
+def _title_of(text: str) -> str:
+    """标题统一 40 字：以前这里截到 128 字，等于把整条问题当标题。"""
+    one_line = str(text or "").strip().replace("\n", " ")
+    return one_line[:40] if one_line else "新对话"
+
+
 def create_session(db: Session, user: User, agent: str, title: str) -> AgentSession:
-    row = AgentSession(user_id=user.id, agent=agent, title=(title or "新对话")[:128], messages="[]")
+    row = AgentSession(user_id=user.id, agent=agent, title=_title_of(title), messages="[]")
     db.add(row)
     db.commit()
     db.refresh(row)

@@ -2,7 +2,7 @@ id: futures_quote
 name: 关联期货
 version: 0.1.0
 enabled: false
-reason: 等待期货 Tool
+reason: 期货行情未接入。注意：品种映射是另一个已实现的工具 futures_map（只给品种，不给价格）
 kind: market
 description: 查询与自选相关的期货品种及连涨连跌。数据源未接时保持关闭。
 input_schema:

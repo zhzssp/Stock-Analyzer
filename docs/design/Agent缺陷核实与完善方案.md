@@ -10,7 +10,7 @@
 |---|---|---|
 | **S1 止血** | ✅ **已实施（2026-09-29）** | 见下 |
 | **S2 可用** | ✅ **已实施（2026-09-29）** | 见下 |
-| S3 正确 | 未开工 | — |
+| **S3 正确** | ✅ **已实施（2026-09-29）** | 见下 |
 | S3 正确 | 未开工 | — |
 | S4 接线 | 未开工（依赖 S3 的 loader 修复） | — |
 
@@ -39,6 +39,22 @@
 3. **A7**：非交易日不再先打涨跌停池接口（拉池前提到交易日判断之前）
 
 回归测试：`tests/test_agent_s2_offline.py`（6 条：空 tool_calls 回退、模型原文被采用、无原文时保持兜底话术、非法参数跳过、坏规则被报出、as_of 走 API）+ `test_web_sources_offline.py` 补一条"同一篇不重复进今日"。全量 **163 passed**。
+
+**S3 的落地与验证**
+
+1. **P1-1 loader（D2/D3/D11）**：`load_manifests` 分成两条路——代码已注册的工具只**更新说明与开关并保留真实现**（以前直接 `continue`，改 yaml 与热重载都是空操作）；清单里有而代码没有的才挂空壳，并打 `is_disabled_placeholder` 标记。启动时对「`enabled=true` 但没实现」记 warning。删掉两个死配置 yaml（`fund_holding` / `export_share`，id 已被代码注册、描述与开关自相矛盾）。
+   - **D1 的判断修正**：`futures_quote`（期货**行情**，未接）与 `futures_map`（品种**映射**，已实现、不报价格）是两个东西，统一 id 会把能用的映射工具误关，改为在 yaml 里写清区别。
+2. **P1-5 流式（D8/D9）**：用户那一句在流开始前就落库（断连不再整轮消失）；流里异常变成 `{"type":"error"}` 事件（前端显示原因而不是断流）；传了不存在的 `session_id` 报 404 而不是静默新建。
+   - 修了一个连带 bug：`StreamingResponse` 流执行时 DB 已关闭，访问 ORM 对象会 `DetachedInstanceError`，改为提前取出 id。
+3. **P1-4 复盘（A10）**：`watch.reviewed` 接上订阅者（落本机日志），不再是发布即丢弃。A11 的「错过丢失」已由 S1 补跑解决；手动重算沿用现有 `POST /monitor/review/run`。
+4. **P2**：
+   - D10：`always_tools` 首轮强制注入（放最前，后续工具常依赖它定标的）；`forbidden` 输出守门——命中禁用表述时追加注记（**不删内容**，先做到"出现就有提示"）
+   - A3：缺 apscheduler 时记日志，不再静默返回 None
+   - A4：`_tick` / `_clock_tick` 每次重新取 `routes.market`，不再抱着启动时的旧 client
+   - D12：会话标题统一 40 字截断
+   - D13：`load_policy` 对未知 agent 抛 `ValueError`，不再静默读 analyst 配置
+
+回归测试：`tests/test_agent_s3_offline.py`（7 条：yaml 能更新开关且不换实现、空壳可识别、守门加注记/正常不改、未知 agent 报错、标题截断、流式 error 事件、未知 session 404）。全量 **170 passed**。
 
 ---
 

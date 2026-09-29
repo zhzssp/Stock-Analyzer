@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,8 @@ from src.tools.base import ToolContext, ToolResult
 from src.tools.excel_tools import excel_diff, excel_export, excel_read
 from src.tools.research_tools import export_share
 from src.tools.warehouse_tools import warehouse_get
+
+log = logging.getLogger("stock.api")
 
 router = APIRouter()
 market = MarketClient()
@@ -1240,19 +1243,29 @@ def agent_chat(body: ChatIn, user: User = Depends(current_user), db: Session = D
     if not question:
         question = "请解析我粘贴的表格，并用接口补全这些股票的行情。"
     agent = pick_agent(question, body.agent)
+    # 指定了 session_id 却找不到就该报错：以前会静默新建，session_id 悄悄变化、历史链断裂
+    if body.session_id and not get_session(db, user, body.session_id):
+        raise HTTPException(status_code=404, detail="没有这轮对话，请刷新会话列表")
     row = get_session(db, user, body.session_id) or create_session(db, user, agent, question)
+    # 流式里要用到会话 id：那时这个 db 已经关了，再碰 ORM 对象会 DetachedInstanceError
+    session_row_id = row.id
     history = history_for_ctx(row)
     ctx = _tool_ctx(user, db)
+    # 先把用户这一句落库：流式中途断开（刷新 / 关页面 / 断网）时不至于整轮对话消失
+    append_turns(db, row, [{"role": "user", "content": question}], agent=agent)
+    db.commit()
 
     def persist(final: dict) -> dict:
         store = SessionLocal()
         try:
-            current = store.get(AgentSession, row.id) or create_session(store, user, agent, question)
+            current = store.get(AgentSession, session_row_id)
+            if current is None:
+                return {**final, "session_id": session_row_id}
+            # 用户那一句在流开始前已写入，这里只补助手这一句
             append_turns(
                 store,
                 current,
                 [
-                    {"role": "user", "content": question},
                     {
                         "role": "assistant",
                         "content": final.get("answer") or "",
@@ -1276,18 +1289,23 @@ def agent_chat(body: ChatIn, user: User = Depends(current_user), db: Session = D
 
     def events():
         final = {"answer": "", "cites": [], "tools": [], "agent": agent}
-        stream = (
-            stream_researcher(question, ctx, attachments, history)
-            if agent == "researcher"
-            else iter_agent(question, ctx, agent=agent, attachments=attachments, history=history, stream_tokens=True)
-        )
-        for ev in stream:
-            if ev.get("type") == "done":
-                final = ev
-                continue
-            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-        done = persist(final)
-        yield f"data: {json.dumps({'type': 'done', **done}, ensure_ascii=False)}\n\n"
+        try:
+            # 建流这一步也可能抛（工具导入、会话写入），要一起兜住
+            stream = (
+                stream_researcher(question, ctx, attachments, history)
+                if agent == "researcher"
+                else iter_agent(question, ctx, agent=agent, attachments=attachments, history=history, stream_tokens=True)
+            )
+            for ev in stream:
+                if ev.get("type") == "done":
+                    final = ev
+                    continue
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            done = persist(final)
+            yield f"data: {json.dumps({'type': 'done', **done}, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001 - 流里的异常必须变成 error 事件，否则前端只看到断流
+            log.exception("agent 流式对话失败")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc) or '对话失败'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

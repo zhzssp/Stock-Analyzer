@@ -53,7 +53,9 @@ def start_scheduler():
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
         from apscheduler.triggers.cron import CronTrigger
-    except ImportError:
+    except ImportError as exc:
+        # 以前静默返回 None：监控、复盘、配额清理全部停摆，而界面上看不出任何异常
+        log_scheduler_error("调度器启动失败（缺少 apscheduler），监控与复盘不会自动运行", exc)
         return None
 
     from src.agents.reviewer import run_reviewer
@@ -64,6 +66,10 @@ def start_scheduler():
     from src.platform.storage import enforce_all
 
     def _clock_tick() -> None:
+        # 运行中切离线/换证书池时 routes.market 会被整体替换，每次取最新的
+        from src.api.routes import market as live_market
+
+        market = live_market
         root = configured_clock_dir()
         if root is None:
             return
@@ -79,6 +85,10 @@ def start_scheduler():
             db.close()
 
     def _tick(schedule: str | None = None) -> None:
+        # 同上：启动时抓到的 client 可能已经被换掉（ensure_market / 重载证书池）
+        from src.api.routes import market as live_market
+
+        market = live_market
         db = SessionLocal()
         try:
             for user in db.query(User).all():

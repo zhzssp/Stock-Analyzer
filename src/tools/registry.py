@@ -15,6 +15,18 @@ class ToolRegistry:
     def get(self, tool_id: str) -> ToolSpec:
         return self._specs[tool_id]
 
+    def fn_of(self, tool_id: str):
+        """拿到实现函数（可用来判断是不是空壳）。"""
+        return self._fns.get(tool_id)
+
+    def update_spec(self, spec: ToolSpec) -> None:
+        """只更新说明 / 开关，保留已有实现函数。
+
+        yaml 清单不该把代码里注册的真实现顶掉 —— 以前这里直接跳过，
+        结果改 yaml 的 enabled 完全不生效，热重载也变成空操作。
+        """
+        self._specs[spec.id] = spec
+
     def all(self) -> list[ToolSpec]:
         return list(self._specs.values())
 
