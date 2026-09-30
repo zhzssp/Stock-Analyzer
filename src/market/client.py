@@ -729,8 +729,10 @@ class MarketClient:
         try:
             psi = self._get(f"/hsstock/financial/pershareindex/{inst.code_full}")
             row = psi[0] if isinstance(psi, list) else psi
-            for key in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
-                out[key] = row.get(key)
+            # 千万别把循环变量写成 key：外层 key 是缓存键，被覆盖后缓存会写去别处，
+            # 结果就是每次查询都重新拉财务（每只 3 次请求白烧）。
+            for field in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
+                out[field] = row.get(field)
         except MarketError:
             pass
         try:
@@ -765,9 +767,9 @@ class MarketClient:
             row = psi
         else:
             row = {}
-        for key in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
-            if key in row:
-                out[key] = row.get(key)
+        for field in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
+            if field in row:
+                out[field] = row.get(field)
         income = self._try_get(f"/bj/financial/income/{inst.code_full}")
         if isinstance(income, list) and income:
             irow = income[0]

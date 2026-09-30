@@ -32,6 +32,34 @@ def test_profile_cache_hit_skips_http(monkeypatch, tmp_path):
     assert out["industry"] == "白酒"
 
 
+def test_finance_cache_key_is_not_shadowed(monkeypatch, tmp_path):
+    """回归：finance 里曾经用 `for key in (...)` 覆盖了外层的缓存键 key，
+    财务缓存被写进 jlv.json，于是每次查询都重新拉一遍财务（每只 3 次请求白烧）。
+    """
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    inst = normalize_instrument("600519.SH", "贵州茅台", "SH")
+
+    from src.market.client import MarketClient
+
+    client = MarketClient.__new__(MarketClient)
+    client.offline = False
+    client.sample_only = False
+    client.query_refresh_mode = "full"
+    client.slow_cache_stats = {"hits": 0, "misses": 0}
+
+    with patch.object(
+        client,
+        "_get",
+        side_effect=[[{"mgwfplr": 1.0}], [{"yffy": 2}], [{"zgb": 3, "ysltag": 4}]],
+    ):
+        out = client.finance(inst)
+
+    assert out["zgb"] == 3
+    assert (settings.cache_dir / "slow_finance_600519.json").exists()
+    assert not (settings.cache_dir / "jlv.json").exists()
+
+
 def test_read_fresh_expires(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
