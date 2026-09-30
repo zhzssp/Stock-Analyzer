@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from src.config import settings
@@ -14,6 +16,9 @@ REFRESH_CACHE = "cache"
 REFRESH_SNAPSHOT = "snapshot"
 REFRESH_FULL = "full"
 SLOW_DEPS = frozenset({"profile", "holders", "finance", "flow", "bars", "indicators"})
+# 取数任务的调度顺序。bars 最重（一次 500 根日线 + 底顶 + x 日收盘），排在最前面投出去，
+# 否则最长的任务拖在队尾，整轮的尾延迟就是它决定的。
+SLOW_FETCH_ORDER = ("bars", "profile", "holders", "finance", "flow", "indicators")
 
 
 def fetch_need(column_need: set[str], refresh_mode: str) -> set[str]:
@@ -165,8 +170,8 @@ class QueryEngine:
                 except Exception:
                     pass
 
-        def build_row(inst: Instrument) -> dict:
-            bag: dict[str, Any] = {
+        def new_bag(inst: Instrument) -> dict[str, Any]:
+            return {
                 "quote": quotes.get(inst.code6) or {},
                 "profile": {},
                 "holders": {},
@@ -176,23 +181,35 @@ class QueryEngine:
                 "indicators": {},
                 "x_price": None,
             }
-            if "profile" in need:
-                bag["profile"] = self.market.profile(inst, extra=concept_extra)
-            if "holders" in need:
-                bag["holders"] = self.market.holders(inst)
-            if "finance" in need:
-                bag["finance"] = self.market.finance(inst)
-            if "flow" in need:
+
+        def fetch_slow(kind: str, inst: Instrument) -> Any:
+            """一个字段块 = 一次可并发的取数任务。"""
+            if kind == "profile":
+                return self.market.profile(inst, extra=concept_extra)
+            if kind == "holders":
+                return self.market.holders(inst)
+            if kind == "finance":
+                return self.market.finance(inst)
+            if kind == "flow":
                 series = self.market.capital_flow(inst)
-                latest = series[-1] if series else {}
-                bag["flow"] = latest
-            if "indicators" in need:
-                bag["indicators"] = self.market.indicators(inst)
-            if "bars" in need:
-                bars = self.market.history(inst)
-                bag["bottom"] = compute_bottom(bars, (bag["quote"] or {}).get("p"))
-                if x_date and "x_price" in keys:
-                    bag["x_price"] = self.market.close_on_date(inst, x_date)
+                return series[-1] if series else {}
+            if kind == "indicators":
+                return self.market.indicators(inst)
+            # bars：日线最重（一次 500 根），底顶和 x 日收盘都基于它，合成一个任务。
+            bars = self.market.history(inst)
+            return {
+                "bottom": compute_bottom(bars, (quotes.get(inst.code6) or {}).get("p")),
+                "x_price": self.market.close_on_date(inst, x_date) if (x_date and "x_price" in keys) else None,
+            }
+
+        def apply_slow(bag: dict, kind: str, value: Any) -> None:
+            if kind == "bars":
+                bag["bottom"] = (value or {}).get("bottom") or {}
+                bag["x_price"] = (value or {}).get("x_price")
+            elif isinstance(value, dict):
+                bag[kind] = value
+
+        def assemble(inst: Instrument, bag: dict) -> dict:
             row = {
                 "code6": inst.code6,
                 "code_full": inst.code_full,
@@ -216,12 +233,47 @@ class QueryEngine:
                     pass
             return row
 
-        # 逐只取数并发化：冷缓存时每只最多 9 次 HTTP，串行会让首屏等很久。
-        # 并发数刻意保守（默认 4），配合服务端的限频；可在 .env 用 QUERY_WORKERS 调。
-        workers = max(1, int(getattr(settings, "query_workers", 0) or 4))
-        if workers > 1 and len(instruments) > 1:
-            from concurrent.futures import ThreadPoolExecutor
+        def build_row(inst: Instrument) -> dict:
+            """旧路径：一只票内部串行取完再组装（QUERY_TASK_POOL=0 时走这条）。"""
+            bag = new_bag(inst)
+            for kind in SLOW_FETCH_ORDER:
+                if kind in need:
+                    apply_slow(bag, kind, fetch_slow(kind, inst))
+            return assemble(inst, bag)
 
+        # 并发数刻意保守（默认 4），配合服务端的限频；可在 .env 用 QUERY_WORKERS 调。
+        # 关键是「在飞请求数」恒等于 workers：任务池只改变调度粒度，不改变并发度。
+        workers = max(1, int(getattr(settings, "query_workers", 0) or 4))
+        kinds = [k for k in SLOW_FETCH_ORDER if k in need]
+        use_task_pool = bool(getattr(settings, "query_task_pool", True))
+
+        if use_task_pool and kinds and instruments:
+            bags = {inst.code6: new_bag(inst) for inst in instruments}
+            abort = threading.Event()
+            errors: list[BaseException] = []
+
+            def run_task(kind: str, inst: Instrument) -> None:
+                if abort.is_set():
+                    return
+                try:
+                    value = fetch_slow(kind, inst)
+                except BaseException as exc:  # noqa: BLE001 - 收集起来，最后统一抛
+                    errors.append(exc)
+                    # 额度耗尽 / 派不出证：剩下的任务再跑也是同一个结果，别白等一轮。
+                    abort.set()
+                    return
+                apply_slow(bags[inst.code6], kind, value)
+
+            # 按 kind 外层铺开：同一种接口一起打，最重的 bars 排在前面先投出去，
+            # 否则最长的那个任务会拖在队尾，尾延迟就是它决定的。
+            tasks = [(kind, inst) for kind in kinds for inst in instruments]
+            with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
+                list(pool.map(lambda item: run_task(*item), tasks))
+            if errors:
+                raise errors[0]
+            # 组装必须串行且按 instruments 原序：导出、分页切片、快照都依赖这个顺序。
+            rows = [assemble(inst, bags[inst.code6]) for inst in instruments]
+        elif workers > 1 and len(instruments) > 1:
             with ThreadPoolExecutor(max_workers=min(workers, len(instruments))) as pool:
                 rows = list(pool.map(build_row, instruments))
         else:

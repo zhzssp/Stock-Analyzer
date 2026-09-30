@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from src.config import settings
 from src.models import Artifact
+from src.platform import cache_memory
 
 _SAFE_KEY = re.compile(r"[^A-Za-z0-9._-]+")
 PROTECTED_CACHE = {"list_hs", "list_bj"}
@@ -50,6 +51,10 @@ def cache_file(key: str, cache_dir: Path | None = None) -> Path:
 
 def read_cache_json(key: str, cache_dir: Path | None = None) -> Any | None:
     path = cache_file(key, cache_dir)
+    if cache_memory.enabled():
+        hit = cache_memory.get(str(path))
+        if hit is not cache_memory.MISS:
+            return hit
     if not path.exists():
         return None
     try:
@@ -60,6 +65,9 @@ def read_cache_json(key: str, cache_dir: Path | None = None) -> Any | None:
         os.utime(path, None)
     except OSError:
         pass
+    # 必须在 utime 之后登记：内存里的 mtime 指纹要跟磁盘一致，否则下次读必 miss。
+    if cache_memory.enabled():
+        cache_memory.put(str(path), payload)
     return payload
 
 
@@ -67,6 +75,9 @@ def write_cache_json(key: str, payload: Any, cache_dir: Path | None = None, max_
     path = cache_file(key, cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    # 先登记再跑预算清理：清理可能把刚写的这个文件也删掉，那时再失效。
+    if cache_memory.enabled():
+        cache_memory.put(str(path), payload)
     enforce_cache_budget(cache_dir=path.parent, max_bytes=max_bytes)
     return path
 
@@ -111,6 +122,7 @@ def enforce_cache_budget(cache_dir: Path | None = None, max_bytes: int | None = 
             path.unlink()
         except OSError:
             continue
+        cache_memory.invalidate(str(path))
         total -= size
         remaining.remove(path)
         deleted.append(path.stem)
@@ -129,6 +141,9 @@ def clear_cache(cache_dir: Path | None = None) -> dict:
             continue
         deleted += 1
         bytes_freed += size
+    # 整目录都清了，内存层跟着清，否则会一直返回已经不存在的文件内容。
+    if cache_dir is None or Path(folder) == settings.cache_dir:
+        cache_memory.clear()
     return {"ok": True, "deleted": deleted, "bytes_freed": bytes_freed}
 
 
@@ -271,6 +286,8 @@ def usage() -> dict:
         "log_human": human_bytes(log_bytes),
         "total_human": human_bytes(total),
         "cache_files": len(cache_files),
+        # 内存缓存层的实际占用与命中率：判断「读盘到底省下来没有」看这个。
+        "cache_memory": cache_memory.stats(),
         "artifact_files": len(list(artifact_dir.glob("*.xlsx"))) if artifact_dir.exists() else 0,
         "cache_over_budget": over,
         "limits": {
@@ -297,4 +314,9 @@ def enforce_all(db: Session, user_id: int | None = None) -> dict:
     cache = enforce_cache_budget()
     artifacts = prune_artifacts(db, user_id=user_id)
     log = trim_alerts_log()
-    return {"ok": True, "cache": cache, "artifacts": artifacts, "log": log, "usage": usage()}
+    # 问答日志每轮一行，不清理就会一直长：与告警日志分开算，各自按自己的预算裁。
+    agent_log = trim_alerts_log(
+        path=settings.data_dir / "agent.log",
+        max_bytes=max(64 * 1024, int(settings.agent_log_max_mb * 1024 * 1024)),
+    )
+    return {"ok": True, "cache": cache, "artifacts": artifacts, "log": log, "agent_log": agent_log, "usage": usage()}

@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     artifact_keep: int = 20
     bars_max: int = 500
     alerts_log_max_mb: float = 2
+    # 问答日志（data/agent.log）的体积上限（MB）。每轮问答一行，到点保留尾部 1/4。
+    agent_log_max_mb: float = 2
     clock_dir: str = ""
     clock_interval_sec: int = 300
     # P2：慢字段分项缓存 TTL（秒）；refresh_mode=cache 时未过期则不打麦蕊。
@@ -54,6 +56,9 @@ class Settings(BaseSettings):
     limit_pool_ttl_sec: int = 300
     # 工具（问答 / Agent）默认走本机慢字段缓存。只影响档案 / 股东 / 财务 / 资金流，不影响现价。
     agent_tool_cache_default: bool = True
+    # 流式问答的整轮耗时上限（秒）。工具已经在跑的那一轮拦不住，到下一个事件点就停，
+    # 免得前端一直转圈却没有下文。0 或负数 = 不设上限。
+    agent_stream_timeout_sec: float = 180.0
     # 定时任务频率（分钟）。低性能机器 / 额度吃紧时调大：
     #   MONITOR_SESSION_MINUTES=15   盘中扫描 5 → 15 分钟一轮
     #   CLOCK_ALIGN_MINUTES=5        墙钟落档 1 → 5 分钟一轮（只在配了账本目录时才跑）
@@ -65,6 +70,13 @@ class Settings(BaseSettings):
     probe_budget_sec: float = 20.0
     # 查询时并发取数的线程数（逐只并行拉慢字段）。保守值 4：够快又不撞数据方限频。
     query_workers: int = 4
+    # 取数调度方式：True = 按「字段块」粒度并发（一只票的多个字段同时拉，长尾更短）；
+    # False = 退回按只并发。开关只是调度粒度，在飞请求数都不超过 query_workers。
+    query_task_pool: bool = True
+    # 缓存读的内存层（LRU + mtime 校验）：避免每轮查询把同一份 JSON 反复读盘解析。
+    # 只省 CPU / 磁盘 IO，不省额度；出问题在 .env 设 CACHE_MEMORY_ENABLED=0 关掉。
+    cache_memory_enabled: bool = True
+    cache_memory_max_mb: float = 64
     # 麦蕊请求复用长连接（keep-alive）：省掉每次请求的 TCP + TLS 握手。
     # 只省时间、不省额度——HTTP 次数完全不变。出问题在 .env 设 HTTP_KEEPALIVE=0 退回短连接。
     http_keepalive: bool = True
