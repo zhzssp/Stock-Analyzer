@@ -49,6 +49,27 @@ def cache_file(key: str, cache_dir: Path | None = None) -> Path:
     return (cache_dir or settings.cache_dir) / f"{safe}.json"
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """先写 .tmp 再 os.replace：读的人不会读到写了一半的文件。
+
+    非原子写是「并发读到半截 JSON」的根因——写盘要先截断再写，那一瞬间文件是空的，
+    并发的查询线程 json.loads 直接失败，取数结果就丢了。
+
+    Windows 上目标文件正好被别的进程读着时 replace 可能失败，那时退回直接写：
+    宁可牺牲这一次的原子性，也不能让「写缓存」本身失败。
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        path.write_text(text, encoding="utf-8")
+
+
 def read_cache_json(key: str, cache_dir: Path | None = None) -> Any | None:
     path = cache_file(key, cache_dir)
     if cache_memory.enabled():
@@ -74,7 +95,7 @@ def read_cache_json(key: str, cache_dir: Path | None = None) -> Any | None:
 def write_cache_json(key: str, payload: Any, cache_dir: Path | None = None, max_bytes: int | None = None) -> Path:
     path = cache_file(key, cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False))
     # 先登记再跑预算清理：清理可能把刚写的这个文件也删掉，那时再失效。
     if cache_memory.enabled():
         cache_memory.put(str(path), payload)
