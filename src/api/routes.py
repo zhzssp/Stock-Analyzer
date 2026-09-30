@@ -259,7 +259,11 @@ class LicenceRemoveIn(BaseModel):
 
 
 class LicencePrefIn(BaseModel):
-    mode: str = "auto"
+    # 新格式：schedule（怎么换）+ pinned（锁不锁）
+    schedule: str = "auto"
+    pinned: str = ""
+    # 旧格式兼容（前端旧版本 / 脚本会用）
+    mode: str = ""
     manual_licence: str = ""
 
 
@@ -296,10 +300,28 @@ def delete_licence(body: LicenceRemoveIn, user: User = Depends(current_user)):
     return {"ok": True, "pools": LicenceRegistry.shared().status()}
 
 
+def _legacy_preference(mode: str, manual_licence: str) -> tuple[str, str]:
+    """旧格式 {mode, manual_licence} → 新格式 (schedule, pinned)。
+
+    旧 mode=manual 其实是「锁定这张」，和 auto/renewable/consumable 不是同一维度。
+    """
+    m = (mode or "auto").strip().lower()
+    if m == "manual":
+        return "auto", (manual_licence or "").strip()
+    if m in ("auto", "renewable", "consumable"):
+        return m, ""
+    return "auto", ""
+
+
 @router.put("/licences/preference")
 def put_licence_preference(body: LicencePrefIn, user: User = Depends(current_user)):
+    # 兼容旧调用：没给新字段就用旧的 mode / manual_licence
+    if not body.schedule and not body.pinned and (body.mode or body.manual_licence):
+        schedule, pinned = _legacy_preference(body.mode, body.manual_licence)
+    else:
+        schedule, pinned = body.schedule, body.pinned
     try:
-        LicenceRegistry.shared().set_preference(body.mode, body.manual_licence)
+        LicenceRegistry.shared().set_preference(schedule, pinned)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _reload_licence_runtime()

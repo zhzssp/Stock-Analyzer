@@ -57,6 +57,10 @@ async def lifespan(_app: FastAPI):
     yield
     if sched:
         sched.shutdown(wait=False)
+    # 关掉麦蕊的长连接池，避免进程退出时留下未释放的 socket。
+    from src.market.client import reset_http_pool
+
+    reset_http_pool()
 
 
 app = FastAPI(title="Stock-Analyzer", version="0.1.0", lifespan=lifespan)

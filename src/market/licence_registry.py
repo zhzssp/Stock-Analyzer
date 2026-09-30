@@ -26,8 +26,41 @@ _PROCESS_LOCK = threading.Lock()
 DEFAULT_CONSUMABLE_SEED = "9EC8F5FE-BF7C-40DA-8B0B-FE9E50ADEE2F"
 
 
+SCHEDULE_MODES = ("auto", "renewable", "consumable")
+
+
+def _normalize_preference(pref: dict | None) -> dict:
+    """把偏好统一成 {schedule, pinned}。
+
+    旧格式是 {mode, manual_licence}：把「换不换」和「怎么换」混在一个字段里 ——
+    mode=manual 其实是「锁定某一张」，和 auto/renewable/consumable（池调度）不是同一维度。
+    这里做迁移，老用户的配置不会丢。
+    """
+    pref = pref or {}
+    schedule = str(pref.get("schedule") or "").strip().lower()
+    pinned = str(pref.get("pinned") or "").strip()
+    if not schedule:
+        mode = str(pref.get("mode") or "auto").strip().lower()
+        if mode == "manual":
+            # 旧「指定证书」= 锁定这张；调度偏好沿用默认
+            schedule = "auto"
+            pinned = pinned or str(pref.get("manual_licence") or "").strip()
+        elif mode in SCHEDULE_MODES:
+            schedule = mode
+        else:
+            schedule = "auto"
+    if schedule not in SCHEDULE_MODES:
+        schedule = "auto"
+    return {"schedule": schedule, "pinned": pinned}
+
+
 class LicenceRegistry:
-    """renewable：当日 101/429 后换下一张，次日自动恢复。consumable：超限后从池中删除。"""
+    """renewable：当日 101/429 后换下一张，次日自动恢复。consumable：超限后从池中删除。
+
+    两件事分开管：
+    - schedule：不锁定时按什么顺序用池（auto / renewable / consumable）
+    - pinned：锁定某一张（非空时调度不生效，用完就停在原地报错，不悄悄换）
+    """
 
     _shared: LicenceRegistry | None = None
 
@@ -45,7 +78,7 @@ class LicenceRegistry:
         # 当天每张证被判「额度用尽」的次数。同一张证反复出现 = 状态被覆盖打穿，需要立刻发现。
         self._exhaust_counts: dict[str, int] = {}
         self._counts_date = self._today
-        self._preference: dict = {"mode": "auto", "manual_licence": ""}
+        self._preference: dict = {"schedule": "auto", "pinned": ""}
         self._disk_stamp: tuple | None = None
         self._load_or_migrate()
         if self._sync_env:
@@ -121,14 +154,7 @@ class LicenceRegistry:
                 self._exhausted = {str(x).strip() for x in raw if str(x).strip()} & set(self._renewable)
 
     def _apply_payload(self, data: dict) -> None:
-        pref = data.get("preference") or {}
-        mode = str(pref.get("mode") or "auto").strip().lower()
-        if mode not in ("auto", "renewable", "consumable", "manual"):
-            mode = "auto"
-        self._preference = {
-            "mode": mode,
-            "manual_licence": str(pref.get("manual_licence") or "").strip(),
-        }
+        self._preference = _normalize_preference(data.get("preference"))
         ren = data.get("renewable") or {}
         self._renewable = [str(x).strip() for x in (ren.get("licences") or []) if str(x).strip()]
         if ren.get("date") == self._today:
@@ -257,18 +283,51 @@ class LicenceRegistry:
         self._maybe_reload()
         return list(self._consumable)
 
+    def pinned_licence(self) -> str:
+        """当前锁定的证书（空 = 不锁定，走调度）。"""
+        self._maybe_reload()
+        return str(self._preference.get("pinned") or "").strip()
+
+    def schedule_mode(self) -> str:
+        self._maybe_reload()
+        return str(self._preference.get("schedule") or "auto").strip().lower()
+
+    def pinned_state(self) -> dict:
+        """锁定证的当前状况，给界面与报错用：还在不在池里、是不是当天用尽了。
+
+        刻意不做 _maybe_reload()：这个方法在每次取数时都会被调用（_get 里判断锁定证是否可用），
+        放在热路径上会每次都去 stat / 读文件。调用方 iteration_plan() 已经保证状态是新的。
+        """
+        self._roll_day_if_needed()
+        token = str(self._preference.get("pinned") or "").strip()
+        if not token:
+            return {"pinned": "", "in_pool": False, "pool": None, "exhausted_today": False}
+        kind = self.pool_of(token)
+        return {
+            "pinned": token,
+            "in_pool": kind is not None,
+            "pool": kind,
+            "exhausted_today": bool(kind == POOL_RENEWABLE and token in self._exhausted),
+        }
+
     def iteration_plan(self) -> list[tuple[PoolKind, str]]:
         self._maybe_reload()
-        mode = self._preference.get("mode") or "auto"
-        manual = (self._preference.get("manual_licence") or "").strip()
-        if mode == "manual":
-            kind = self.pool_of(manual)
-            return [(kind, manual)] if kind else []
+        pinned = self.pinned_licence()
+        if pinned:
+            # 锁定是硬约束：目标不在池里、或当天已判用尽，就直接交不出证
+            # （由调用方明确报错，绝不能悄悄退回调度去用别的证）。
+            kind = self.pool_of(pinned)
+            if kind is None:
+                return []
+            if kind == POOL_RENEWABLE and pinned in self._exhausted:
+                return []
+            return [(kind, pinned)]
+        schedule = self.schedule_mode()
         renewable = [(POOL_RENEWABLE, x) for x in self.renewable_available()]
         consumable = [(POOL_CONSUMABLE, x) for x in self.consumable_available()]
-        if mode == "renewable":
+        if schedule == "renewable":
             return renewable
-        if mode == "consumable":
+        if schedule == "consumable":
             return consumable
         return renewable + consumable
 
@@ -289,9 +348,9 @@ class LicenceRegistry:
                 self._exhausted.add(token)
             elif token in self._consumable:
                 self._consumable = [x for x in self._consumable if x != token]
-                manual = (self._preference.get("manual_licence") or "").strip()
-                if manual == token:
-                    self._preference["manual_licence"] = ""
+                # 这里**不清** pinned：证是被「用完」弄没的，不是用户删的。
+                # 保持锁定，让调用方明确报「你锁定的这张已用完并从池中移除」，
+                # 而不是悄悄退回调度去用别的证。
             self._bump_exhaust_count(token)
         return self.active()
 
@@ -329,24 +388,30 @@ class LicenceRegistry:
                 self._exhausted -= stale
             return bool(self.iteration_plan())
 
+    def _add_locked(self, kind: str, token: str) -> None:
+        """add 的无锁版本：给 add() 与 set_preference() 在事务内调用。"""
+        other = POOL_CONSUMABLE if kind == POOL_RENEWABLE else POOL_RENEWABLE
+        if self.pool_of(token) == other:
+            self._remove_locked(other, token)
+        if kind == POOL_RENEWABLE:
+            if token not in self._renewable:
+                self._renewable.append(token)
+            self._exhausted.discard(token)
+        else:
+            if token not in self._consumable:
+                self._consumable.append(token)
+
     def add(self, pool: str, licence: str) -> None:
         token = (licence or "").strip()
         if not token:
             raise ValueError("证书不能为空")
+        if token == settings.demo_licence:
+            raise ValueError("演示证不能加入证书池：它只会返回样本数据")
         kind = pool.strip().lower()
         if kind not in (POOL_RENEWABLE, POOL_CONSUMABLE):
             raise ValueError("未知池类型")
-        other = POOL_CONSUMABLE if kind == POOL_RENEWABLE else POOL_RENEWABLE
         with self._transaction():
-            if self.pool_of(token) == other:
-                self._remove_locked(other, token)
-            if kind == POOL_RENEWABLE:
-                if token not in self._renewable:
-                    self._renewable.append(token)
-                self._exhausted.discard(token)
-            else:
-                if token not in self._consumable:
-                    self._consumable.append(token)
+            self._add_locked(kind, token)
 
     def _remove_locked(self, kind: str, token: str) -> None:
         """remove 的无锁版本：给 add() 在事务内调用，避免嵌套加锁。"""
@@ -357,9 +422,10 @@ class LicenceRegistry:
             self._consumable = [x for x in self._consumable if x != token]
         else:
             raise ValueError("未知池类型")
-        manual = (self._preference.get("manual_licence") or "").strip()
-        if manual == token:
-            self._preference["manual_licence"] = ""
+        # 用户主动删掉锁定的这张 → 视为解除锁定（意图明确）。
+        # 若是「用完被移除」（mark_quota_exhausted），那里不动 pinned，好让报错说清楚。
+        if self._preference.get("pinned") == token:
+            self._preference["pinned"] = ""
 
     def remove(self, pool: str, licence: str) -> None:
         token = (licence or "").strip()
@@ -367,21 +433,29 @@ class LicenceRegistry:
         with self._transaction():
             self._remove_locked(kind, token)
 
-    def set_preference(self, mode: str, manual_licence: str = "") -> None:
-        m = (mode or "auto").strip().lower()
-        if m not in ("auto", "renewable", "consumable", "manual"):
+    def set_preference(self, schedule: str = "auto", pinned: str = "") -> None:
+        """schedule=auto|renewable|consumable；pinned 非空 = 锁定这张（调度不生效）。"""
+        s = (schedule or "auto").strip().lower()
+        if s not in SCHEDULE_MODES:
             raise ValueError("未知调度模式")
-        manual = (manual_licence or "").strip()
-        if m == "manual" and manual and not self.pool_of(manual):
-            raise ValueError("指定证书不在任一池中")
+        token = (pinned or "").strip()
+        if token and token == settings.demo_licence:
+            raise ValueError("不能锁定演示证：它只会返回样本数据")
         with self._transaction():
-            self._preference = {"mode": m, "manual_licence": manual}
+            if token and self.pool_of(token) is None:
+                # 锁定的证不在池里：按「每天会恢复」入池 —— 这类用尽只是当天不可用，
+                # 不会像「用完就没」那样把证弄丢。
+                self._add_locked(POOL_RENEWABLE, token)
+            self._preference = {"schedule": s, "pinned": token}
 
     def status(self) -> dict:
         self._maybe_reload()
         self._roll_day_if_needed()
         return {
             "preference": dict(self._preference),
+            "schedule": self.schedule_mode(),
+            "pinned": self.pinned_licence(),
+            "pinned_state": self.pinned_state(),
             "active": self.active(),
             "active_pool": self.active_pool(),
             "all_exhausted_today": self.all_exhausted_today(),

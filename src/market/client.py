@@ -25,6 +25,64 @@ class LicenceExhaustedError(MarketError):
     """池里还有证，但今天一张都派不出来。与「没配证书 / 网络不通」要分开报。"""
 
 
+# 单次请求的默认超时（秒）；共享连接池按次覆盖，探针的短超时照旧生效。
+DEFAULT_HTTP_TIMEOUT = 30.0
+
+# 长连接被服务端掐断时会抛这几类：空闲超时 / 网关回收 / 半开连接。
+# 注意不要用 httpx.TransportError 兜底 —— 超时也是它的子类，超时不该重建连接。
+_STALE_CONNECTION_ERRORS = (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError, httpx.WriteError)
+
+
+def _is_stale_connection(exc: BaseException) -> bool:
+    """这条连接是不是已经不能用了。
+
+    最后一条是并发窗口：一个线程判定连接被掐断、把池关了，另一个线程手里的旧 client
+    还在发请求，httpx 会抛 RuntimeError（不是 httpx 的子类，只能按消息认）。
+    """
+    if isinstance(exc, _STALE_CONNECTION_ERRORS):
+        return True
+    return isinstance(exc, RuntimeError) and "has been closed" in str(exc)
+
+_HTTP_POOL: httpx.Client | None = None
+_HTTP_POOL_LOCK = threading.Lock()
+
+
+def shared_http_pool() -> httpx.Client:
+    """进程内唯一的麦蕊连接池。httpx.Client 线程安全，查询并发可共享。
+
+    不设 base_url：mairui_base 在运行期可被改（换数据源 / 验证脚本），继续传绝对 URL。
+    """
+    global _HTTP_POOL
+    if _HTTP_POOL is not None:
+        return _HTTP_POOL
+    with _HTTP_POOL_LOCK:
+        if _HTTP_POOL is None:
+            workers = max(1, int(getattr(settings, "query_workers", 0) or 4))
+            keep = int(getattr(settings, "http_keepalive_connections", 0) or 0) or max(8, workers + 4)
+            total = int(getattr(settings, "http_max_connections", 0) or 0) or max(20, keep * 4)
+            _HTTP_POOL = httpx.Client(
+                timeout=DEFAULT_HTTP_TIMEOUT,
+                limits=httpx.Limits(max_connections=total, max_keepalive_connections=keep),
+            )
+        return _HTTP_POOL
+
+
+def reset_http_pool() -> None:
+    """关掉旧连接，下次请求重新建。
+
+    两种时机调用：① 判定为「连接被掐断」后自愈；② 服务关闭时释放 socket。
+    """
+    global _HTTP_POOL
+    with _HTTP_POOL_LOCK:
+        old, _HTTP_POOL = _HTTP_POOL, None
+    if old is None:
+        return
+    try:
+        old.close()
+    except Exception:  # noqa: BLE001 - 关连接这件事本身不能再抛
+        pass
+
+
 class MarketClient:
     """Only module allowed to talk to Mairui.
 
@@ -57,6 +115,27 @@ class MarketClient:
         key = (licence or self.licence or (reg.active() if reg else "")).strip()
         return f"{settings.mairui_base}{path}/{key}"
 
+    def _http_get(self, url: str) -> httpx.Response:
+        """所有对麦蕊的 GET 都走这里。
+
+        默认复用长连接（省掉每次请求的 TCP + TLS 握手）；HTTP_KEEPALIVE=0 时退回
+        httpx.get，与改动前逐字等价，用来做 A/B 对比和回滚。
+
+        超时按次传参，所以启动探针临时把 _timeout 调小的语义完全保留。
+        """
+        if not getattr(settings, "http_keepalive", True):
+            return httpx.get(url, timeout=self._timeout)
+        for attempt in (0, 1):
+            try:
+                return shared_http_pool().get(url, timeout=self._timeout)
+            except Exception as exc:  # noqa: BLE001 - 只挑「连接坏了」的出来重试
+                if attempt or not _is_stale_connection(exc):
+                    raise
+                # 池里的连接已经被服务端关了，不重建的话后面每一次请求都会失败。
+                # 代价是多打一次请求（服务端可能已计入），但比整轮查询全崩划算。
+                reset_http_pool()
+        raise MarketError("网络异常：连接被服务端关闭")
+
     def refresh_pool(self) -> None:
         reg = getattr(self, "_registry", None)
         if self.offline or not reg:
@@ -81,6 +160,18 @@ class MarketClient:
         if not reg.iteration_plan():
             self.refresh_pool()
         if not reg.iteration_plan():
+            # 锁定了某一张却交不出来：不能悄悄退回调度去用别的证，必须说清楚。
+            pinned_state = reg.pinned_state() if hasattr(reg, "pinned_state") else {}
+            if pinned_state.get("pinned"):
+                self.status = "quota-exhausted"
+                if not pinned_state.get("in_pool"):
+                    raise LicenceExhaustedError(
+                        "你锁定的那张证书已不在池中（额度用完就会被移除）。请到「证书池」重新选一张，或改回自动换证。"
+                    )
+                raise LicenceExhaustedError(
+                    "你锁定的那张证书今日额度已用尽（每天会恢复的类型，明天自动恢复）。"
+                    "现在就要用别的证，请到「证书池」改回自动换证。"
+                )
             # 到这里说明池里真的派不出证了。分清「今天用尽」和「压根没配」，别让界面只显示探针失败。
             if reg.all_exhausted_today():
                 self.status = "quota-exhausted"
@@ -92,11 +183,11 @@ class MarketClient:
                 continue
             url = self._url(path, lic)
             try:
-                resp = httpx.get(url, timeout=self._timeout)
+                resp = self._http_get(url)
                 if resp.status_code == 429:
                     # 429 是被限频，不等于这张证额度用尽：缓一下，同一张再试一次。
                     time.sleep(0.8)
-                    resp = httpx.get(url, timeout=self._timeout)
+                    resp = self._http_get(url)
                 if is_quota_error(resp.status_code, resp.text):
                     last_error = f"Licence 额度已用尽: {lic[:8]}…"
                     self._switch_licence(reg, lic, "quota", f"额度/限频用尽 → 换下一张（HTTP {resp.status_code}）")

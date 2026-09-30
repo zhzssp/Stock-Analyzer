@@ -866,21 +866,26 @@
             <div class="clock-box" id="licenceBox">
               <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="每日刷新池：当日额度用尽会换下一张，次日自动恢复。长期池：不限每日次数，总额度耗尽后自动从池中删除。默认先日用池、再长期池。">麦蕊证书池</span></div>
               <div class="composer-row" style="margin:8px 0; flex-wrap:wrap; gap:8px;">
-                <label class="hint"><input type="radio" name="licMode" value="auto" checked /> 默认（先每日刷新，再长期）</label>
-                <label class="hint"><input type="radio" name="licMode" value="renewable" /> 仅每日刷新池</label>
-                <label class="hint"><input type="radio" name="licMode" value="consumable" /> 仅长期池</label>
-                <label class="hint"><input type="radio" name="licMode" value="manual" /> 指定证书</label>
-                <select id="licManualPick" style="min-width:220px; display:none;"></select>
-                <button class="btn sm primary" id="licPrefSave" type="button">保存调度</button>
+                <label class="hint"><input type="radio" name="licMode" value="auto" checked /> 自动换：这张用完自动换下一张</label>
+                <label class="hint"><input type="radio" name="licMode" value="pinned" /> 固定用这一张</label>
+                <select id="licManualPick" style="min-width:240px; display:none;"></select>
+                <button class="btn sm primary" id="licPrefSave" type="button">保存</button>
               </div>
+              <div class="composer-row" id="licScheduleRow" style="margin:8px 0; flex-wrap:wrap; gap:8px;">
+                <span class="meta">优先用哪种：</span>
+                <label class="hint"><input type="radio" name="licSchedule" value="auto" checked /> 先用每天会恢复的，再用完就没的</label>
+                <label class="hint"><input type="radio" name="licSchedule" value="renewable" /> 只用每天会恢复的</label>
+                <label class="hint"><input type="radio" name="licSchedule" value="consumable" /> 只用完就没的</label>
+              </div>
+              <div id="licPinnedNote" class="meta" style="display:none; margin:6px 0;"></div>
               <div id="licActive" class="meta">尚未加载</div>
-              <div class="side-title" style="margin:12px 0 6px;">每日刷新额度池</div>
+              <div class="side-title" style="margin:12px 0 6px;">每天会恢复的那种（当天用完，第二天还能用）</div>
               <div id="licRenewableList" class="meta-list">尚未加载</div>
               <div class="composer-row" style="margin:8px 0;">
                 <input id="licRenewableInput" placeholder="追加证书 UUID" style="flex:1;" />
                 <button class="btn sm" id="licRenewableAdd" type="button">追加</button>
               </div>
-              <div class="side-title" style="margin:12px 0 6px;">长期额度池（用尽即移除）</div>
+              <div class="side-title" style="margin:12px 0 6px;">用完就没的那种（总次数有限，用完后会从列表去掉）</div>
               <div id="licConsumableList" class="meta-list">尚未加载</div>
               <div class="composer-row" style="margin:8px 0;">
                 <input id="licConsumableInput" placeholder="追加证书 UUID" style="flex:1;" />
@@ -3408,6 +3413,16 @@
     document.getElementById("licRenewableAdd").addEventListener("click", () => addLicence("renewable", "licRenewableInput").catch((e) => toast(e.message)));
     document.getElementById("licConsumableAdd").addEventListener("click", () => addLicence("consumable", "licConsumableInput").catch((e) => toast(e.message)));
     document.getElementById("licPrefSave").addEventListener("click", () => saveLicencePreference().catch((e) => toast(e.message)));
+    // 切到「固定用这一张」时才显示选证；切回自动换时显示池优先级
+    document.querySelectorAll('input[name="licMode"]').forEach((el) => {
+      el.addEventListener("change", () => {
+        const isPinned = el.value === "pinned" && el.checked;
+        const sel = document.getElementById("licManualPick");
+        const row = document.getElementById("licScheduleRow");
+        if (sel) sel.style.display = isPinned ? "" : "none";
+        if (row) row.style.display = isPinned ? "none" : "";
+      });
+    });
     document.querySelectorAll('input[name="licMode"]').forEach((el) => {
       el.addEventListener("change", () => {
         if (!el.checked) return;
@@ -4248,23 +4263,55 @@
       </div>`;
     }
 
+    // 两种类型的通俗说法 + 用尽后果
+    const POOL_PLAIN = {
+      renewable: "每天会恢复的",
+      consumable: "用完就没的",
+    };
+    const POOL_AFTER = {
+      renewable: "当天用完会停下报错，第二天自动恢复",
+      consumable: "额度用尽后会从列表里去掉，需要重新添加",
+    };
+
     function renderLicencePools(pools) {
       if (!pools) return;
-      const pref = pools.preference || {};
-      const mode = pref.mode || "auto";
+      const pinned = (pools.pinned || (pools.preference || {}).pinned || "").trim();
+      const schedule = pools.schedule || (pools.preference || {}).schedule || "auto";
+      // 第一级：自动换 / 固定用这一张
       document.querySelectorAll('input[name="licMode"]').forEach((el) => {
-        el.checked = el.value === mode;
+        el.checked = el.value === (pinned ? "pinned" : "auto");
       });
+      // 第二级：自动换时优先用哪种
+      document.querySelectorAll('input[name="licSchedule"]').forEach((el) => {
+        el.checked = el.value === schedule;
+      });
+      const schedRow = document.getElementById("licScheduleRow");
+      if (schedRow) schedRow.style.display = pinned ? "none" : "";
+      const pinNote = document.getElementById("licPinnedNote");
       const manualSel = document.getElementById("licManualPick");
-      const all = []
-        .concat((pools.renewable && pools.renewable.licences) || [])
-        .concat((pools.consumable && pools.consumable.licences) || []);
+      const renList = (pools.renewable && pools.renewable.licences) || [];
+      const consList = (pools.consumable && pools.consumable.licences) || [];
+      const all = [].concat(renList).concat(consList);
       if (manualSel) {
-        manualSel.style.display = mode === "manual" ? "" : "none";
-        manualSel.innerHTML = all.map((t) =>
-          `<option value="${esc(t)}"${t === (pref.manual_licence || "") ? " selected" : ""}>${esc(maskLicence(t))}</option>`
-        ).join("");
+        manualSel.style.display = pinned ? "" : "none";
+        manualSel.innerHTML = all.map((t) => {
+          const kind = consList.includes(t) ? "consumable" : "renewable";
+          return `<option value="${esc(t)}"${t === pinned ? " selected" : ""}>${esc(maskLicence(t))}（${esc(POOL_PLAIN[kind])}）</option>`;
+        }).join("");
         if (!all.length) manualSel.innerHTML = `<option value="">（池中无证书）</option>`;
+      }
+      if (pinNote) {
+        if (!pinned) {
+          pinNote.style.display = "none";
+        } else {
+          const kind = consList.includes(pinned) ? "consumable" : "renewable";
+          const st = pools.pinned_state || {};
+          let extra = "";
+          if (!st.in_pool) extra = " ⚠️ 这张现在不在池里，取数会直接报错。";
+          else if (st.exhausted_today) extra = " ⚠️ 这张今天已用尽，明天自动恢复。";
+          pinNote.style.display = "";
+          pinNote.innerHTML = `固定用 <code>${esc(maskLicence(pinned))}</code>：属于「${esc(POOL_PLAIN[kind])}」，${esc(POOL_AFTER[kind])}。${esc(extra)}`;
+        }
       }
       const active = pools.active || "";
       const ap = pools.active_pool || "";
@@ -4324,9 +4371,18 @@
 
     async function saveLicencePreference() {
       const mode = (document.querySelector('input[name="licMode"]:checked') || {}).value || "auto";
-      const manual = mode === "manual" ? (document.getElementById("licManualPick").value || "").trim() : "";
-      await api("/licences/preference", { method: "PUT", body: JSON.stringify({ mode, manual_licence: manual }) });
-      toast("已保存证书调度");
+      const body = {};
+      if (mode === "pinned") {
+        const pinned = (document.getElementById("licManualPick").value || "").trim();
+        if (!pinned) return toast("先选一张要固定的证书");
+        body.schedule = "auto";
+        body.pinned = pinned;
+      } else {
+        body.schedule = (document.querySelector('input[name="licSchedule"]:checked') || {}).value || "auto";
+        body.pinned = "";
+      }
+      await api("/licences/preference", { method: "PUT", body: JSON.stringify(body) });
+      toast(mode === "pinned" ? "已固定这张证书" : "已保存证书调度");
       await loadLicences();
       startBoardClock();
     }
