@@ -43,6 +43,10 @@ class MarketClient:
         self.licence_switches = 0
         self.query_refresh_mode: str = "full"
         self.slow_cache_stats: dict[str, int] = {"hits": 0, "misses": 0}
+        self._issue_lock = threading.Lock()
+        self._issues_open = False
+        self._query_issues: list[dict] = []
+        self._issue_seen: set[tuple] = set()
         # 请求超时。启动探针会临时调小，避免网络不通时把服务启动卡住（端口迟迟不监听）。
         self._timeout = 30.0
         if not self.offline:
@@ -132,11 +136,45 @@ class MarketClient:
         except Exception:
             pass
 
-    def _try_get(self, path: str) -> Any | None:
+    def open_query_issues(self) -> None:
+        with self._issue_lock:
+            self._query_issues = []
+            self._issue_seen = set()
+            self._issues_open = True
+
+    def close_query_issues(self) -> list[dict]:
+        with self._issue_lock:
+            self._issues_open = False
+            out = list(self._query_issues)
+            self._query_issues = []
+            self._issue_seen = set()
+            return out
+
+    def note_issue(self, block: str, message: str, code6: str = "", level: str = "warn") -> None:
+        """查询进行中才记。同一只、同一块、同一句只记一次。"""
+        from src.query.issues import issue_level
+
+        if not self._issues_open:
+            return
+        msg = " ".join((message or "请求失败").split())[:180] or "请求失败"
+        item = (issue_level(msg, level), str(block or "http"), str(code6 or ""), msg)
+        with self._issue_lock:
+            if not self._issues_open or item in self._issue_seen or len(self._query_issues) >= 240:
+                return
+            self._issue_seen.add(item)
+            self._query_issues.append(
+                {"level": item[0], "block": item[1], "code6": item[2], "message": msg}
+            )
+
+    def _get_quiet(self, path: str) -> tuple[Any | None, str]:
         try:
-            return self._get(path)
-        except MarketError:
-            return None
+            return self._get(path), ""
+        except MarketError as exc:
+            return None, str(exc) or "请求失败"
+
+    def _try_get(self, path: str) -> Any | None:
+        data, _err = self._get_quiet(path)
+        return data
 
     def _probe(self) -> None:
         from src.market.clock import configured_clock_dir, latest_payload, parse_as_of, slot_start
@@ -454,16 +492,16 @@ class MarketClient:
             concepts = [n.split("-")[-1] for n in names if n]
             out["industry"] = industries[0].split("-")[-1] if industries else (concepts[0] if concepts else "")
             out["concept"] = ",".join(concepts[:6])
-        except MarketError:
-            pass
+        except MarketError as exc:
+            self.note_issue("profile", str(exc), inst.code6)
         try:
             info = self._get(f"/hscp/gsjj/{inst.code6}")
             row = info[0] if isinstance(info, list) else info
             out["business"] = row.get("bscope") or row.get("desc") or ""
             if row.get("idea"):
                 out["concept"] = row["idea"]
-        except MarketError:
-            pass
+        except MarketError as exc:
+            self.note_issue("profile", str(exc), inst.code6)
         self._slow_store(key, out)
         return _with_taxonomy(out, extra)
 
@@ -477,8 +515,28 @@ class MarketClient:
         cached = self._slow_load(key, settings.slow_cache_holders_ttl_sec)
         if isinstance(cached, dict):
             return cached
-        flow = _holder_rows(self._try_get(f"/hsstock/financial/flowholder/{inst.code_full}") or self._try_get(f"/hscp/ltgd/{inst.code6}"))
-        top = _holder_rows(self._try_get(f"/hsstock/financial/topholder/{inst.code_full}") or self._try_get(f"/hscp/sdgd/{inst.code6}"))
+        flow_raw, err_flow = self._get_quiet(f"/hsstock/financial/flowholder/{inst.code_full}")
+        if not flow_raw:
+            alt, err_alt = self._get_quiet(f"/hscp/ltgd/{inst.code6}")
+            flow_raw = alt
+            if not alt and err_alt:
+                err_flow = err_alt
+            elif alt:
+                err_flow = ""
+        top_raw, err_top = self._get_quiet(f"/hsstock/financial/topholder/{inst.code_full}")
+        if not top_raw:
+            alt, err_alt = self._get_quiet(f"/hscp/sdgd/{inst.code6}")
+            top_raw = alt
+            if not alt and err_alt:
+                err_top = err_alt
+            elif alt:
+                err_top = ""
+        if err_flow:
+            self.note_issue("holders", err_flow, inst.code6)
+        if err_top:
+            self.note_issue("holders", err_top, inst.code6)
+        flow = _holder_rows(flow_raw)
+        top = _holder_rows(top_raw)
         packed = _pack_holders(flow, top, "live")
         self._slow_store(key, packed)
         return packed
@@ -531,7 +589,9 @@ class MarketClient:
         cached = self._slow_load(key, settings.slow_cache_indicators_ttl_sec)
         if isinstance(cached, dict):
             return cached
-        data = self._try_get(f"/hsstock/indicators/{inst.code_full}")
+        data, err = self._get_quiet(f"/hsstock/indicators/{inst.code_full}")
+        if err:
+            self.note_issue("indicators", err, inst.code6)
         rows = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
         row = rows[-1] if rows else {}
         out = {
@@ -599,34 +659,37 @@ class MarketClient:
             row = psi[0] if isinstance(psi, list) else psi
             for key in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
                 out[key] = row.get(key)
-        except MarketError:
-            pass
+        except MarketError as exc:
+            self.note_issue("finance", str(exc), inst.code6)
         try:
             income = self._get(f"/hsstock/financial/income/{inst.code_full}")
             row = income[0] if isinstance(income, list) else income
             yffy = row.get("yffy")
             out["yffy"] = None if yffy in (None, "", "-", 0, "0") else yffy
-        except MarketError:
-            pass
+        except MarketError as exc:
+            self.note_issue("finance", str(exc), inst.code6)
         try:
             cap = self._get(f"/hsstock/financial/capital/{inst.code_full}")
             row = cap[0] if isinstance(cap, list) else cap
             out["zgb"] = row.get("zgb")
             out["ysltag"] = row.get("ysltag")
-        except MarketError:
+        except MarketError as exc:
+            self.note_issue("finance", str(exc), inst.code6)
             try:
                 inst_info = self._get(f"/hsstock/instrument/{inst.code_full}")
                 row = inst_info[0] if isinstance(inst_info, list) else inst_info
                 out["zgb"] = row.get("tv")
                 out["ysltag"] = row.get("fv")
-            except MarketError:
-                pass
+            except MarketError as exc2:
+                self.note_issue("finance", str(exc2), inst.code6)
         self._slow_store(key, out)
         return out
 
     def _finance_bj(self, inst: Instrument) -> dict:
         out: dict[str, Any] = {"source": "live"}
-        psi = self._try_get(f"/bj/financial/pershareindex/{inst.code_full}")
+        psi, err = self._get_quiet(f"/bj/financial/pershareindex/{inst.code_full}")
+        if err:
+            self.note_issue("finance", err, inst.code6)
         if isinstance(psi, list) and psi:
             row = psi[0]
         elif isinstance(psi, dict):
@@ -636,12 +699,16 @@ class MarketClient:
         for key in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
             if key in row:
                 out[key] = row.get(key)
-        income = self._try_get(f"/bj/financial/income/{inst.code_full}")
+        income, err = self._get_quiet(f"/bj/financial/income/{inst.code_full}")
+        if err:
+            self.note_issue("finance", err, inst.code6)
         if isinstance(income, list) and income:
             irow = income[0]
             yffy = irow.get("yffy")
             out["yffy"] = None if yffy in (None, "", "-", 0, "0") else yffy
-        cap = self._try_get(f"/bj/financial/capital/{inst.code_full}")
+        cap, err = self._get_quiet(f"/bj/financial/capital/{inst.code_full}")
+        if err:
+            self.note_issue("finance", err, inst.code6)
         if isinstance(cap, list) and cap:
             crow = cap[0]
             out["zgb"] = crow.get("zgb")
@@ -702,7 +769,8 @@ class MarketClient:
             else:
                 try:
                     data = self._get(f"/bj/history/{inst.code_full}/d/{adjust}")
-                except MarketError:
+                except MarketError as exc:
+                    self.note_issue("bars", str(exc), inst.code6)
                     data = []
                 rows = data if isinstance(data, list) else []
                 out = []
@@ -733,7 +801,8 @@ class MarketClient:
         else:
             try:
                 data = self._get(f"/hsstock/history/{inst.code_full}/d/{adjust}")
-            except MarketError:
+            except MarketError as exc:
+                self.note_issue("bars", str(exc), inst.code6)
                 data = []
             rows = data if isinstance(data, list) else []
             out = []
@@ -764,7 +833,8 @@ class MarketClient:
             return cached
         try:
             data = self._get(f"/hsstock/history/transaction/{inst.code_full}")
-        except MarketError:
+        except MarketError as exc:
+            self.note_issue("flow", str(exc), inst.code6)
             return []
         rows = data if isinstance(data, list) else []
         out = []

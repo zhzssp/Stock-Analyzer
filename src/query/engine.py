@@ -7,6 +7,7 @@ from src.market.client import MarketClient
 from src.market.normalize import Instrument
 from src.query.bottom import compute_bottom
 from src.query.cards import derive_card_metrics
+from src.query.issues import combine_issues
 from src.query.registry import registry
 
 REFRESH_QUOTE = "quote"
@@ -33,6 +34,7 @@ class QueryEngine:
         self.market = market
         self.last_clock_meta: dict = {}
         self.last_slow_cache: dict = {}
+        self.last_issues: list[dict] = []
 
     def fields(self) -> list[dict]:
         out: list[dict] = []
@@ -62,6 +64,7 @@ class QueryEngine:
         refresh_mode: str = REFRESH_FULL,
         on_quotes: Any = None,
         on_row: Any = None,
+        on_issue: Any = None,
     ) -> list[dict]:
         """on_quotes / on_row 用于流式查询：先送一批只有行情的行，再逐只送完整行。
 
@@ -79,6 +82,10 @@ class QueryEngine:
         prev_mode = getattr(self.market, "query_refresh_mode", REFRESH_FULL)
         self.market.query_refresh_mode = mode
         self.market.slow_cache_stats = {"hits": 0, "misses": 0}
+        self._quote_gap = None
+        opener = getattr(self.market, "open_query_issues", None)
+        if opener:
+            opener()
         try:
             return self._run_rows(
                 instruments,
@@ -93,8 +100,17 @@ class QueryEngine:
                 force_live,
                 on_quotes=on_quotes,
                 on_row=on_row,
+                on_issue=on_issue,
             )
         finally:
+            notes: list[dict] = []
+            closer = getattr(self.market, "close_query_issues", None)
+            if closer:
+                got = closer()
+                if isinstance(got, list):
+                    notes = [item for item in got if isinstance(item, dict)]
+            early = [self._quote_gap] if isinstance(getattr(self, "_quote_gap", None), dict) else []
+            self.last_issues = combine_issues(notes, early)
             self.market.query_refresh_mode = prev_mode
 
     def _run_rows(
@@ -111,6 +127,7 @@ class QueryEngine:
         force_live: bool,
         on_quotes: Any = None,
         on_row: Any = None,
+        on_issue: Any = None,
     ) -> list[dict]:
         quotes: dict[str, dict] = {}
         clock_meta = {"as_of": "", "source": "", "enabled": False, "reason": ""}
@@ -126,6 +143,7 @@ class QueryEngine:
                 extra_codes=quote_extra,
             )
         self.last_clock_meta = clock_meta
+        self._note_quote_gap(instruments, quotes, clock_meta, "quote" in need, on_issue)
 
         if on_quotes is not None:
             # 现价是批量取的（1~3 次请求），这里就已经有全部行的行情；
@@ -228,6 +246,30 @@ class QueryEngine:
             rows = [build_row(i) for i in instruments]
         self.last_slow_cache = dict(getattr(self.market, "slow_cache_stats", {}) or {})
         return rows
+
+    def _note_quote_gap(self, instruments: list, quotes: dict, clock_meta: dict, wanted: bool, on_issue: Any) -> None:
+        """现价整批或一部分没回来时，立刻通知前端，不等慢字段跑完。"""
+        self._quote_gap = None
+        if not wanted or not instruments:
+            return
+        missing = [inst.code6 for inst in instruments if (quotes.get(inst.code6) or {}).get("p") in (None, "")]
+        if not missing:
+            return
+        total = len(missing) == len(instruments)
+        gap = {
+            "level": "error" if total else "warn",
+            "block": "quote",
+            "message": (clock_meta.get("reason") or "").strip() or ("麦蕊没有返回现价" if total else "部分股票没有现价"),
+            "count": len(missing),
+            "codes": missing[:8],
+        }
+        self._quote_gap = gap
+        if on_issue is None:
+            return
+        try:
+            on_issue([gap])
+        except Exception:
+            pass
 
     def _value(self, key: str, inst: Instrument, bag: dict) -> Any:
         q, p, h, f, fl, b = bag["quote"], bag["profile"], bag["holders"], bag["finance"], bag["flow"], bag["bottom"]

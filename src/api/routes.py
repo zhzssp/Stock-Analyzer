@@ -661,6 +661,7 @@ def _execute_query(
     refresh_mode: str = "full",
     on_quotes: Any = None,
     on_row: Any = None,
+    on_issue: Any = None,
 ) -> dict:
     ensure_market()
     mode = (refresh_mode or "full").strip().lower()
@@ -689,6 +690,7 @@ def _execute_query(
                 "enabled": bool(clock_meta.get("enabled")),
             },
             "refresh_mode": mode,
+            "issues": [],
             "snapshot": {
                 "saved_at": snap.get("saved_at") or "",
                 "source_refresh_mode": snap.get("refresh_mode") or "",
@@ -724,6 +726,7 @@ def _execute_query(
         refresh_mode=mode,
         on_quotes=on_quotes,
         on_row=on_row,
+        on_issue=on_issue,
     )
     codes = [i.code_full for i in insts]
     clock_meta = engine.last_clock_meta or {}
@@ -740,10 +743,12 @@ def _execute_query(
             "enabled": bool(clock_meta.get("enabled")),
         },
         "refresh_mode": mode,
+        "issues": list(engine.last_issues or []),
     }
     if mode == "cache":
         out["slow_cache"] = engine.last_slow_cache or {}
-    if mode in ("cache", "full"):
+    # 现价整批失败时不覆盖上次快照，避免下次登录直接打开一张空表。
+    if mode in ("cache", "full") and not any(item.get("level") == "error" for item in out["issues"]):
         from src.query.snapshot import save_table_snapshot
 
         save_table_snapshot(
@@ -872,6 +877,10 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
         def on_row(row: dict) -> None:
             out.put(("batch", {"rows": [row], "stage": "full"}))
 
+        def on_issue(items: list) -> None:
+            if items:
+                out.put(("issue", {"issues": items}))
+
         try:
             result = _execute_query(
                 insts,
@@ -887,8 +896,16 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 refresh_mode=body.refresh_mode,
                 on_quotes=on_quotes,
                 on_row=on_row,
+                on_issue=on_issue,
             )
-            out.put(("done", {"rows_count": len(result.get("rows") or []), "elapsed_ms": int((time.time() - started) * 1000)}))
+            out.put((
+                "done",
+                {
+                    "rows_count": len(result.get("rows") or []),
+                    "elapsed_ms": int((time.time() - started) * 1000),
+                    "issues": result.get("issues") or [],
+                },
+            ))
         except Exception as exc:  # noqa: BLE001 - 流式中途出错也要让前端收尾
             out.put(("error", {"message": str(exc) or "查询失败", "partial": True}))
         finally:
@@ -897,7 +914,7 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     threading.Thread(target=pump, name="query-stream", daemon=True).start()
 
     def events():
-        yield frame("meta", {"fields": fields, "total": len(insts), "pool": pool_name, "note": meta.get("note") or ""})
+        yield frame("meta", {"fields": _field_view(fields), "total": len(insts), "pool": pool_name, "note": meta.get("note") or ""})
         pending: list[dict] = []
         sent = 0
         while True:

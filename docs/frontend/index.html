@@ -499,7 +499,19 @@
       background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 8px;
       display: none;
       z-index: 50;
+      max-width: min(420px, calc(100vw - 40px));
     }
+    .query-alert {
+      display: none;
+      margin: 0 16px 8px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.45;
+      white-space: pre-line;
+    }
+    .query-alert.bad { background: #fdecea; color: var(--danger); }
+    .query-alert.warn { background: #fff6e0; color: var(--warn); }
     .login-mask {
       position: fixed; inset: 0; background: rgba(28,27,24,.28);
       display: flex; align-items: center; justify-content: center;
@@ -709,6 +721,7 @@
             <span class="export-scope" id="exportScope">当前导出：自选</span>
             <span class="hint" id="queryHint">尚未查询</span>
           </div>
+          <div id="queryAlert" class="query-alert" role="alert"></div>
           <div class="table-wrap">
             <table id="queryTable">
               <colgroup id="tableCols"></colgroup>
@@ -1214,13 +1227,61 @@
       editingRuleId: null,
       cardCode: "",
       pickOfficialConcept: "",
+      queryIssueSig: "",
     };
 
-    function toast(text) {
+    let toastTimer = 0;
+    function toast(text, ms) {
       const el = document.getElementById("toast");
       el.textContent = text;
       el.style.display = "block";
-      setTimeout(() => { el.style.display = "none"; }, 2200);
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { el.style.display = "none"; }, ms || 2200);
+    }
+
+    function issueLine(it) {
+      const name = {
+        quote: "现价",
+        profile: "行业/主营",
+        holders: "股东",
+        finance: "财务",
+        flow: "资金流",
+        indicators: "短周期涨幅",
+        bars: "日线",
+      }[it.block] || "查询";
+      const codes = (it.codes || []).slice(0, 4).join("、");
+      const n = it.count || (it.codes || []).length || 1;
+      const tail = n > 1 ? `（${n} 只${codes ? "：" + codes : ""}）` : (codes ? `（${codes}）` : "");
+      return `${name}：${it.message}${tail}`;
+    }
+
+    function showQueryIssues(issues) {
+      const el = document.getElementById("queryAlert");
+      if (!el) return;
+      const list = (issues || []).filter((it) => it && it.message);
+      if (!list.length) {
+        el.style.display = "none";
+        el.textContent = "";
+        state.queryIssueSig = "";
+        return;
+      }
+      const lines = list.map(issueLine);
+      el.className = "query-alert " + (list.some((it) => it.level === "error") ? "bad" : "warn");
+      el.style.display = "block";
+      el.textContent = lines.join("\n");
+      const sig = lines.join("|");
+      if (sig !== state.queryIssueSig) {
+        state.queryIssueSig = sig;
+        toast(lines[0], 6000);
+      }
+    }
+
+    function asFields(fields) {
+      return (fields || []).map((f) => {
+        if (f && typeof f === "object" && f.key) return f;
+        const key = String(f || "");
+        return { key, label: key, group: "" };
+      }).filter((f) => f.key);
     }
 
     function esc(text) {
@@ -1808,6 +1869,7 @@
     }
 
     function renderTable(fields, rows) {
+      fields = asFields(fields);
       state.fields = fields;
       state.rowsRaw = rows || [];
       applyColLayout(fields);
@@ -1823,6 +1885,7 @@
     // ---- 流式查询：骨架屏 + 边收边填 ----
 
     function renderSkeleton(fields, total) {
+      fields = asFields(fields);
       state.fields = fields;
       state.rowsRaw = [];
       applyColLayout(fields);
@@ -1887,6 +1950,11 @@
         if (hint) hint.textContent = `共 ${data.total || 0} 只 · 正在取行情…`;
         return;
       }
+      if (event === "issue") {
+        showQueryIssues(data.issues || []);
+        if (hint && (data.issues || []).length) hint.textContent = "查询遇到问题，详情在表格上方";
+        return;
+      }
       if (event === "batch") {
         applyStreamRows(data.rows || [], data.stage || "full");
         return;
@@ -1898,13 +1966,16 @@
       if (event === "done") {
         state.tablePage = 1;
         renderTable(state.fields, state.rowsRaw);
+        showQueryIssues(data.issues || []);
         if (hint) {
           const sec = ((data.elapsed_ms || 0) / 1000).toFixed(1);
-          hint.textContent = `${data.rows_count || state.rowsRaw.length} 只 · 用时 ${sec} 秒`;
+          const bad = (data.issues || []).length ? " · 有失败，见表格上方" : "";
+          hint.textContent = `${data.rows_count || state.rowsRaw.length} 只 · 用时 ${sec} 秒${bad}`;
         }
         return;
       }
       if (event === "error") {
+        showQueryIssues([{ level: "error", block: "query", message: data.message || "查询失败" }]);
         throw new Error(data.message || "查询失败");
       }
     }
@@ -2085,6 +2156,7 @@
       else state.lastQueryCodes = null;
       const hintEl = document.getElementById("queryHint");
       hintEl.textContent = "查询中…";
+      showQueryIssues([]);
       const refreshMode = o.refreshMode || "quote";
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       const payload = queryPayload(codes, { refreshMode, forceLive });
@@ -2150,9 +2222,11 @@
           toast("当前 licence 只能返回演示样本，不是全市场实盘。");
         } else {
           const fetchIssue = quoteFetchIssue(data);
-          if (fetchIssue) toast(fetchIssue);
+          const told = (data.issues || []).some((it) => it.block === "quote");
+          if (fetchIssue && !told) toast(fetchIssue, 6000);
         }
       }
+      showQueryIssues(data.issues || []);
       const mode = describeQueryMode(data);
       const scope = codes && codes.length ? "筛选一次" : (data.pool || state.poolLabel || state.pool);
       const note = data.note ? ` · ${data.note}` : "";
