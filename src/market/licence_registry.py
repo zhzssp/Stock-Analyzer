@@ -131,10 +131,26 @@ class LicenceRegistry:
                 data = {}
             if data:
                 self._apply_payload(data)
+                self._ensure_default_consumable_seed(force=False)
                 return
         self._migrate_legacy()
-        if DEFAULT_CONSUMABLE_SEED not in self._consumable and DEFAULT_CONSUMABLE_SEED not in self._renewable:
-            self._consumable.append(DEFAULT_CONSUMABLE_SEED)
+        self._ensure_default_consumable_seed(force=True)
+
+    def _ensure_default_consumable_seed(self, force: bool = False) -> None:
+        """长期池为空时补上内置总次数证。
+
+        force=True：首次从旧版迁移建库时，即使每日池暂时为空也写入种子。
+        force=False：已有 licence_registry.json 时，仅当用户已在用每日池、长期池却为空时补种
+        （避免测试/空池误塞一张证）。
+        """
+        if self._preference.get("default_consumable_dismissed"):
+            return
+        token = DEFAULT_CONSUMABLE_SEED
+        if token in self._renewable or token in self._consumable:
+            return
+        if not force and not self._renewable:
+            return
+        self._consumable.append(token)
 
     def _migrate_legacy(self) -> None:
         legacy = settings.data_dir / "licence_pool.json"
@@ -381,6 +397,8 @@ class LicenceRegistry:
             self._roll_day_if_needed()
             if self._sync_env:
                 self._sync_env_renewable()
+            # 每日池在、长期池缺内置总次数证时补回（避免老文件 consumable=[] 且进程未重启）
+            self._ensure_default_consumable_seed(force=False)
             if self.iteration_plan():
                 return True
             stale = {x for x in self._exhausted if x not in self._renewable}
@@ -420,6 +438,8 @@ class LicenceRegistry:
             self._exhausted.discard(token)
         elif kind == POOL_CONSUMABLE:
             self._consumable = [x for x in self._consumable if x != token]
+            if token == DEFAULT_CONSUMABLE_SEED:
+                self._preference["default_consumable_dismissed"] = True
         else:
             raise ValueError("未知池类型")
         # 用户主动删掉锁定的这张 → 视为解除锁定（意图明确）。

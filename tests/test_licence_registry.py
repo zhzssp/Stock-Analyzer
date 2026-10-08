@@ -66,6 +66,30 @@ def test_migrate_includes_consumable_seed(reg_path):
     assert DEFAULT_CONSUMABLE_SEED in reg.status()["consumable"]["licences"]
 
 
+def test_existing_registry_with_empty_consumable_gets_seed(reg_path):
+    payload = _empty_registry_payload()
+    payload["renewable"]["licences"] = ["REN-A"]
+    reg_path.write_text(json.dumps(payload), encoding="utf-8")
+    reg = LicenceRegistry(state_path=reg_path, sync_env=False)
+    assert DEFAULT_CONSUMABLE_SEED in reg.status()["consumable"]["licences"]
+
+
+def test_empty_pools_do_not_auto_seed(reg_path):
+    reg_path.write_text(json.dumps(_empty_registry_payload()), encoding="utf-8")
+    reg = LicenceRegistry(state_path=reg_path, sync_env=False)
+    assert DEFAULT_CONSUMABLE_SEED not in reg.status()["consumable"]["licences"]
+
+
+def test_renewable_exhausted_falls_through_to_consumable(reg_path):
+    reg_path.write_text(json.dumps(_empty_registry_payload()), encoding="utf-8")
+    reg = LicenceRegistry(state_path=reg_path, sync_env=False)
+    reg.add(POOL_RENEWABLE, "REN-A")
+    reg.add(POOL_CONSUMABLE, "CON-A")
+    reg.mark_quota_exhausted("REN-A")
+    assert reg.active() == "CON-A"
+    assert reg.active_pool() == POOL_CONSUMABLE
+
+
 def test_two_instances_do_not_overwrite_exhausted_marks(reg_path):
     """回归：两个实例各自持内存副本时，不能把对方刚写下的「今日已耗尽」标记覆盖掉。
 
@@ -85,7 +109,8 @@ def test_two_instances_do_not_overwrite_exhausted_marks(reg_path):
     exhausted = fresh.status()["renewable"]["exhausted_today"]
     assert set(exhausted) == {"REN-A", "REN-B"}
     assert fresh.status()["renewable"]["available"] == []
-    assert fresh.active() == ""
+    # 每日池全耗尽后会落到自动补上的内置长期证
+    assert fresh.active() == DEFAULT_CONSUMABLE_SEED
 
 
 def test_all_exhausted_today_distinguishes_empty_pool(reg_path):

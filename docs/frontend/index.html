@@ -654,6 +654,64 @@
     .storage-row span { color: var(--muted); }
     .storage-path { font-family: ui-monospace, Consolas, monospace; font-size: 13px; word-break: break-all; }
     .clock-box { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .licence-box { max-width: 820px; }
+    .lic-status {
+      margin: 10px 0 14px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      border: 1px solid var(--line);
+      background: var(--paper);
+    }
+    .lic-status.ok { border-color: #c5e0dc; background: var(--teal-soft); }
+    .lic-status.warn { border-color: #e8d4a8; background: #fff8e8; }
+    .lic-status.bad { border-color: #e8c4c0; background: #fdecea; color: var(--danger); }
+    .lic-pref-card {
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper);
+    }
+    .lic-pref-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--muted); }
+    .lic-pref-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 8px; }
+    .lic-pref-row:last-child { margin-bottom: 0; }
+    .lic-pref-row label.hint { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+    .lic-pref-actions { margin-left: auto; }
+    .lic-pool-card {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #faf9f6;
+    }
+    .lic-pool-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-bottom: 8px; }
+    .lic-pool-head .sub { font-size: 12px; color: var(--muted); flex: 1; min-width: 200px; }
+    .lic-pool-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .lic-item {
+      display: grid;
+      grid-template-columns: minmax(120px, auto) 1fr auto;
+      gap: 8px 12px;
+      align-items: center;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .lic-item code { font-size: 12px; }
+    .lic-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .lic-tag {
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #eeebe4;
+      color: var(--muted);
+    }
+    .lic-tag.ok { background: var(--teal-soft); color: var(--teal); }
+    .lic-tag.warn { background: #fff6e0; color: var(--warn); }
+    .lic-empty { font-size: 13px; color: var(--muted); padding: 6px 0; }
     .clock-chart { width: 100%; height: 160px; background: var(--panel, #f6f7f8); border-radius: 8px; margin-top: 8px; }
   </style>
 </head>
@@ -876,33 +934,49 @@
           <div class="panel" style="flex:1; overflow:auto;">
             <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="日线只缓存你查过的股票，同一文件覆盖写，默认最多 500 根。缓存超过上限会先删最久未用的日线，名单缓存尽量留到最后。每人默认最多留 20 份 Excel。">存储占用</span></div>
             <div id="storageBox" class="storage-grid meta-list">尚未加载</div>
-            <div class="clock-box" id="licenceBox">
-              <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="每日刷新池：当日额度用尽会换下一张，次日自动恢复。长期池：不限每日次数，总额度耗尽后自动从池中删除。默认先日用池、再长期池。">麦蕊证书池</span></div>
-              <div class="composer-row" style="margin:8px 0; flex-wrap:wrap; gap:8px;">
-                <label class="hint"><input type="radio" name="licMode" value="auto" checked /> 自动换：这张用完自动换下一张</label>
-                <label class="hint"><input type="radio" name="licMode" value="pinned" /> 固定用这一张</label>
-                <select id="licManualPick" style="min-width:240px; display:none;"></select>
-                <button class="btn sm primary" id="licPrefSave" type="button">保存</button>
+            <div class="clock-box licence-box" id="licenceBox">
+              <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="每日刷新池：当日额度用尽会换下一张，次日自动恢复。长期池：总次数有限，额度耗尽后自动从列表移除。默认「自动换」时先用每日池，再切长期池。">麦蕊证书池</span></div>
+              <div id="licStatusBanner" class="lic-status">尚未加载</div>
+              <div class="lic-pref-card">
+                <div class="lic-pref-title">怎么用证</div>
+                <div class="lic-pref-row">
+                  <label class="hint"><input type="radio" name="licMode" value="auto" checked /> 自动换证（推荐）</label>
+                  <label class="hint"><input type="radio" name="licMode" value="pinned" /> 固定用这一张</label>
+                  <select id="licManualPick" style="min-width:220px; display:none;"></select>
+                  <div class="lic-pref-actions">
+                    <button class="btn sm primary" id="licPrefSave" type="button">保存设置</button>
+                  </div>
+                </div>
+                <div class="lic-pref-row" id="licScheduleRow">
+                  <span class="meta">自动换时的顺序：</span>
+                  <label class="hint"><input type="radio" name="licSchedule" value="auto" checked /> 先每日池，再长期池</label>
+                  <label class="hint"><input type="radio" name="licSchedule" value="renewable" /> 只用每日池</label>
+                  <label class="hint"><input type="radio" name="licSchedule" value="consumable" /> 只用长期池</label>
+                </div>
+                <div id="licPinnedNote" class="meta" style="display:none; margin-top:8px;"></div>
               </div>
-              <div class="composer-row" id="licScheduleRow" style="margin:8px 0; flex-wrap:wrap; gap:8px;">
-                <span class="meta">优先用哪种：</span>
-                <label class="hint"><input type="radio" name="licSchedule" value="auto" checked /> 先用每天会恢复的，再用完就没的</label>
-                <label class="hint"><input type="radio" name="licSchedule" value="renewable" /> 只用每天会恢复的</label>
-                <label class="hint"><input type="radio" name="licSchedule" value="consumable" /> 只用完就没的</label>
+              <div id="licActive" class="meta" style="display:none;"></div>
+              <div class="lic-pool-card">
+                <div class="lic-pool-head">
+                  <span class="side-title" style="margin:0;">每天会恢复的那种</span>
+                  <span class="sub">当日额度用尽会换下一张，次日自动恢复</span>
+                </div>
+                <div id="licRenewableList" class="lic-pool-list">尚未加载</div>
+                <div class="composer-row" style="margin:0;">
+                  <input id="licRenewableInput" placeholder="追加证书 UUID" style="flex:1;" />
+                  <button class="btn sm" id="licRenewableAdd" type="button">追加</button>
+                </div>
               </div>
-              <div id="licPinnedNote" class="meta" style="display:none; margin:6px 0;"></div>
-              <div id="licActive" class="meta">尚未加载</div>
-              <div class="side-title" style="margin:12px 0 6px;">每天会恢复的那种（当天用完，第二天还能用）</div>
-              <div id="licRenewableList" class="meta-list">尚未加载</div>
-              <div class="composer-row" style="margin:8px 0;">
-                <input id="licRenewableInput" placeholder="追加证书 UUID" style="flex:1;" />
-                <button class="btn sm" id="licRenewableAdd" type="button">追加</button>
-              </div>
-              <div class="side-title" style="margin:12px 0 6px;">用完就没的那种（总次数有限，用完后会从列表去掉）</div>
-              <div id="licConsumableList" class="meta-list">尚未加载</div>
-              <div class="composer-row" style="margin:8px 0;">
-                <input id="licConsumableInput" placeholder="追加证书 UUID" style="flex:1;" />
-                <button class="btn sm" id="licConsumableAdd" type="button">追加</button>
+              <div class="lic-pool-card">
+                <div class="lic-pool-head">
+                  <span class="side-title" style="margin:0;">用完就没的那种</span>
+                  <span class="sub">总次数有限；用尽后会从列表移除（不是「今日已用尽」）</span>
+                </div>
+                <div id="licConsumableList" class="lic-pool-list">尚未加载</div>
+                <div class="composer-row" style="margin:0;">
+                  <input id="licConsumableInput" placeholder="追加证书 UUID" style="flex:1;" />
+                  <button class="btn sm" id="licConsumableAdd" type="button">追加</button>
+                </div>
               </div>
             </div>
             <div class="clock-box">
@@ -3497,13 +3571,6 @@
         if (row) row.style.display = isPinned ? "none" : "";
       });
     });
-    document.querySelectorAll('input[name="licMode"]').forEach((el) => {
-      el.addEventListener("change", () => {
-        if (!el.checked) return;
-        const manual = document.getElementById("licManualPick");
-        if (manual) manual.style.display = el.value === "manual" ? "" : "none";
-      });
-    });
     document.getElementById("clockDirSave").addEventListener("click", () => saveClockDir().catch((e) => toast(e.message)));
     document.getElementById("clockSeriesBtn").addEventListener("click", () => loadClockSeries().catch((e) => toast(e.message)));
     document.getElementById("cacheClear").addEventListener("click", async () => {
@@ -4329,12 +4396,64 @@
       return t.slice(0, 8) + "…" + t.slice(-4);
     }
 
+    function licenceTag(text, kind) {
+      const cls = kind === "ok" ? "lic-tag ok" : kind === "warn" ? "lic-tag warn" : "lic-tag";
+      return `<span class="${cls}">${esc(text)}</span>`;
+    }
+
     function licenceRow(pool, token, flags) {
-      const tags = (flags || []).map((f) => `<span class="sub">${esc(f)}</span>`).join(" ");
-      return `<div class="storage-row" style="align-items:center; gap:8px;">
-        <code style="font-size:12px;">${esc(maskLicence(token))}</code> ${tags}
+      const tags = (flags || []).map((f) => {
+        if (f === "可用") return licenceTag(f, "ok");
+        if (f === "今日已用尽") return licenceTag(f, "warn");
+        if (f === "当前使用") return licenceTag(f, "ok");
+        return licenceTag(f, "");
+      }).join("");
+      return `<div class="lic-item">
+        <code title="${escAttr(token)}">${esc(maskLicence(token))}</code>
+        <div class="lic-tags">${tags || licenceTag("—", "")}</div>
         <button class="btn sm" type="button" data-lic-del="${esc(pool)}" data-lic-token="${esc(token)}">删除</button>
       </div>`;
+    }
+
+    function licenceStatusMessage(pools) {
+      const active = (pools.active || "").trim();
+      const ren = pools.renewable || {};
+      const cons = pools.consumable || {};
+      const renAvail = (ren.available || []).length;
+      const renTotal = (ren.licences || []).length;
+      const renEx = (ren.exhausted_today || []).length;
+      const consTotal = (cons.licences || []).length;
+      const consAvail = (cons.available || []).length;
+      const pinned = (pools.pinned || "").trim();
+      if (active) {
+        const kind = pools.active_pool === "consumable" ? "长期池" : "每日池";
+        return { level: "ok", html: `<b>当前取数</b> <code>${esc(maskLicence(active))}</code> · ${esc(kind)}` };
+      }
+      if (pinned && pools.pinned_state && !pools.pinned_state.in_pool) {
+        return { level: "bad", html: "已固定某张证，但它不在池里，请求会直接失败。请改回自动换或重新追加。" };
+      }
+      if (pinned && pools.pinned_state && pools.pinned_state.exhausted_today) {
+        return { level: "warn", html: "已固定的证今天额度用尽，明天会自动恢复；或改回自动换以使用长期池。" };
+      }
+      if (renTotal && renAvail === 0 && consAvail > 0) {
+        return {
+          level: "warn",
+          html: `每日池 ${renEx} 张今天都已用尽，但长期池还有 ${consAvail} 张可用。若仍显示无可用证，请点「刷新占用」或重启助手。`,
+        };
+      }
+      if (pools.all_exhausted_today) {
+        return { level: "bad", html: "池里还有证，但今天一张都派不出来（每日池全耗尽且长期池为空或也已用尽）。明天每日池会恢复，或追加新的长期证。" };
+      }
+      if (!renTotal && !consTotal) {
+        return { level: "bad", html: "证书池为空，请在下方追加 UUID，或在 .env 配置 MAIRUI_LICENCE。" };
+      }
+      if (renTotal && !renAvail && !consTotal) {
+        return {
+          level: "bad",
+          html: "每日池今天已全部用尽，且长期池为空。自动换无法继续；请追加「用完就没」类型的证，或等到明天每日池恢复。",
+        };
+      }
+      return { level: "warn", html: "当前无可用证书。请检查是否误选「固定用这一张」且该证今天已用尽。" };
     }
 
     // 两种类型的通俗说法 + 用尽后果
@@ -4388,32 +4507,35 @@
         }
       }
       const active = pools.active || "";
-      const ap = pools.active_pool || "";
-      const poolLabel = ap === "renewable" ? "每日刷新池" : ap === "consumable" ? "长期池" : "";
-      document.getElementById("licActive").innerHTML =
-        active
-          ? `<div><b>当前使用</b> <code>${esc(maskLicence(active))}</code>${poolLabel ? ` · ${esc(poolLabel)}` : ""}</div>`
-          : `<div class="meta">当前无可用证书</div>`;
+      const status = licenceStatusMessage(pools);
+      const banner = document.getElementById("licStatusBanner");
+      if (banner) {
+        banner.className = "lic-status " + (status.level || "warn");
+        banner.innerHTML = status.html;
+      }
       const ren = pools.renewable || {};
       const renEx = new Set(ren.exhausted_today || []);
       const renHtml = (ren.licences || []).map((t) => {
         const flags = [];
+        if (t === active) flags.push("当前使用");
         if (renEx.has(t)) flags.push("今日已用尽");
         else if ((ren.available || []).includes(t)) flags.push("可用");
         return licenceRow("renewable", t, flags);
       });
       document.getElementById("licRenewableList").innerHTML = renHtml.length
         ? renHtml.join("")
-        : `<div class="meta">${esc(ren.description || "空")}</div>`;
+        : `<div class="lic-empty">暂无。可从 .env 同步或在此追加。</div>`;
       const cons = pools.consumable || {};
       const consAvail = new Set(cons.available || []);
       const consHtml = (cons.licences || []).map((t) => {
-        const flags = consAvail.has(t) ? ["可用"] : [];
+        const flags = [];
+        if (t === active) flags.push("当前使用");
+        if (consAvail.has(t)) flags.push("可用");
         return licenceRow("consumable", t, flags);
       });
       document.getElementById("licConsumableList").innerHTML = consHtml.length
         ? consHtml.join("")
-        : `<div class="meta">${esc(cons.description || "空")}</div>`;
+        : `<div class="lic-empty">暂无长期证。每日池都耗尽后，自动换会从这里取下一张。</div>`;
       document.getElementById("licenceBox").querySelectorAll("[data-lic-del]").forEach((btn) => {
         btn.onclick = () => removeLicence(btn.dataset.licDel, btn.dataset.licToken).catch((e) => toast(e.message));
       });

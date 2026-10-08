@@ -271,6 +271,8 @@ class LicencePrefIn(BaseModel):
 def get_licences(user: User = Depends(current_user)):
     ensure_market()
     reg = LicenceRegistry.shared()
+    reg.repair()
+    _reload_licence_runtime()
     return {"ok": True, "pools": reg.status(), "market": market.health()}
 
 
