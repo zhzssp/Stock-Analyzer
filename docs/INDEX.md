@@ -38,6 +38,7 @@ docs/
 | 客户原话记在哪 | [requirements/](./requirements/)（当前：[R-20260915](./requirements/R-20260915-行情按指数成份导出.md)、[R-20260917](./requirements/R-20260917-交易所全市场分开导出.md)、[R-20260921](./requirements/R-20260921-未完成能力欠账.md)、[R-20260921 查询行外链](./requirements/R-20260921-查询行外链验证.md)） |
 | 哪些能力还是占位/半成品 | [requirements/R-20260921-未完成能力欠账.md](./requirements/R-20260921-未完成能力欠账.md) · [design/占位与半成品现状.md](./design/占位与半成品现状.md) |
 | 欠账按什么顺序做、先开哪一批 | [requirements/R-20260923-欠账分期落地方案.md](./requirements/R-20260923-欠账分期落地方案.md)（L0–L4，需勾选才开工） |
+| Agent 已实现但有缺陷的部分 | [design/Agent缺陷核实与完善方案.md](./design/Agent缺陷核实与完善方案.md)（2026-09-29 逐条核实：P0 缓存/调度/规划器，P1 工具开关/静默失败/流式，S1–S4 分期） |
 | 决策卡 / 队列要不要开工 | [reviews/提效缺口评审.md](./reviews/提效缺口评审.md) |
 | 最近一次接口实测 | **暂无**（2026-09-02 演示证报告已删除；用正式证跑 `scripts/Verify-Api.ps1` 会重新生成） |
 | 现网 Agent + 监控（对照麦蕊查询表） | [reports/T-20260921-Agent与监控.md](./reports/T-20260921-Agent与监控.md) |

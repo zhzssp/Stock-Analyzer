@@ -9,6 +9,7 @@ from typing import Any
 
 from src.config import settings
 from src.market.normalize import Instrument
+from src.platform.storage import atomic_write_text
 from src.query.cards import derive_card_metrics
 from src.query.registry import registry
 
@@ -55,7 +56,8 @@ def save_table_snapshot(
         "clock": clock or {},
         "refresh_mode": mode,
     }
-    _path(user_id).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    # 快照是整表，写的时候可能正有人在读：原子替换，别让人读到半张表。
+    atomic_write_text(_path(user_id), json.dumps(payload, ensure_ascii=False))
 
 
 def load_table_snapshot(user_id: int) -> dict | None:

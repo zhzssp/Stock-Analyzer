@@ -69,8 +69,9 @@ def test_futures_map_has_no_quotes():
     spec = registry.get("futures_quote")
     assert spec.enabled is False
     assert registry.get("futures_map").enabled is True
-    assert registry.get("web_finance_search").enabled is False
-    assert registry.get("policy_news").enabled is False
+    # 资讯 / 政策已接白名单检索（S4），不再是空壳
+    assert registry.get("web_finance_search").enabled is True
+    assert registry.get("policy_news").enabled is True
 
 
 def test_fund_and_export_tools():

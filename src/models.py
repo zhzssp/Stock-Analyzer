@@ -145,6 +145,8 @@ class Alert(Base):
     rule_id: Mapped[str] = mapped_column(String(64), default="")
     hit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     hit_date: Mapped[str] = mapped_column(String(16), default="")
+    # 命中时的行情档位（如 15:00 收盘档）。复盘 / 筛选按档位区分用。
+    as_of: Mapped[str] = mapped_column(String(32), default="")
     review_status: Mapped[str] = mapped_column(String(16), default="pending")
     review_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     review_close: Mapped[float | None] = mapped_column(Float, nullable=True)

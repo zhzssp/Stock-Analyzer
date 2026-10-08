@@ -311,6 +311,12 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    /* 虚拟滚动：行高必须固定，否则占位高度算不准会出现跳动 / 空档 */
+    #queryTable tbody tr { height: 38px; }
+    #queryTable tbody td { padding-top: 6px; padding-bottom: 6px; }
+    #queryTable tr.vspacer, #queryTable tr.vspacer td {
+      height: auto; padding: 0; border: 0; background: transparent;
+    }
     #queryTable th {
       z-index: 1;
       overflow: visible;
@@ -873,21 +879,26 @@
             <div class="clock-box" id="licenceBox">
               <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="每日刷新池：当日额度用尽会换下一张，次日自动恢复。长期池：不限每日次数，总额度耗尽后自动从池中删除。默认先日用池、再长期池。">麦蕊证书池</span></div>
               <div class="composer-row" style="margin:8px 0; flex-wrap:wrap; gap:8px;">
-                <label class="hint"><input type="radio" name="licMode" value="auto" checked /> 默认（先每日刷新，再长期）</label>
-                <label class="hint"><input type="radio" name="licMode" value="renewable" /> 仅每日刷新池</label>
-                <label class="hint"><input type="radio" name="licMode" value="consumable" /> 仅长期池</label>
-                <label class="hint"><input type="radio" name="licMode" value="manual" /> 指定证书</label>
-                <select id="licManualPick" style="min-width:220px; display:none;"></select>
-                <button class="btn sm primary" id="licPrefSave" type="button">保存调度</button>
+                <label class="hint"><input type="radio" name="licMode" value="auto" checked /> 自动换：这张用完自动换下一张</label>
+                <label class="hint"><input type="radio" name="licMode" value="pinned" /> 固定用这一张</label>
+                <select id="licManualPick" style="min-width:240px; display:none;"></select>
+                <button class="btn sm primary" id="licPrefSave" type="button">保存</button>
               </div>
+              <div class="composer-row" id="licScheduleRow" style="margin:8px 0; flex-wrap:wrap; gap:8px;">
+                <span class="meta">优先用哪种：</span>
+                <label class="hint"><input type="radio" name="licSchedule" value="auto" checked /> 先用每天会恢复的，再用完就没的</label>
+                <label class="hint"><input type="radio" name="licSchedule" value="renewable" /> 只用每天会恢复的</label>
+                <label class="hint"><input type="radio" name="licSchedule" value="consumable" /> 只用完就没的</label>
+              </div>
+              <div id="licPinnedNote" class="meta" style="display:none; margin:6px 0;"></div>
               <div id="licActive" class="meta">尚未加载</div>
-              <div class="side-title" style="margin:12px 0 6px;">每日刷新额度池</div>
+              <div class="side-title" style="margin:12px 0 6px;">每天会恢复的那种（当天用完，第二天还能用）</div>
               <div id="licRenewableList" class="meta-list">尚未加载</div>
               <div class="composer-row" style="margin:8px 0;">
                 <input id="licRenewableInput" placeholder="追加证书 UUID" style="flex:1;" />
                 <button class="btn sm" id="licRenewableAdd" type="button">追加</button>
               </div>
-              <div class="side-title" style="margin:12px 0 6px;">长期额度池（用尽即移除）</div>
+              <div class="side-title" style="margin:12px 0 6px;">用完就没的那种（总次数有限，用完后会从列表去掉）</div>
               <div id="licConsumableList" class="meta-list">尚未加载</div>
               <div class="composer-row" style="margin:8px 0;">
                 <input id="licConsumableInput" placeholder="追加证书 UUID" style="flex:1;" />
@@ -1186,8 +1197,127 @@
         return {};
       }
     }
+    // ---- 调试支持 ----
+    // 开启方式（二选一，都不影响正常使用）：
+    //   1) 地址栏加 ?debug=1        例：http://127.0.0.1:8765/?debug=1
+    //   2) 控制台执行 localStorage.setItem("sa_debug","1") 然后刷新
+    // 关闭：localStorage.removeItem("sa_debug") 后刷新。
+    const SA_DEBUG = (() => {
+      try {
+        return new URLSearchParams(location.search).has("debug")
+          || localStorage.getItem("sa_debug") === "1";
+      } catch (_) {
+        return false;
+      }
+    })();
+
+    const saDebug = {
+      enabled: SA_DEBUG,
+      lastPayload: null,
+      lastResult: null,
+      streamEvents: [],
+      cols: {},
+      board: null,
+    };
+    window.saDebug = saDebug;
+
+    function dbg(...args) {
+      if (!SA_DEBUG) return;
+      console.log("%c[SA]", "color:#0a7a5a;font-weight:700", ...args);
+    }
+
+    // 统计每列有多少行真的有值 —— 一眼看出「为什么全是 —」
+    function collectColStats(fields, rows) {
+      const stats = {};
+      (fields || []).forEach((f) => {
+        let filled = 0;
+        (rows || []).forEach((r) => {
+          const v = r ? r[f.key] : null;
+          if (v !== null && v !== undefined && v !== "" && v !== "—") filled += 1;
+        });
+        stats[f.key] = { label: f.label, filled, total: (rows || []).length };
+      });
+      saDebug.cols = stats;
+      if (SA_DEBUG) {
+        const empty = Object.entries(stats).filter(([, s]) => s.filled === 0).map(([k]) => k);
+        dbg(
+          `列填充情况（共 ${(fields || []).length} 列 / ${(rows || []).length} 行）`,
+          empty.length ? `全空列：${empty.join(", ")}` : "所有列都有值"
+        );
+      }
+      return stats;
+    }
+
+    // 除名称 / 代码外整张表都空 → 这不是渲染 bug，是没取到数，直接说清楚
+    function warnIfAllEmpty(fields, rows) {
+      const dataFields = (fields || []).filter((f) => f.key !== "name" && f.key !== "code");
+      if (!dataFields.length || !(rows || []).length) return;
+      const filled = dataFields.filter((f) =>
+        (rows || []).some((r) => {
+          const v = r ? r[f.key] : null;
+          return v !== null && v !== undefined && v !== "" && v !== "—";
+        })
+      ).length;
+      if (filled > 0) return;
+      const hint = document.getElementById("queryHint");
+      const mk = (saDebug.lastResult && saDebug.lastResult.market) || {};
+      const exhausted = mk.licence_exhausted_all || mk.status === "quota-exhausted";
+      if (hint) hint.textContent += exhausted ? " · 证书今日额度已用尽" : " · 取数失败：除名称 / 代码外全部为空";
+      if (state.emptyWarned) return;
+      state.emptyWarned = true;
+      if (exhausted) {
+        toast("证书今日额度已用尽：每日刷新池次日自动恢复，长期池用尽需重新添加。可在「证书池」查看剩余。");
+      } else {
+        toast("没取到任何字段：通常是证书额度用尽或网络不通。按 F12 打开控制台，执行 saDiag() 看详情");
+      }
+      dbg("整表为空：先看 saDebug.lastResult.market（探针状态、证书池），再执行 saDiag()");
+    }
+
+    // 一键诊断：出问题让用户直接跑这个，把输出贴出来
+    async function saDiag() {
+      console.group("%c[SA] 一键诊断", "color:#0a7a5a;font-weight:700");
+      let health = null;
+      try {
+        health = await api("/health");
+        const m = health.market || {};
+        console.log("market:", {
+          status: m.status,
+          offline: m.offline,
+          offline_reason: m.offline_reason,
+          sample_only: m.sample_only,
+          has_licence: m.has_licence,
+          licence_switches: m.licence_switches,
+          licence_unusable: m.licence_unusable,
+        });
+        console.log("证书池 licence_pools:", m.licence_pools);
+      } catch (err) {
+        console.warn("health 请求失败：", err);
+      }
+      try {
+        const board = await api("/markets/board");
+        saDebug.board = board.items || [];
+        console.log("顶栏指数:", (board.items || []).map(
+          (x) => `${x.short}=${x.p != null ? x.p : (x.count != null ? x.count + "只" : "—")} [${x.kind || "quote"}/${x.source || ""}]`
+        ));
+      } catch (err) {
+        console.warn("board 请求失败：", err);
+      }
+      console.log("最近一次查询 payload:", saDebug.lastPayload);
+      console.log("最近一次查询结果:", saDebug.lastResult);
+      console.log("每列填充统计:", saDebug.cols);
+      console.log("流式事件序列:", saDebug.streamEvents.map((e) => e.event + (e.rows != null ? `(${e.rows})` : "")));
+      console.groupEnd();
+      return { health, board: saDebug.board, lastResult: saDebug.lastResult, cols: saDebug.cols };
+    }
+    window.saDiag = saDiag;
+
     // 列表与表格一次渲染多少条。只是显示分页，导出始终按整个池 / 整批。
     const PAGE_SIZE = 100;
+    // 方案 C：超过这么多行就切「后端分页 + 虚拟滚动」。
+    // 低于阈值时保持老逻辑（一次性渲染），小表没必要上虚拟滚动。
+    const VSCROLL_MIN = 200;
+    // 每次向后端要多少行（= 一页）
+    const PAGE_LIMIT = 100;
 
     const state = {
       token: sessionStorage.getItem("sa_token") || "",
@@ -1207,6 +1337,12 @@
       lastQueryCodes: null,
       boardTimer: null,
       rowsRaw: [],
+      // 方案 C（后端分页 + 虚拟滚动）相关状态
+      paged: false,        // 后端还有下一页没拉
+      vscroll: false,      // 行数超过阈值，只渲染可视区
+      totalRows: 0,        // 整池行数（后端返回的 total，不是已加载数）
+      loadingMore: false,
+      lastRefreshMode: "quote",
       // 分页：只影响「显示多少条」，不影响导出（导出始终按整个池 / 整批）。
       tablePage: 1,
       poolPage: 1,
@@ -1214,6 +1350,7 @@
       gsItems: [],
       stockCode: "",
       justDragged: false,
+      emptyWarned: false,
       exportOpts: null,
       exportSnapshot: null,
       exportHasSnapshot: false,
@@ -1634,6 +1771,12 @@
         } else {
           state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
         }
+        if (state.paged || state.vscroll) {
+          // 分页后前端手里只有一页，前端排序只会排已加载那段 —— 回到后端重排并从第 0 页开始
+          runQuery(state.lastQueryCodes, { refreshMode: state.lastRefreshMode || "quote", forceLive: false })
+            .catch(() => {});
+          return;
+        }
         renderTable(state.fields, state.rowsRaw);
       });
     }
@@ -1838,6 +1981,11 @@
       const btn = document.getElementById("tableMoreBtn");
       if (btn) {
         btn.addEventListener("click", () => {
+          // 后端还有下一页时，要去后端拉，光在本机翻页是翻不出来的
+          if (state.paged) {
+            loadMorePage();
+            return;
+          }
           state.tablePage += 1;
           renderTable(state.fields, state.rowsRaw);
         });
@@ -1868,18 +2016,122 @@
       }).join("");
     }
 
-    function renderTable(fields, rows) {
+    function renderTable(fields, rows, opts) {
+      const o = opts && typeof opts === "object" ? opts : {};
       fields = asFields(fields);
       state.fields = fields;
-      state.rowsRaw = rows || [];
+      // append=true 是「滚动加载下一页」：接在已加载的行后面，不覆盖
+      state.rowsRaw = o.append ? (state.rowsRaw || []).concat(rows || []) : (rows || []);
       applyColLayout(fields);
+      if (state.vscroll) {
+        renderTableHead(fields);
+        renderVirtual();
+      } else {
+        const all = sortedRows(state.rowsRaw);
+        const limit = state.tablePage * PAGE_SIZE;
+        const shown = all.slice(0, limit);
+        renderTableMore(all.length, limit);
+        renderTableHead(fields);
+        document.getElementById("tableBody").innerHTML = shown.map((row) => `<tr>${rowCellsHtml(fields, row)}</tr>`).join("");
+        state.rowTr = {};
+      }
+      collectColStats(fields, state.rowsRaw);
+      warnIfAllEmpty(fields, state.rowsRaw);
+    }
+
+    // ---- 方案 C：虚拟滚动 ----
+    // 只把可视区那几十行放进 DOM，上下各用一个占位行撑出滚动条高度。
+    // 2228 行时 DOM 节点从 2 万多个降到几十个，内存里也只有已加载的页。
+
+    let measuredRowH = 0;
+    let vscrollRaf = 0;
+
+    function measureRowHeight() {
+      const tr = document.querySelector("#tableBody tr:not(.vspacer)");
+      if (tr && tr.offsetHeight) measuredRowH = tr.offsetHeight;
+      return measuredRowH || 38;
+    }
+
+    function tableScrollWrap() {
+      return document.querySelector(".table-wrap");
+    }
+
+    function renderVirtual() {
+      const fields = state.fields || [];
       const all = sortedRows(state.rowsRaw);
-      const limit = state.tablePage * PAGE_SIZE;
-      const shown = all.slice(0, limit);
-      renderTableMore(all.length, limit);
-      renderTableHead(fields);
-      document.getElementById("tableBody").innerHTML = shown.map((row) => `<tr>${rowCellsHtml(fields, row)}</tr>`).join("");
+      const wrap = tableScrollWrap();
+      const rowH = measureRowHeight();
+      const scrollTop = wrap ? wrap.scrollTop : 0;
+      const viewH = wrap ? wrap.clientHeight : 600;
+      const start = Math.max(0, Math.floor(scrollTop / rowH) - 6);
+      const end = Math.min(all.length, start + Math.ceil(viewH / rowH) + 12);
+      const shown = all.slice(start, end);
+      const cols = Math.max(1, fields.length);
+      const topPad = start > 0 ? `<tr class="vspacer" style="height:${start * rowH}px"><td colspan="${cols}"></td></tr>` : "";
+      const rest = all.length - end;
+      const bottomPad = rest > 0 ? `<tr class="vspacer" style="height:${rest * rowH}px"><td colspan="${cols}"></td></tr>` : "";
+      document.getElementById("tableBody").innerHTML =
+        topPad
+        + shown.map((row) => `<tr data-code="${escAttr(row.code6 || "")}">${rowCellsHtml(fields, row)}</tr>`).join("")
+        + bottomPad;
       state.rowTr = {};
+      // 渲染完再量一次：行高和预估值不一致时（字体/缩放）不会留空档
+      measureRowHeight();
+      renderPagedHint(all.length);
+      maybeLoadMore();
+    }
+
+    function onTableScroll() {
+      if (!state.vscroll) return;
+      if (vscrollRaf) cancelAnimationFrame(vscrollRaf);
+      vscrollRaf = requestAnimationFrame(() => {
+        vscrollRaf = 0;
+        renderVirtual();
+      });
+    }
+
+    function renderPagedHint(loadedCount) {
+      const el = ensureTableMore();
+      if (!el) return;
+      if (!state.paged && !state.vscroll) return;
+      el.style.display = "flex";
+      const loaded = state.rowsRaw.length;
+      const btn = state.loadingMore
+        ? `<span>加载中…</span>`
+        : `<button class="btn sm" type="button" id="tableMoreBtn">加载更多</button>`;
+      el.innerHTML = `<span>已加载 ${loaded} / ${state.totalRows || loaded} 只${state.paged ? "，继续往下滚会自动加载" : ""}。<b>导出 Excel 不受影响</b>，会导出这一批的全部。</span>${btn}`;
+      const b = document.getElementById("tableMoreBtn");
+      if (b) b.addEventListener("click", () => loadMorePage());
+    }
+
+    function maybeLoadMore() {
+      if (!state.paged || state.loadingMore) return;
+      if (state.rowsRaw.length >= state.totalRows) return;
+      const wrap = tableScrollWrap();
+      if (!wrap) return;
+      // 只有真的滚到底部附近才预取下一页，否则一打开就会把整池全拉下来
+      if (wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight > 300) return;
+      loadMorePage();
+    }
+
+    async function loadMorePage() {
+      if (state.loadingMore || !state.paged) return;
+      if (state.rowsRaw.length >= state.totalRows) return;
+      state.loadingMore = true;
+      renderPagedHint();
+      try {
+        await runQuery(state.lastQueryCodes, {
+          append: true,
+          refreshMode: state.lastRefreshMode || "quote",
+          forceLive: state.lastRefreshMode === "full",
+          offset: state.rowsRaw.length,
+          limit: PAGE_LIMIT,
+        });
+      } catch (err) {
+        if (err && err.name !== "AbortError") toast("加载下一页失败：" + (err.message || ""));
+      } finally {
+        state.loadingMore = false;
+      }
     }
 
     // ---- 流式查询：骨架屏 + 边收边填 ----
@@ -1891,7 +2143,8 @@
       applyColLayout(fields);
       renderTableHead(fields);
       const limit = state.tablePage * PAGE_SIZE;
-      const n = Math.max(1, Math.min(total || 0, limit));
+      // 虚拟滚动下骨架也只画可视的那一屏，2228 行不会先造 2228 个空行
+      const n = state.vscroll ? Math.max(1, Math.min(total || 0, 40)) : Math.max(1, Math.min(total || 0, limit));
       const trs = [];
       for (let i = 0; i < n; i += 1) {
         trs.push(`<tr class="skel-row">${fields.map(() => '<td class="skel">&nbsp;</td>').join("")}</tr>`);
@@ -1904,6 +2157,20 @@
 
     function applyStreamRows(rows, stage) {
       const fields = state.fields || [];
+      if (stage === "quote") dbg("首批行情示例行（若这里就是空的，说明行情没取到）", rows && rows[0]);
+      if (state.vscroll) {
+        // 虚拟滚动下 DOM 只有可视的几十行，不能靠 tr 映射去补格子：
+        // 只维护数据，再让 renderVirtual 重画可视区。
+        const map = state.streamRows || {};
+        rows.forEach((row) => {
+          if (row.code6 == null) return;
+          map[row.code6] = map[row.code6] ? Object.assign({}, map[row.code6], row) : row;
+        });
+        state.streamRows = map;
+        state.rowsRaw = Object.values(map);
+        renderVirtual();
+        return;
+      }
       const body = document.getElementById("tableBody");
       const limit = state.tablePage * PAGE_SIZE;
       if (stage === "quote") {
@@ -1945,7 +2212,17 @@
 
     function handleStreamEvent(event, data) {
       const hint = document.getElementById("queryHint");
+      saDebug.streamEvents.push({
+        event,
+        rows: ((data && data.rows) || []).length,
+        stage: data && data.stage,
+        done: data && data.done,
+      });
+      dbg("流式事件", event, data);
       if (event === "meta") {
+        // meta.total 是整池行数（不是本页），据此决定是否启用虚拟滚动
+        state.totalRows = data.total || 0;
+        state.vscroll = state.totalRows > VSCROLL_MIN;
         renderSkeleton(data.fields || [], data.total || 0);
         if (hint) hint.textContent = `共 ${data.total || 0} 只 · 正在取行情…`;
         return;
@@ -1964,13 +2241,19 @@
         return;
       }
       if (event === "done") {
+        // 流式只流了一页，剩下的靠滚动加载
+        state.paged = Boolean(data.has_more) || state.rowsRaw.length < (state.totalRows || 0);
         state.tablePage = 1;
         renderTable(state.fields, state.rowsRaw);
         showQueryIssues(data.issues || []);
         if (hint) {
           const sec = ((data.elapsed_ms || 0) / 1000).toFixed(1);
           const bad = (data.issues || []).length ? " · 有失败，见表格上方" : "";
-          hint.textContent = `${data.rows_count || state.rowsRaw.length} 只 · 用时 ${sec} 秒${bad}`;
+          const loaded = state.rowsRaw.length;
+          const total = state.totalRows || loaded;
+          hint.textContent = loaded < total
+            ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载${bad}`
+            : `${data.rows_count || loaded} 只 · 用时 ${sec} 秒${bad}`;
         }
         return;
       }
@@ -1984,7 +2267,13 @@
       if (state.streamAbort) state.streamAbort.abort();
       const ctrl = new AbortController();
       state.streamAbort = ctrl;
-      const payload = queryPayload(codes, opts);
+      // 流式同样只流一页：首屏更快，前端也不用把整池攒在内存里
+      const payload = queryPayload(codes, {
+        refreshMode: (opts && opts.refreshMode) || "quote",
+        forceLive: opts ? opts.forceLive : undefined,
+        limit: opts && opts.append ? opts.limit : PAGE_LIMIT,
+        offset: opts && opts.append ? opts.offset : 0,
+      });
       const headers = { "Content-Type": "application/json" };
       if (state.token) headers.Authorization = "Bearer " + state.token;
       const res = await fetch("/api/query/stream", {
@@ -2070,6 +2359,16 @@
       const refreshMode = o.refreshMode || "quote";
       base.refresh_mode = refreshMode;
       if (o.fields && o.fields.length) base.fields = o.fields;
+      // 后端分页：让后端只回这一段（total / has_more 由后端算好）
+      if (o.limit) {
+        base.limit = o.limit;
+        base.offset = o.offset || 0;
+      }
+      // 排序交给后端：分页后前端手里只有一页，前端排序只会排已加载的那段
+      if (o.sortKey) {
+        base.sort_key = o.sortKey;
+        base.sort_dir = o.sortDir || "desc";
+      }
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       if (forceLive) base.force_live = true;
       else if (refreshMode === "cache") base.force_live = false;
@@ -2082,14 +2381,19 @@
         const why = m.offline_reason || data.note || "";
         return why ? `离线样例（${why}）` : "离线切片（非实盘）";
       }
-      if (m.status === "probe-failed") return "行情探针失败";
-      if (m.sample_only || m.status === "demo-licence") return "演示证样本";
+      // 「证书额度已用尽」要排在 probe-failed 前面：证书全耗尽时探针必然失败，
+      // 只报「探针失败」会让人以为是网络问题，其实是额度没了。
       const pools = m.licence_pools || {};
       const ren = pools.renewable || {};
       const cons = pools.consumable || {};
       const renAvail = (ren.available || []).length;
       const consAvail = (cons.available || []).length;
-      if ((ren.total || 0) + (cons.total || 0) > 0 && !renAvail && !consAvail) return "证书额度已用尽";
+      if (m.licence_exhausted_all || m.status === "quota-exhausted"
+        || ((ren.total || 0) + (cons.total || 0) > 0 && !renAvail && !consAvail)) {
+        return "证书额度已用尽";
+      }
+      if (m.status === "probe-failed") return "行情探针失败";
+      if (m.sample_only || m.status === "demo-licence") return "演示证样本";
       const pool = m.licence_pool || {};
       if (pool.total && !(pool.available || []).length && !consAvail) return "证书额度已用尽";
       const src = (data.clock && data.clock.source) || "";
@@ -2152,18 +2456,35 @@
 
     async function runQuery(codes, opts) {
       const o = opts && typeof opts === "object" ? opts : { forceLive: !!opts, refreshMode: opts ? "full" : "quote" };
-      if (codes && codes.length) state.lastQueryCodes = codes;
-      else state.lastQueryCodes = null;
+      const appending = Boolean(o.append); // 滚动加载下一页，不重置已有内容
+      if (!appending) {
+        if (codes && codes.length) state.lastQueryCodes = codes;
+        else state.lastQueryCodes = null;
+      }
       const hintEl = document.getElementById("queryHint");
-      hintEl.textContent = "查询中…";
-      showQueryIssues([]);
+      if (!appending) hintEl.textContent = "查询中…";
+      if (!appending) showQueryIssues([]);
+      // 顶部指数先走：请求轻、返回快，让小板块先于大表刷新出来
+      if (!appending) loadBoard().catch(() => {});
       const refreshMode = o.refreshMode || "quote";
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
-      const payload = queryPayload(codes, { refreshMode, forceLive });
+      state.lastRefreshMode = refreshMode;
+      const payload = queryPayload(codes, {
+        refreshMode,
+        forceLive,
+        // 首屏只拉一页；后端会一起回 total / has_more，滚动到底再拉下一页
+        limit: appending ? o.limit : PAGE_LIMIT,
+        offset: appending ? o.offset : 0,
+        sortKey: state.sortKey || "",
+        sortDir: state.sortDir || "desc",
+      });
       if (refreshMode === "cache" && !forceLive) payload.force_live = false;
+      saDebug.lastPayload = payload;
+      dbg("发起查询", payload, "| 侧栏:", state.side, "| 池:", state.pool, "| 流式:", Boolean(o.stream), "| 追加:", appending);
       let data;
       try {
-        if (o.stream && refreshMode !== "snapshot") {
+        // 排序时必须走一次性查询：流式是按池顺序边算边发，没法先排好再发
+        if (o.stream && refreshMode !== "snapshot" && !state.sortKey) {
           // 流式：先出骨架与行情，再逐只补齐；失败自动退回一次性查询
           try {
             await runQueryStream(codes, o);
@@ -2195,7 +2516,16 @@
       }
       const fields = data.fields || [];
       let rows = data.rows || [];
-      if (refreshMode === "quote" && state.rowsRaw && state.rowsRaw.length) {
+      // 后端分页元信息：total 是整池行数，has_more 表示后面还有
+      if (appending) {
+        state.paged = (state.rowsRaw.length + rows.length) < (state.totalRows || 0);
+      } else {
+        state.totalRows = data.total || rows.length;
+        state.paged = Boolean(data.has_more);
+        state.vscroll = state.totalRows > VSCROLL_MIN || rows.length > VSCROLL_MIN;
+      }
+      dbg("分页状态", { total: state.totalRows, loaded: rows.length, paged: state.paged, vscroll: state.vscroll });
+      if (refreshMode === "quote" && !appending && state.rowsRaw && state.rowsRaw.length) {
         rows = mergeQuoteRefreshRows(state.rowsRaw, rows);
       }
       if (!fields.length) {
@@ -2204,8 +2534,8 @@
         return;
       }
       try {
-        state.tablePage = 1;
-        renderTable(fields, rows);
+        if (!appending) state.tablePage = 1;
+        renderTable(fields, rows, { append: appending });
       } catch (renderErr) {
         hintEl.textContent = "表格渲染失败";
         toast(renderErr.message || "表格渲染失败");
@@ -2236,6 +2566,17 @@
       const fetchIssue = quoteFetchIssue(data);
       const warn = fetchIssue ? ` · ${fetchIssue}` : "";
       document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}${qsrc}${asOf}${warn}`;
+      saDebug.lastResult = {
+        pool: data.pool,
+        refresh_mode: data.refresh_mode || refreshMode,
+        rows: (data.rows || []).length,
+        fields: (data.fields || []).length,
+        market: data.market,
+        clock,
+        note: data.note || "",
+        sampleRow: (data.rows || [])[0] || null,
+      };
+      dbg("查询返回", saDebug.lastResult);
       if (state.lastQueryCodes) updateExportScope("筛选一次");
       else updateExportScope(data.pool || scope);
     }
@@ -2455,6 +2796,8 @@
     function expCount() {
       // 当前池（或搜索批次）一共有多少只
       if (state.lastQueryCodes && state.lastQueryCodes.length) return state.lastQueryCodes.length;
+      // 分页模式下 rowsRaw 只是已加载的那几页，整池行数看 total
+      if (state.totalRows) return state.totalRows;
       if (state.rowsRaw && state.rowsRaw.length) return state.rowsRaw.length;
       const pool = (state.pools || []).find((p) => p.id === state.pool);
       return (pool && pool.count) || 0;
@@ -2917,9 +3260,18 @@
       await loadExportShare();
     }
 
+    // 校验不过的自定义规则以前是静默跳过：界面显示「已启用」，实际永远不跑。
+    function toastInvalidRules(data) {
+      const bad = data && data.invalid_rules;
+      if (!bad || !bad.length) return;
+      const names = bad.map((r) => r.name || `#${r.id}`).join("、");
+      toast(`${bad.length} 条自定义规则没生效（${names}）：${bad[0].error}。请到「规则」页改好再开。`);
+    }
+
     async function runMonitor() {
       const data = await api("/monitor/run", { method: "POST", body: "{}" });
       toast(data.count ? `本轮 ${data.count} 条提醒` : "本轮没有新提醒");
+      toastInvalidRules(data);
       await loadMonitor();
     }
 
@@ -3058,13 +3410,27 @@
         .catch(() => {});
     }
 
+    // 抬头指数是小板块，请求轻（后端有 60 秒缓存），先把它请求出去并渲染好，
+    // 再去做大表查询，用户第一眼就能看到顶部有内容，而不是先对着一张空表等。
+    async function primeBoard(timeoutMs = 3000) {
+      try {
+        await Promise.race([
+          loadBoard(),
+          new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+        ]);
+      } catch {
+        /* 顶部失败不挡主流程：占位会保持「—」 */
+      }
+      startBoardClock(); // 之后交给定时轮询（此时前端缓存命中，不会重复打接口）
+    }
+
     async function afterLogin(username, token) {
       state.token = token;
       sessionStorage.setItem("sa_token", token);
       document.getElementById("userLabel").textContent = username + " · 已登录";
       document.getElementById("loginMask").style.display = "none";
       await loadHealth();
-      startBoardClock();
+      await primeBoard(); // 顶部指数优先
       await loadWatch();
       await loadPools();
       await bootTableQuery();
@@ -3121,6 +3487,16 @@
     document.getElementById("licRenewableAdd").addEventListener("click", () => addLicence("renewable", "licRenewableInput").catch((e) => toast(e.message)));
     document.getElementById("licConsumableAdd").addEventListener("click", () => addLicence("consumable", "licConsumableInput").catch((e) => toast(e.message)));
     document.getElementById("licPrefSave").addEventListener("click", () => saveLicencePreference().catch((e) => toast(e.message)));
+    // 切到「固定用这一张」时才显示选证；切回自动换时显示池优先级
+    document.querySelectorAll('input[name="licMode"]').forEach((el) => {
+      el.addEventListener("change", () => {
+        const isPinned = el.value === "pinned" && el.checked;
+        const sel = document.getElementById("licManualPick");
+        const row = document.getElementById("licScheduleRow");
+        if (sel) sel.style.display = isPinned ? "" : "none";
+        if (row) row.style.display = isPinned ? "none" : "";
+      });
+    });
     document.querySelectorAll('input[name="licMode"]').forEach((el) => {
       el.addEventListener("change", () => {
         if (!el.checked) return;
@@ -3182,6 +3558,7 @@
         try {
           const data = await api("/monitor/jobs/" + run.dataset.run + "/run", { method: "POST" });
           toast(data.count ? `本条 ${data.count} 条提醒` : "这条没有新提醒");
+          toastInvalidRules(data);
           await loadMonitor();
         } catch (err) {
           toast(err.message);
@@ -3226,6 +3603,9 @@
     document.getElementById("indexChips").addEventListener("click", onPoolChipClick);
     document.getElementById("exchangeChips").addEventListener("click", onPoolChipClick);
     document.getElementById("boardChips").addEventListener("click", onPoolChipClick);
+    // 虚拟滚动：表格区滚动时重画可视区，接近底部时预取下一页
+    const tableWrapEl = document.querySelector(".table-wrap");
+    if (tableWrapEl) tableWrapEl.addEventListener("scroll", onTableScroll, { passive: true });
     // 抬头里的池条目（如北证50）：先切到「行情」侧栏再选池，避免导出范围和屏幕上的表不一致。
     document.getElementById("boardBar").addEventListener("click", (e) => {
       const el = e.target.closest("[data-pool]");
@@ -3650,6 +4030,10 @@
                   state.sessionId = ev.session_id;
                   sessionStorage.setItem("sa_session", String(ev.session_id));
                 }
+              } else if (ev.type === "error") {
+                // 服务端把流里的异常变成 error 事件，前端要显示出来，而不是当作断流
+                bot.innerHTML = `⚠️ ${escHtml(ev.message || "对话失败")}`;
+                toast(ev.message || "对话失败");
               }
             }
           }
@@ -3953,23 +4337,55 @@
       </div>`;
     }
 
+    // 两种类型的通俗说法 + 用尽后果
+    const POOL_PLAIN = {
+      renewable: "每天会恢复的",
+      consumable: "用完就没的",
+    };
+    const POOL_AFTER = {
+      renewable: "当天用完会停下报错，第二天自动恢复",
+      consumable: "额度用尽后会从列表里去掉，需要重新添加",
+    };
+
     function renderLicencePools(pools) {
       if (!pools) return;
-      const pref = pools.preference || {};
-      const mode = pref.mode || "auto";
+      const pinned = (pools.pinned || (pools.preference || {}).pinned || "").trim();
+      const schedule = pools.schedule || (pools.preference || {}).schedule || "auto";
+      // 第一级：自动换 / 固定用这一张
       document.querySelectorAll('input[name="licMode"]').forEach((el) => {
-        el.checked = el.value === mode;
+        el.checked = el.value === (pinned ? "pinned" : "auto");
       });
+      // 第二级：自动换时优先用哪种
+      document.querySelectorAll('input[name="licSchedule"]').forEach((el) => {
+        el.checked = el.value === schedule;
+      });
+      const schedRow = document.getElementById("licScheduleRow");
+      if (schedRow) schedRow.style.display = pinned ? "none" : "";
+      const pinNote = document.getElementById("licPinnedNote");
       const manualSel = document.getElementById("licManualPick");
-      const all = []
-        .concat((pools.renewable && pools.renewable.licences) || [])
-        .concat((pools.consumable && pools.consumable.licences) || []);
+      const renList = (pools.renewable && pools.renewable.licences) || [];
+      const consList = (pools.consumable && pools.consumable.licences) || [];
+      const all = [].concat(renList).concat(consList);
       if (manualSel) {
-        manualSel.style.display = mode === "manual" ? "" : "none";
-        manualSel.innerHTML = all.map((t) =>
-          `<option value="${esc(t)}"${t === (pref.manual_licence || "") ? " selected" : ""}>${esc(maskLicence(t))}</option>`
-        ).join("");
+        manualSel.style.display = pinned ? "" : "none";
+        manualSel.innerHTML = all.map((t) => {
+          const kind = consList.includes(t) ? "consumable" : "renewable";
+          return `<option value="${esc(t)}"${t === pinned ? " selected" : ""}>${esc(maskLicence(t))}（${esc(POOL_PLAIN[kind])}）</option>`;
+        }).join("");
         if (!all.length) manualSel.innerHTML = `<option value="">（池中无证书）</option>`;
+      }
+      if (pinNote) {
+        if (!pinned) {
+          pinNote.style.display = "none";
+        } else {
+          const kind = consList.includes(pinned) ? "consumable" : "renewable";
+          const st = pools.pinned_state || {};
+          let extra = "";
+          if (!st.in_pool) extra = " ⚠️ 这张现在不在池里，取数会直接报错。";
+          else if (st.exhausted_today) extra = " ⚠️ 这张今天已用尽，明天自动恢复。";
+          pinNote.style.display = "";
+          pinNote.innerHTML = `固定用 <code>${esc(maskLicence(pinned))}</code>：属于「${esc(POOL_PLAIN[kind])}」，${esc(POOL_AFTER[kind])}。${esc(extra)}`;
+        }
       }
       const active = pools.active || "";
       const ap = pools.active_pool || "";
@@ -4029,9 +4445,18 @@
 
     async function saveLicencePreference() {
       const mode = (document.querySelector('input[name="licMode"]:checked') || {}).value || "auto";
-      const manual = mode === "manual" ? (document.getElementById("licManualPick").value || "").trim() : "";
-      await api("/licences/preference", { method: "PUT", body: JSON.stringify({ mode, manual_licence: manual }) });
-      toast("已保存证书调度");
+      const body = {};
+      if (mode === "pinned") {
+        const pinned = (document.getElementById("licManualPick").value || "").trim();
+        if (!pinned) return toast("先选一张要固定的证书");
+        body.schedule = "auto";
+        body.pinned = pinned;
+      } else {
+        body.schedule = (document.querySelector('input[name="licSchedule"]:checked') || {}).value || "auto";
+        body.pinned = "";
+      }
+      await api("/licences/preference", { method: "PUT", body: JSON.stringify(body) });
+      toast(mode === "pinned" ? "已固定这张证书" : "已保存证书调度");
       await loadLicences();
       startBoardClock();
     }
@@ -4230,6 +4655,7 @@
         try {
           const data = await api("/monitor/jobs/" + run.dataset.run + "/run", { method: "POST" });
           toast(data.count ? `本条 ${data.count} 条提醒` : "这条没有新提醒");
+          toastInvalidRules(data);
           await loadMonitor();
         } catch (err) {
           toast(err.message);

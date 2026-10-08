@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,8 @@ from src.tools.excel_tools import excel_diff, excel_export, excel_read
 from src.tools.research_tools import export_share
 from src.tools.warehouse_tools import warehouse_get
 
+log = logging.getLogger("stock.api")
+
 router = APIRouter()
 market = MarketClient()
 engine = QueryEngine(market)
@@ -109,6 +112,13 @@ class QueryIn(BaseModel):
     x_date: str | None = None
     force_live: bool = False
     refresh_mode: str = "full"
+    # 分页：offset / limit 只对返回的行生效，池本身照旧全量计算（total 仍是整池行数）。
+    # limit=0 表示不分页（兼容旧行为）。
+    offset: int = 0
+    limit: int = 0
+    # 排序交给后端：分页后前端只拿到一页，前端排序只能排已加载的那一段，会排错。
+    sort_key: str = ""
+    sort_dir: str = "desc"
 
 
 class DiffIn(BaseModel):
@@ -249,7 +259,11 @@ class LicenceRemoveIn(BaseModel):
 
 
 class LicencePrefIn(BaseModel):
-    mode: str = "auto"
+    # 新格式：schedule（怎么换）+ pinned（锁不锁）
+    schedule: str = "auto"
+    pinned: str = ""
+    # 旧格式兼容（前端旧版本 / 脚本会用）
+    mode: str = ""
     manual_licence: str = ""
 
 
@@ -286,10 +300,28 @@ def delete_licence(body: LicenceRemoveIn, user: User = Depends(current_user)):
     return {"ok": True, "pools": LicenceRegistry.shared().status()}
 
 
+def _legacy_preference(mode: str, manual_licence: str) -> tuple[str, str]:
+    """旧格式 {mode, manual_licence} → 新格式 (schedule, pinned)。
+
+    旧 mode=manual 其实是「锁定这张」，和 auto/renewable/consumable 不是同一维度。
+    """
+    m = (mode or "auto").strip().lower()
+    if m == "manual":
+        return "auto", (manual_licence or "").strip()
+    if m in ("auto", "renewable", "consumable"):
+        return m, ""
+    return "auto", ""
+
+
 @router.put("/licences/preference")
 def put_licence_preference(body: LicencePrefIn, user: User = Depends(current_user)):
+    # 兼容旧调用：没给新字段就用旧的 mode / manual_licence
+    if not body.schedule and not body.pinned and (body.mode or body.manual_licence):
+        schedule, pinned = _legacy_preference(body.mode, body.manual_licence)
+    else:
+        schedule, pinned = body.schedule, body.pinned
     try:
-        LicenceRegistry.shared().set_preference(body.mode, body.manual_licence)
+        LicenceRegistry.shared().set_preference(schedule, pinned)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _reload_licence_runtime()
@@ -634,6 +666,37 @@ def _user_preset(user: User, db: Session) -> str:
     return (pref.preset or PRESET_WATCH).strip().lower()
 
 
+def _sort_rows(rows: list[dict], key: str, direction: str) -> list[dict]:
+    """按某一列排序，空值永远排在最后（不管升序降序）。"""
+    key = (key or "").strip()
+    if not key or not rows:
+        return rows
+    desc = (direction or "desc").strip().lower() != "asc"
+
+    def sortable(row: dict):
+        v = row.get(key)
+        if v is None or v == "" or v == "—":
+            return None
+        if isinstance(v, bool):
+            return float(v)
+        if isinstance(v, (int, float)):
+            return float(v)
+        text = str(v).strip().replace(",", "").replace("%", "")
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def sort_key(row: dict):
+        num = sortable(row)
+        return num if num is not None else float("-inf")
+
+    filled = [r for r in rows if sortable(r) is not None]
+    empty = [r for r in rows if sortable(r) is None]
+    filled.sort(key=sort_key, reverse=desc)
+    return filled + empty
+
+
 def _prepare_query(body: QueryIn, user: User, db: Session):
     fields = body.fields or _user_fields(user, db)
     if body.codes:
@@ -662,6 +725,11 @@ def _execute_query(
     on_quotes: Any = None,
     on_row: Any = None,
     on_issue: Any = None,
+    offset: int = 0,
+    limit: int = 0,
+    sort_key: str = "",
+    sort_dir: str = "desc",
+    persist_snapshot: bool = True,
 ) -> dict:
     ensure_market()
     mode = (refresh_mode or "full").strip().lower()
@@ -677,11 +745,16 @@ def _execute_query(
             raise HTTPException(status_code=404, detail="尚无表级快照，请先点「查询」或「全量更新」")
         rows = rows_from_snapshot(snap, insts, fields, cards)
         clock_meta = snap.get("clock") or {}
+        # 快照读出来就是整表，分页字段按「一页装完」填，保持响应形状和 /query/run 一致。
         out = {
             "fields": _field_view(fields),
             "rows": rows,
             "pool": pool_name,
             "count": len(rows),
+            "total": len(rows),
+            "offset": 0,
+            "limit": len(rows),
+            "has_more": False,
             "market": market.health(),
             "clock": {
                 "as_of": clock_meta.get("as_of") or "",
@@ -730,11 +803,21 @@ def _execute_query(
     )
     codes = [i.code_full for i in insts]
     clock_meta = engine.last_clock_meta or {}
+    # 排序 + 分页：字段值先算出来才排得准，切片只影响返回给前端的那一段。
+    ordered = _sort_rows(rows, sort_key, sort_dir)
+    total = len(ordered)
+    start = max(0, int(offset or 0))
+    page = ordered[start : start + limit] if limit and limit > 0 else ordered
     out = {
         "fields": _field_view(fields),
-        "rows": rows,
+        "rows": page,
         "pool": pool_name,
-        "count": len(rows),
+        "count": len(page),
+        # total 是整池行数（不是本页行数），前端据此判断还要不要再拉下一页。
+        "total": total,
+        "offset": start,
+        "limit": int(limit or 0) or total,
+        "has_more": start + len(page) < total,
         "market": market.health(),
         "clock": {
             "as_of": clock_meta.get("as_of") or ((rows[0].get("as_of") if rows else "") or ""),
@@ -747,8 +830,14 @@ def _execute_query(
     }
     if mode == "cache":
         out["slow_cache"] = engine.last_slow_cache or {}
-    # 现价整批失败时不覆盖上次快照，避免下次登录直接打开一张空表。
-    if mode in ("cache", "full") and not any(item.get("level") == "error" for item in out["issues"]):
+    # 快照存的是整表（切片前）。分页只是少传给前端，不能把快照也切了。
+    # 流式分页时 insts 本身就是一段，这时不写快照，避免把半张表当成整表存下来。
+    # 现价整批失败时也不覆盖上次快照，避免下次登录直接打开一张空表。
+    if (
+        mode in ("cache", "full")
+        and persist_snapshot
+        and not any(item.get("level") == "error" for item in out["issues"])
+    ):
         from src.query.snapshot import save_table_snapshot
 
         save_table_snapshot(
@@ -756,7 +845,7 @@ def _execute_query(
             pool=pool_name,
             field_keys=fields,
             codes=codes,
-            rows=rows,
+            rows=ordered,
             clock=out.get("clock"),
             refresh_mode=mode,
         )
@@ -800,6 +889,10 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
             x_date=body.x_date,
             force_live=body.force_live,
             refresh_mode=body.refresh_mode,
+            offset=body.offset,
+            limit=body.limit,
+            sort_key=body.sort_key,
+            sort_dir=body.sort_dir,
         )
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
@@ -864,6 +957,13 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     insts, fields, pool_name, meta, cards = _prepare_query(body, user, db)
     extra = extra_for(db, user)
     started = time.time()
+    # 流式同样分页：只算、只流这一段，首屏更快，前端也不用把整池攒在内存里。
+    # meta.total 仍然报整池行数，前端据此决定要不要再拉下一页。
+    total_insts = len(insts)
+    paged = bool(body.limit and body.limit > 0)
+    if paged:
+        start = max(0, int(body.offset or 0))
+        insts = insts[start : start + body.limit]
 
     def frame(event: str, data: dict) -> bytes:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
@@ -897,11 +997,14 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 on_quotes=on_quotes,
                 on_row=on_row,
                 on_issue=on_issue,
+                persist_snapshot=not paged,
             )
             out.put((
                 "done",
                 {
                     "rows_count": len(result.get("rows") or []),
+                    "total": total_insts,
+                    "has_more": bool(paged and start + len(insts) < total_insts),
                     "elapsed_ms": int((time.time() - started) * 1000),
                     "issues": result.get("issues") or [],
                 },
@@ -914,7 +1017,15 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     threading.Thread(target=pump, name="query-stream", daemon=True).start()
 
     def events():
-        yield frame("meta", {"fields": _field_view(fields), "total": len(insts), "pool": pool_name, "note": meta.get("note") or ""})
+        yield frame(
+            "meta",
+            {
+                "fields": _field_view(fields),
+                "total": total_insts,
+                "pool": pool_name,
+                "note": meta.get("note") or "",
+            },
+        )
         pending: list[dict] = []
         sent = 0
         while True:
@@ -1177,19 +1288,29 @@ def agent_chat(body: ChatIn, user: User = Depends(current_user), db: Session = D
     if not question:
         question = "请解析我粘贴的表格，并用接口补全这些股票的行情。"
     agent = pick_agent(question, body.agent)
+    # 指定了 session_id 却找不到就该报错：以前会静默新建，session_id 悄悄变化、历史链断裂
+    if body.session_id and not get_session(db, user, body.session_id):
+        raise HTTPException(status_code=404, detail="没有这轮对话，请刷新会话列表")
     row = get_session(db, user, body.session_id) or create_session(db, user, agent, question)
+    # 流式里要用到会话 id：那时这个 db 已经关了，再碰 ORM 对象会 DetachedInstanceError
+    session_row_id = row.id
     history = history_for_ctx(row)
     ctx = _tool_ctx(user, db)
+    # 先把用户这一句落库：流式中途断开（刷新 / 关页面 / 断网）时不至于整轮对话消失
+    append_turns(db, row, [{"role": "user", "content": question}], agent=agent)
+    db.commit()
 
     def persist(final: dict) -> dict:
         store = SessionLocal()
         try:
-            current = store.get(AgentSession, row.id) or create_session(store, user, agent, question)
+            current = store.get(AgentSession, session_row_id)
+            if current is None:
+                return {**final, "session_id": session_row_id}
+            # 用户那一句在流开始前已写入，这里只补助手这一句
             append_turns(
                 store,
                 current,
                 [
-                    {"role": "user", "content": question},
                     {
                         "role": "assistant",
                         "content": final.get("answer") or "",
@@ -1213,18 +1334,23 @@ def agent_chat(body: ChatIn, user: User = Depends(current_user), db: Session = D
 
     def events():
         final = {"answer": "", "cites": [], "tools": [], "agent": agent}
-        stream = (
-            stream_researcher(question, ctx, attachments, history)
-            if agent == "researcher"
-            else iter_agent(question, ctx, agent=agent, attachments=attachments, history=history, stream_tokens=True)
-        )
-        for ev in stream:
-            if ev.get("type") == "done":
-                final = ev
-                continue
-            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-        done = persist(final)
-        yield f"data: {json.dumps({'type': 'done', **done}, ensure_ascii=False)}\n\n"
+        try:
+            # 建流这一步也可能抛（工具导入、会话写入），要一起兜住
+            stream = (
+                stream_researcher(question, ctx, attachments, history)
+                if agent == "researcher"
+                else iter_agent(question, ctx, agent=agent, attachments=attachments, history=history, stream_tokens=True)
+            )
+            for ev in stream:
+                if ev.get("type") == "done":
+                    final = ev
+                    continue
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            done = persist(final)
+            yield f"data: {json.dumps({'type': 'done', **done}, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # noqa: BLE001 - 流里的异常必须变成 error 事件，否则前端只看到断流
+            log.exception("agent 流式对话失败")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc) or '对话失败'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -1476,6 +1602,7 @@ def _alert_payload(i: Alert) -> dict:
         "created_at": i.created_at.isoformat() if i.created_at else None,
         "hit_price": i.hit_price,
         "hit_date": i.hit_date or "",
+        "as_of": i.as_of or "",
         "review_status": i.review_status or "pending",
         "review_label": REVIEW_LABELS.get(i.review_status or "pending", i.review_status or "pending"),
         "review_return_pct": i.review_return_pct,

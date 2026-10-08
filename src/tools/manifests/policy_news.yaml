@@ -1,10 +1,10 @@
 id: policy_news
 name: 产业政策
 version: 0.1.0
-enabled: false
-reason: 等待资讯 Tool
+enabled: true
+reason: 数据源就是用户在监控「偏好」里配的白名单 URL / RSS；没配源时会提示去添加
 kind: web
-description: 检索与自选行业相关的产业政策。数据源未接时保持关闭。
+description: 按行业或关键词检索已配白名单的产业政策。不是全网搜索，只查用户登记过的源。
 input_schema:
   type: object
   properties:

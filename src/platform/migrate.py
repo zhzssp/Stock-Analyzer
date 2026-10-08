@@ -38,6 +38,8 @@ _COLUMNS = {
         ("review_close", "FLOAT"),
         ("reviewed_at", "DATETIME"),
         ("review_note", "TEXT DEFAULT ''"),
+        # 命中时的行情档位。以前只拼进 detail 文本，结构化字段丢了，复盘没法按档位筛。
+        ("as_of", "VARCHAR(32) DEFAULT ''"),
     ],
 }
 

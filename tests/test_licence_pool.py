@@ -41,7 +41,6 @@ def test_licence_unusable_is_not_quota():
 
 def test_client_rotates_to_next_licence_on_quota_error(monkeypatch, tmp_path):
     """额度用尽时 _get 要自动换下一张，并把用尽的那张记进 exhausted（不打真实接口）。"""
-    from src.market import client as client_mod
     from src.market.client import MarketClient
     from src.market.licence_registry import LicenceRegistry
 
@@ -58,14 +57,28 @@ def test_client_rotates_to_next_licence_on_quota_error(monkeypatch, tmp_path):
 
     calls = []
 
-    def fake_get(url, timeout=None):
+    def fake_get(self, url):
         calls.append(url)
         if len(calls) == 1:
             return Resp("101:Licence证书当日次数已超出")
         return Resp('{"ok":1}')
 
-    monkeypatch.setattr(client_mod.httpx, "get", fake_get)
+    # 打桩打在 _http_get 上：这里要验的是换证逻辑，不该绑死在某一种连接方式上
+    # （长连接池 / 短连接 / 自愈重试都走同一个入口）。
+    monkeypatch.setattr(MarketClient, "_http_get", fake_get)
 
+    # 先落一份干净的状态文件：否则文件不存在时会走 _migrate_legacy()，
+    # 把本机 data/ 里的旧池（.env / licence_pool.json）读进来，测试就不再只跟 KEY-A/KEY-B 有关。
+    (tmp_path / "reg.json").write_text(
+        json.dumps(
+            {
+                "preference": {"schedule": "auto", "pinned": ""},
+                "renewable": {"date": date.today().isoformat(), "licences": [], "exhausted": []},
+                "consumable": {"licences": []},
+            }
+        ),
+        encoding="utf-8",
+    )
     reg = LicenceRegistry(state_path=tmp_path / "reg.json", sync_env=False)
     reg.add("renewable", "KEY-A")
     reg.add("renewable", "KEY-B")

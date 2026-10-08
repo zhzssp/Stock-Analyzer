@@ -40,6 +40,11 @@ def on_watch_event(msg: dict) -> None:
         notify_webhook(msg)
 
 
+def on_review_event(msg: dict) -> None:
+    """复盘完成。以前该事件没有任何订阅者（发布即丢弃），现在至少落到本机日志。"""
+    notify_log(msg)
+
+
 _attached = False
 
 
@@ -50,6 +55,7 @@ def attach() -> None:
     bus.subscribe("watch.hit", on_watch_event)
     bus.subscribe("watch.digest", on_watch_event)
     bus.subscribe("universe.changed", on_watch_event)
+    bus.subscribe("watch.reviewed", on_review_event)
     _attached = True
 
 

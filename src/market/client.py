@@ -21,6 +21,68 @@ class MarketError(RuntimeError):
     pass
 
 
+class LicenceExhaustedError(MarketError):
+    """池里还有证，但今天一张都派不出来。与「没配证书 / 网络不通」要分开报。"""
+
+
+# 单次请求的默认超时（秒）；共享连接池按次覆盖，探针的短超时照旧生效。
+DEFAULT_HTTP_TIMEOUT = 30.0
+
+# 长连接被服务端掐断时会抛这几类：空闲超时 / 网关回收 / 半开连接。
+# 注意不要用 httpx.TransportError 兜底 —— 超时也是它的子类，超时不该重建连接。
+_STALE_CONNECTION_ERRORS = (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError, httpx.WriteError)
+
+
+def _is_stale_connection(exc: BaseException) -> bool:
+    """这条连接是不是已经不能用了。
+
+    最后一条是并发窗口：一个线程判定连接被掐断、把池关了，另一个线程手里的旧 client
+    还在发请求，httpx 会抛 RuntimeError（不是 httpx 的子类，只能按消息认）。
+    """
+    if isinstance(exc, _STALE_CONNECTION_ERRORS):
+        return True
+    return isinstance(exc, RuntimeError) and "has been closed" in str(exc)
+
+_HTTP_POOL: httpx.Client | None = None
+_HTTP_POOL_LOCK = threading.Lock()
+
+
+def shared_http_pool() -> httpx.Client:
+    """进程内唯一的麦蕊连接池。httpx.Client 线程安全，查询并发可共享。
+
+    不设 base_url：mairui_base 在运行期可被改（换数据源 / 验证脚本），继续传绝对 URL。
+    """
+    global _HTTP_POOL
+    if _HTTP_POOL is not None:
+        return _HTTP_POOL
+    with _HTTP_POOL_LOCK:
+        if _HTTP_POOL is None:
+            workers = max(1, int(getattr(settings, "query_workers", 0) or 4))
+            keep = int(getattr(settings, "http_keepalive_connections", 0) or 0) or max(8, workers + 4)
+            total = int(getattr(settings, "http_max_connections", 0) or 0) or max(20, keep * 4)
+            _HTTP_POOL = httpx.Client(
+                timeout=DEFAULT_HTTP_TIMEOUT,
+                limits=httpx.Limits(max_connections=total, max_keepalive_connections=keep),
+            )
+        return _HTTP_POOL
+
+
+def reset_http_pool() -> None:
+    """关掉旧连接，下次请求重新建。
+
+    两种时机调用：① 判定为「连接被掐断」后自愈；② 服务关闭时释放 socket。
+    """
+    global _HTTP_POOL
+    with _HTTP_POOL_LOCK:
+        old, _HTTP_POOL = _HTTP_POOL, None
+    if old is None:
+        return
+    try:
+        old.close()
+    except Exception:  # noqa: BLE001 - 关连接这件事本身不能再抛
+        pass
+
+
 class MarketClient:
     """Only module allowed to talk to Mairui.
 
@@ -57,35 +119,79 @@ class MarketClient:
         key = (licence or self.licence or (reg.active() if reg else "")).strip()
         return f"{settings.mairui_base}{path}/{key}"
 
+    def _http_get(self, url: str) -> httpx.Response:
+        """所有对麦蕊的 GET 都走这里。
+
+        默认复用长连接（省掉每次请求的 TCP + TLS 握手）；HTTP_KEEPALIVE=0 时退回
+        httpx.get，与改动前逐字等价，用来做 A/B 对比和回滚。
+
+        超时按次传参，所以启动探针临时把 _timeout 调小的语义完全保留。
+        """
+        if not getattr(settings, "http_keepalive", True):
+            return httpx.get(url, timeout=self._timeout)
+        for attempt in (0, 1):
+            try:
+                return shared_http_pool().get(url, timeout=self._timeout)
+            except Exception as exc:  # noqa: BLE001 - 只挑「连接坏了」的出来重试
+                if attempt or not _is_stale_connection(exc):
+                    raise
+                # 池里的连接已经被服务端关了，不重建的话后面每一次请求都会失败。
+                # 代价是多打一次请求（服务端可能已计入），但比整轮查询全崩划算。
+                reset_http_pool()
+        raise MarketError("网络异常：连接被服务端关闭")
+
     def refresh_pool(self) -> None:
-        if self.offline or not self._registry:
+        reg = getattr(self, "_registry", None)
+        if self.offline or not reg:
             return
-        self._registry.repair()
+        reg.repair()
         # 池子空到要 repair 了，说明之前判「不可用」的判断可能只是暂时的，给一次重试机会。
         self._unusable.clear()
         self.licence = self._registry.active() or self.licence
         if self.status in ("unchecked", "offline", "sample-only", "probe-failed"):
+            # 今天全耗尽：再探也只是白烧请求（每一张都要真发一次才知道它用尽），等次日恢复。
+            if reg.all_exhausted_today():
+                self.status = "quota-exhausted"
+                return
             self._probe()
 
     def _get(self, path: str) -> Any:
         if self.offline:
             raise MarketError("offline mode: live API disabled")
-        reg = self._registry
+        reg = getattr(self, "_registry", None)
         if not reg:
             raise MarketError("未配置麦蕊证书")
         if not reg.iteration_plan():
             self.refresh_pool()
+        if not reg.iteration_plan():
+            # 锁定了某一张却交不出来：不能悄悄退回调度去用别的证，必须说清楚。
+            pinned_state = reg.pinned_state() if hasattr(reg, "pinned_state") else {}
+            if pinned_state.get("pinned"):
+                self.status = "quota-exhausted"
+                if not pinned_state.get("in_pool"):
+                    raise LicenceExhaustedError(
+                        "你锁定的那张证书已不在池中（额度用完就会被移除）。请到「证书池」重新选一张，或改回自动换证。"
+                    )
+                raise LicenceExhaustedError(
+                    "你锁定的那张证书今日额度已用尽（每天会恢复的类型，明天自动恢复）。"
+                    "现在就要用别的证，请到「证书池」改回自动换证。"
+                )
+            # 到这里说明池里真的派不出证了。分清「今天用尽」和「压根没配」，别让界面只显示探针失败。
+            if reg.all_exhausted_today():
+                self.status = "quota-exhausted"
+                raise LicenceExhaustedError("所有证书今日额度已用尽（每日刷新池次日自动恢复；长期池用尽后需重新添加）")
+            raise MarketError("证书池为空：请在工作台「证书池」中添加证书")
         last_error = "麦蕊证书池已全部用尽"
         for _pool_kind, lic in list(reg.iteration_plan()):
             if not lic or lic in self._unusable:
                 continue
             url = self._url(path, lic)
             try:
-                resp = httpx.get(url, timeout=self._timeout)
+                resp = self._http_get(url)
                 if resp.status_code == 429:
                     # 429 是被限频，不等于这张证额度用尽：缓一下，同一张再试一次。
                     time.sleep(0.8)
-                    resp = httpx.get(url, timeout=self._timeout)
+                    resp = self._http_get(url)
                 if is_quota_error(resp.status_code, resp.text):
                     last_error = f"Licence 额度已用尽: {lic[:8]}…"
                     self._switch_licence(reg, lic, "quota", f"额度/限频用尽 → 换下一张（HTTP {resp.status_code}）")
@@ -111,6 +217,9 @@ class MarketClient:
                 raise MarketError(str(exc)) from exc
             except Exception as exc:
                 raise MarketError(str(exc)) from exc
+        if reg.all_exhausted_today():
+            self.status = "quota-exhausted"
+            raise LicenceExhaustedError("所有证书今日额度已用尽（每日刷新池次日自动恢复；长期池用尽后需重新添加）")
         raise MarketError(last_error)
 
     def _switch_licence(self, reg, lic: str, kind: str, detail: str) -> None:
@@ -186,6 +295,11 @@ class MarketClient:
             if stamp is not None and slot_start() == slot_start(stamp):
                 self.status = "live"
                 return
+        # 池里还有证但今天全耗尽：别再发请求去试，试一次烧一次。
+        reg = getattr(self, "_registry", None)
+        if reg is not None and reg.all_exhausted_today():
+            self.status = "quota-exhausted"
+            return
         if self.licence == settings.demo_licence:
             self.sample_only = True
             self.status = "demo-licence"
@@ -281,6 +395,9 @@ class MarketClient:
             "licence_switches": getattr(self, "licence_switches", 0),
             "licence_unusable": sorted({x[:8] + "…" for x in getattr(self, "_unusable", set())}),
             "licence_active_pool": pools.get("active_pool") if pools else "",
+            # 池里还有证、但今天一张都派不出来。与「没配证书」「网络不通」分开，界面才能说清。
+            "licence_exhausted_all": bool(pools and pools.get("all_exhausted_today")),
+            "licence_exhaust_counts": (pools or {}).get("exhaust_counts_today") or {},
             "licence_pools": pools,
             "licence_pool": legacy_pool,
         }
@@ -630,6 +747,16 @@ class MarketClient:
             pool = fixtures.LIMIT_UP if key == "up" else fixtures.LIMIT_DOWN
             return set(pool)
         d = day or date.today().isoformat()
+        # 池子几分钟内不会变，但监控每 5 分钟扫一次 —— 加一层短 TTL，别每次都打接口。
+        # 不走 _slow_load：那条要求 refresh_mode=cache（只服务慢字段），而池是盘中实时数据。
+        ttl = int(getattr(settings, "limit_pool_ttl_sec", 0) or 0)
+        cache_key = f"limit_pool_{key}_{d}"
+        if ttl > 0:
+            from src.market.slow_cache import read_fresh
+
+            cached = read_fresh(cache_key, ttl)
+            if isinstance(cached, list) and cached:
+                return {str(x) for x in cached}
         path = "/hslt/ztgc" if key == "up" else "/hslt/dtgc"
         data = self._try_get(f"{path}/{d}") or []
         codes: set[str] = set()
@@ -640,6 +767,11 @@ class MarketClient:
             c6 = code6_of(dm) if dm else ""
             if c6:
                 codes.add(c6)
+        # 取空不缓存：否则一次网络抖动会把「今天没有涨停」这个假结论缓存住
+        if ttl > 0 and codes:
+            from src.market.slow_cache import write
+
+            write(cache_key, sorted(codes))
         return codes
 
     def finance(self, inst: Instrument) -> dict:
@@ -657,8 +789,10 @@ class MarketClient:
         try:
             psi = self._get(f"/hsstock/financial/pershareindex/{inst.code_full}")
             row = psi[0] if isinstance(psi, list) else psi
-            for key in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
-                out[key] = row.get(key)
+            # 千万别把循环变量写成 key：外层 key 是缓存键，被覆盖后缓存会写去别处，
+            # 结果就是每次查询都重新拉财务（每只 3 次请求白烧）。
+            for field in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
+                out[field] = row.get(field)
         except MarketError as exc:
             self.note_issue("finance", str(exc), inst.code6)
         try:
@@ -696,9 +830,9 @@ class MarketClient:
             row = psi
         else:
             row = {}
-        for key in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
-            if key in row:
-                out[key] = row.get(key)
+        for field in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
+            if field in row:
+                out[field] = row.get(field)
         income, err = self._get_quiet(f"/bj/financial/income/{inst.code_full}")
         if err:
             self.note_issue("finance", err, inst.code6)
