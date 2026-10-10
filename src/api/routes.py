@@ -119,6 +119,8 @@ class QueryIn(BaseModel):
     # 排序交给后端：分页后前端只拿到一页，前端排序只能排已加载的那一段，会排错。
     sort_key: str = ""
     sort_dir: str = "desc"
+    # 导出确认句对应的文件名说明，如「沪市全部_看盘」。只影响文件名，不改变取数范围。
+    export_label: str = ""
 
 
 class DiffIn(BaseModel):
@@ -732,8 +734,10 @@ def _execute_query(
     sort_key: str = "",
     sort_dir: str = "desc",
     persist_snapshot: bool = True,
+    file_label: str = "",
 ) -> dict:
     ensure_market()
+    file_label = (file_label or "").strip()[:80]
     mode = (refresh_mode or "full").strip().lower()
     if mode not in ("quote", "cache", "full", "snapshot"):
         mode = "full"
@@ -772,7 +776,7 @@ def _execute_query(
             },
         }
         if do_export:
-            path = write_query_xlsx(rows, fields, pool_name)
+            path = write_query_xlsx(rows, fields, pool_name, file_label=file_label)
             db = SessionLocal()
             try:
                 rec = record_artifact(
@@ -852,7 +856,7 @@ def _execute_query(
             refresh_mode=mode,
         )
     if do_export:
-        path = write_query_xlsx(rows, fields, pool_name)
+        path = write_query_xlsx(rows, fields, pool_name, file_label=file_label)
         db = SessionLocal()
         try:
             rec = record_artifact(
@@ -895,6 +899,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
             limit=body.limit,
             sort_key=body.sort_key,
             sort_dir=body.sort_dir,
+            file_label=body.export_label,
         )
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
@@ -919,6 +924,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                 x_date=body.x_date,
                 force_live=body.force_live,
                 refresh_mode=body.refresh_mode,
+                file_label=body.export_label,
             )
             result["sample"] = meta.get("sample", False)
             result["note"] = meta.get("note") or ""

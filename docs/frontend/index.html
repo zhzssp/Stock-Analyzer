@@ -189,6 +189,13 @@
     .exp-opt .t { font-weight: 600; }
     .exp-opt .s { color: var(--muted); font-size: 12px; }
     .exp-opt.off { opacity: 0.5; cursor: not-allowed; }
+    .exp-confirm {
+      margin-bottom: 12px; padding: 10px 12px; border-radius: 8px;
+      background: #f4f7f6; border: 1px solid var(--line);
+      font-size: 14px; line-height: 1.55;
+    }
+    .exp-confirm .ask { font-weight: 700; }
+    .exp-confirm .file { color: var(--muted); font-size: 12px; word-break: break-all; }
     .exp-estimate {
       padding: 8px 10px; border-radius: 8px; background: var(--teal-soft);
       color: var(--ink); font-size: 13px; line-height: 1.5;
@@ -1196,6 +1203,7 @@
   <div class="login-mask" id="exportMask" style="display:none;">
     <div class="login-card stock-card">
       <h2><span>导出 Excel</span><span id="exportTitleMount"></span></h2>
+      <div class="exp-confirm" id="expConfirm">正在读取当前选项…</div>
       <div class="exp-block">
         <div class="exp-label">导出范围<span id="expScopeCount" class="exp-count"></span></div>
         <div class="exp-opts" id="expScopeOpts"></div>
@@ -1211,7 +1219,7 @@
       <div class="exp-estimate" id="expEstimate"></div>
       <div class="exp-warn" id="expWarn" style="display:none;"></div>
       <div class="pick-actions" style="margin-top:12px;">
-        <button class="btn primary" id="expStart" type="button">开始导出</button>
+        <button class="btn primary" id="expStart" type="button">确认导出</button>
         <button class="btn ghost" id="expCancel" type="button">取消</button>
       </div>
     </div>
@@ -2979,8 +2987,43 @@
       }
     }
 
+    function exportDescribe() {
+      const o = state.exportOpts || { scope: "pool", fresh: "cache", cols: "current" };
+      const pool = state.poolLabel || "自选";
+      const content = o.cols === "watch" ? "看盘" : (o.cols === "research" ? "研究" : "当前列");
+      const fresh = o.fresh === "snapshot" ? "上次快照" : (o.fresh === "full" ? "全部重拉" : "缓存补全");
+      let sentence = `是否确认导出「${pool}」的「${content}」信息？`;
+      let fileParts = [pool, content];
+      if (o.scope === "search") {
+        sentence = `是否确认导出「${pool}」搜索结果的「${content}」信息？`;
+        fileParts = [pool, "搜索结果", content];
+      } else if (o.scope === "page") {
+        sentence = `是否确认导出「${pool}」里当前已显示的「${content}」信息？`;
+        fileParts = [pool, "当前已显示", content];
+      }
+      return { sentence, fresh, content, fileStem: fileParts.join("_") };
+    }
+
+    function renderExportConfirm() {
+      const box = document.getElementById("expConfirm");
+      if (!box) return;
+      const desc = exportDescribe();
+      const n = (() => {
+        const o = state.exportOpts || {};
+        const total = expCount();
+        if (o.scope === "search") return (state.lastQueryCodes || []).length;
+        if (o.scope === "page") return Math.min(total, state.tablePage * PAGE_SIZE);
+        return total;
+      })();
+      box.innerHTML =
+        `<div class="ask">${escHtml(desc.sentence)}</div>` +
+        `<div>共 ${n || 0} 只，按「${escHtml(desc.fresh)}」取「${escHtml(desc.content)}」列。</div>` +
+        `<div class="file">文件名：导出时间_${escHtml(desc.fileStem)}.xlsx</div>`;
+    }
+
     function renderExportHint(hasSnapshot) {
       const est = document.getElementById("expEstimate");
+      renderExportConfirm();
       if (!est) return;
       const o = state.exportOpts || {};
       const n = expCount();
@@ -3019,6 +3062,7 @@
       if (xDate) payload.x_date = xDate.replace(/-/g, "");
       payload.refresh_mode = o.fresh;
       payload.force_live = o.fresh === "full";
+      payload.export_label = exportDescribe().fileStem;
       if (o.cols === "watch" || o.cols === "research") {
         const def = (state.colPresetDefs || []).find((p) => p.id === o.cols);
         if (def && def.fields && def.fields.length) payload.fields = def.fields;

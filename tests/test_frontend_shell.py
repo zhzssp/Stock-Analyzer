@@ -115,6 +115,9 @@ def test_workbench_pct_column_sorts_index_constituents():
     assert "PAGE_SIZE" in html
     # 导出选项弹窗：范围 / 新鲜度 / 列 + 预估与警告
     assert 'id="exportMask"' in html
+    assert 'id="expConfirm"' in html
+    assert "是否确认导出" in html
+    assert "export_label" in html
     assert 'id="expFreshOpts"' in html
     assert "用上次快照" in html
     assert "全部重拉" in html

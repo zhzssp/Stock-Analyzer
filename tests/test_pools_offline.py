@@ -90,6 +90,21 @@ def test_pools_catalog_and_exchange_query_export():
         assert "833533" not in bj_codes
 
 
+def test_export_filename_keeps_time_and_confirmed_label():
+    with TestClient(app) as client:
+        headers = _auth(client)
+        labeled = client.post(
+            "/api/query/export",
+            json={"pool": "exchange:sz", "export_label": "深市全部_看盘"},
+            headers=headers,
+        )
+        assert labeled.status_code == 200
+        name = labeled.json()["filename"]
+        assert name.endswith("_深市全部_看盘.xlsx")
+        stamp = name.split("_", 1)[0]
+        assert len(stamp) == 15 and stamp[8] == "-"
+
+
 def test_large_pool_uses_job():
     with TestClient(app) as client:
         headers = _auth(client)

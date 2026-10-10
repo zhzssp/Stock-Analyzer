@@ -12,9 +12,15 @@ def _safe_token(name: str) -> str:
     return cleaned.strip("_") or "pool"
 
 
-def write_query_xlsx(rows: list[dict], field_keys: list[str], pool_name: str) -> Path:
+def write_query_xlsx(
+    rows: list[dict],
+    field_keys: list[str],
+    pool_name: str,
+    file_label: str = "",
+) -> Path:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    filename = f"{stamp}_{_safe_token(pool_name)}.xlsx"
+    # 文件名 = 导出时间 + 用户确认的范围说明（如 沪市全部_看盘）。没传说明时仍用池名。
+    filename = f"{stamp}_{_safe_token(file_label or pool_name)}.xlsx"
     path = settings.artifact_dir / filename
     wb = Workbook()
     ws = wb.active
@@ -26,6 +32,8 @@ def write_query_xlsx(rows: list[dict], field_keys: list[str], pool_name: str) ->
     meta = wb.create_sheet("meta")
     meta.append(["exported_at", datetime.now().isoformat(timespec="seconds")])
     meta.append(["pool", pool_name])
+    if file_label:
+        meta.append(["export_label", file_label])
     meta.append(["fields", ",".join(field_keys)])
     wb.save(path)
     return path
