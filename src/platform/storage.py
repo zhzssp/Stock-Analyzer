@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ from src.platform import cache_memory
 
 _SAFE_KEY = re.compile(r"[^A-Za-z0-9._-]+")
 PROTECTED_CACHE = {"list_hs", "list_bj"}
+# 刚写下、还没写入档案记录的表不能当孤儿删。导出整池要几分钟，盘后清理又正好在同一时段跑。
+_ORPHAN_GRACE_SEC = 15 * 60
 
 
 def human_bytes(n: int | float | None) -> str:
@@ -187,14 +190,70 @@ def _unlink(path: str | Path | None) -> bool:
         return False
 
 
+def _resolved(path: Path) -> Path | None:
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def _archive_index(db: Session) -> tuple[set[Path], set[str]]:
+    """档案记录认领的真实路径，以及文件名。路径写法不同（斜杠、相对路径）也算同一份。"""
+    paths: set[Path] = set()
+    names: set[str] = set()
+    for row in db.query(Artifact).all():
+        if row.filename:
+            names.add(row.filename)
+        if not row.path:
+            continue
+        resolved = _resolved(Path(row.path))
+        if resolved is not None:
+            paths.add(resolved)
+    return paths, names
+
+
+def _named_in_folder(folder: Path, name: str) -> Path | None:
+    """只接受档案目录里的纯文件名，避免记录里的名字跳出这个目录。"""
+    cleaned = (name or "").strip()
+    if not cleaned or cleaned in (".", "..") or "/" in cleaned or "\\" in cleaned:
+        return None
+    root = _resolved(folder)
+    candidate = _resolved(folder / cleaned)
+    if root is None or candidate is None or candidate.parent != root or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _relink_artifact(rec: Artifact, folder: Path) -> bool:
+    """记录上的路径失效，但同名文件还在档案目录里：把记录指回去，不要删记录也不要删文件。"""
+    if not folder.exists():
+        return False
+    candidate = _named_in_folder(folder, rec.filename or "")
+    if candidate is None:
+        return False
+    rec.path = str(candidate)
+    return True
+
+
 def _purge_orphan_xlsx(db: Session, artifact_dir: Path | None = None) -> int:
     folder = artifact_dir or settings.artifact_dir
     if not folder.exists():
         return 0
-    kept = {str(Path(row.path)) for row in db.query(Artifact).all() if row.path}
+    kept_paths, kept_names = _archive_index(db)
     removed = 0
+    now = time.time()
     for path in folder.glob("*.xlsx"):
-        if str(path) in kept:
+        resolved = _resolved(path)
+        # 认不出这份文件时留下。删错比留一份旧表更糟。
+        if resolved is None:
+            continue
+        if resolved in kept_paths or path.name in kept_names:
+            continue
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if age < _ORPHAN_GRACE_SEC:
             continue
         if _unlink(path):
             removed += 1
@@ -208,6 +267,7 @@ def prune_artifacts(
     artifact_dir: Path | None = None,
 ) -> dict:
     limit = keep if keep is not None else max(1, int(settings.artifact_keep))
+    folder = artifact_dir or settings.artifact_dir
     if user_id is not None:
         user_ids = [user_id]
     else:
@@ -222,6 +282,9 @@ def prune_artifacts(
         )
         for rec in rows[limit:]:
             _unlink(rec.path)
+            named = _named_in_folder(folder, rec.filename or "")
+            if named is not None:
+                _unlink(named)
             db.delete(rec)
             removed += 1
     ghosts = 0
@@ -229,9 +292,14 @@ def prune_artifacts(
     if user_id is not None:
         q = q.filter_by(user_id=user_id)
     for rec in q.all():
-        if rec.path and not Path(rec.path).exists():
-            db.delete(rec)
-            ghosts += 1
+        if rec.path and Path(rec.path).exists():
+            continue
+        if _relink_artifact(rec, folder):
+            continue
+        if not rec.path:
+            continue
+        db.delete(rec)
+        ghosts += 1
     db.commit()
     orphans = _purge_orphan_xlsx(db, artifact_dir=artifact_dir)
     return {"ok": True, "removed": removed, "ghosts": ghosts, "orphans": orphans, "keep": limit}
@@ -248,9 +316,10 @@ def record_artifact(
     filename: str | None = None,
 ) -> Artifact:
     target = Path(path)
+    stored = _resolved(target)
     rec = Artifact(
         user_id=user_id,
-        path=str(target),
+        path=str(stored or target),
         filename=filename or target.name,
         pool_name=pool_name or "",
         field_keys=_as_json_list(field_keys),

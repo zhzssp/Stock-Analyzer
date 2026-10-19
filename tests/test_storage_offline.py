@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -119,4 +120,74 @@ def test_prune_artifacts_keeps_newest(tmp_path: Path):
     assert [r.filename for r in left] == ["3.xlsx", "4.xlsx"]
     assert not (folder / "0.xlsx").exists()
     assert (folder / "4.xlsx").exists()
+    db.close()
+
+
+def test_prune_keeps_file_when_record_path_uses_forward_slashes(tmp_path: Path):
+    db = _session(tmp_path)
+    user = User(username="u", password_hash="x")
+    db.add(user)
+    db.commit()
+    folder = tmp_path / "arts"
+    folder.mkdir()
+    path = folder / "20261017-210123_沪市全部_看盘.xlsx"
+    path.write_bytes(b"PK")
+    db.add(
+        Artifact(
+            user_id=user.id,
+            path=path.as_posix(),
+            filename=path.name,
+            pool_name="沪市全部",
+            created_at=datetime(2026, 10, 17, 21, 1, 23),
+        )
+    )
+    db.commit()
+    result = prune_artifacts(db, user_id=user.id, keep=20, artifact_dir=folder)
+    assert result["removed"] == 0
+    assert result["orphans"] == 0
+    assert path.exists()
+    assert db.query(Artifact).count() == 1
+    db.close()
+
+
+def test_prune_repairs_record_when_filename_still_in_archive(tmp_path: Path):
+    db = _session(tmp_path)
+    user = User(username="u", password_hash="x")
+    db.add(user)
+    db.commit()
+    folder = tmp_path / "arts"
+    folder.mkdir()
+    path = folder / "20261017-213225_深市全部_看盘.xlsx"
+    path.write_bytes(b"PK")
+    rec = Artifact(
+        user_id=user.id,
+        path=str(tmp_path / "gone" / path.name),
+        filename=path.name,
+        pool_name="深市全部",
+        created_at=datetime(2026, 10, 17, 21, 32, 25),
+    )
+    db.add(rec)
+    db.commit()
+    result = prune_artifacts(db, user_id=user.id, keep=20, artifact_dir=folder)
+    assert result["ghosts"] == 0
+    assert result["orphans"] == 0
+    assert path.exists()
+    db.refresh(rec)
+    assert Path(rec.path).resolve() == path.resolve()
+    db.close()
+
+
+def test_prune_keeps_fresh_unregistered_xlsx_and_drops_stale_ones(tmp_path: Path):
+    db = _session(tmp_path)
+    folder = tmp_path / "arts"
+    folder.mkdir()
+    fresh = folder / "fresh.xlsx"
+    stale = folder / "stale.xlsx"
+    fresh.write_bytes(b"PK")
+    stale.write_bytes(b"PK")
+    os.utime(stale, (1_700_000_000, 1_700_000_000))
+    result = prune_artifacts(db, artifact_dir=folder)
+    assert result["orphans"] == 1
+    assert fresh.exists()
+    assert not stale.exists()
     db.close()
