@@ -1056,7 +1056,7 @@
   </div>
   <div class="login-mask" id="colMask" style="display:none;">
     <div class="login-card pick-card col-card">
-      <h2><span data-help-tip="预设「看盘」只显示行情列；「研究」含财务股东底顶；自定义可逐项勾选。保存后影响查询与导出列。">列设置</span></h2>
+      <h2><span data-help-tip="预设「看盘」只显示行情列；「研究」是默认核心列（行业、概念、主营、流通股东、财务估值）；自定义可逐项勾选。保存后影响查询与导出列。">列设置</span></h2>
       <div class="chips" id="colPresets" style="margin-bottom:12px;"></div>
       <div class="pick-list" id="colList"></div>
       <div class="pick-actions">
@@ -2954,7 +2954,7 @@
       const colOpts = [
         { id: "current", label: "用当前列设置", sub: `${(state.fields || []).length} 列` },
         { id: "watch", label: "看盘预设", sub: "只行情列" },
-        { id: "research", label: "研究预设", sub: "含财务 / 股东 / 底顶" },
+        { id: "research", label: "研究预设", sub: "行业、主营、流通股东、财务" },
       ];
       document.getElementById("expColOpts").innerHTML = colOpts.map((it, i) =>
         expOptHtml("expCols", it, i === 0, false, "")

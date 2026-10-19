@@ -95,8 +95,9 @@ def test_s3_filter_append_and_once_query():
         assert "贵州茅台" in names
         bj_row = next(row for row in query.json()["rows"] if row["code6"] == "430017")
         assert bj_row["price"] == 8.46
-        assert bj_row["yffy"] == 0.8
+        assert bj_row["industry"]
         assert bj_row["net"] == 9.4
+        assert "yffy" not in bj_row
 
         once = client.post("/api/query/run", json={"codes": ["688001"]}, headers=headers)
         assert once.status_code == 200

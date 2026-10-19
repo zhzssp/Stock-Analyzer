@@ -14,12 +14,15 @@ def test_offline_query_has_figure1_fields():
     assert rows[0]["price"] == 26.86
     assert {s.key for s in registry.all() if s.default}.issubset(rows[0].keys())
     assert "buy_low" not in rows[0]
-    assert rows[0]["low1y"] == 24.6
-    assert rows[0]["low_long"] == 24.6
-    assert rows[0]["high"] == 36.9
-    assert rows[0]["target"] == 36.9
-    assert rows[0]["off_low"] == 9.19
+    assert "low1y" not in rows[0]
     assert rows[0]["pb"] == 1.25
+    assert "yffy" not in rows[0]
+    bottom = engine.run(insts, field_keys=["name", "low1y", "low_long", "high", "target", "off_low"])
+    assert bottom[0]["low1y"] == 24.6
+    assert bottom[0]["low_long"] == 24.6
+    assert bottom[0]["high"] == 36.9
+    assert bottom[0]["target"] == 36.9
+    assert bottom[0]["off_low"] == 9.19
     assert "turnover" not in rows[0]
     extra = engine.run(insts, field_keys=["name", "turnover", "mcap", "fcap", "pct60", "pct_ytd"])
     assert extra[0]["turnover"] == 0.86
@@ -52,7 +55,7 @@ def test_search_splits_hs_kc_bj():
 def test_bj_query_finance_and_empty_holders():
     market = MarketClient()
     engine = QueryEngine(market)
-    rows = engine.run(resolve_instruments(["430017"], market))
+    rows = engine.run(resolve_instruments(["430017"], market), field_keys=["name", "price", "yffy", "holders"])
     assert rows[0]["name"] == "星昊医药"
     assert rows[0]["price"] == 8.46
     assert rows[0]["yffy"] == 0.8

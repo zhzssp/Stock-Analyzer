@@ -42,7 +42,11 @@ def test_pools_catalog_and_exchange_query_export():
         assert any(row["code6"] == "000725" for row in sz.json()["rows"])
         assert not any(row["code"].endswith(".SH") for row in sz.json()["rows"])
 
-        bj = client.post("/api/query/run", json={"pool": "exchange:bj"}, headers=headers)
+        bj = client.post(
+            "/api/query/run",
+            json={"pool": "exchange:bj", "fields": ["name", "code", "yffy"]},
+            headers=headers,
+        )
         names = {row["name"] for row in bj.json()["rows"]}
         assert "星昊医药" in names
         assert "中直股份" not in names

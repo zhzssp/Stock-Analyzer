@@ -1,4 +1,4 @@
-"""列预设：看盘（少打麦蕊）/ 研究（原默认列集）/ 自定义。"""
+"""列预设：看盘（少打麦蕊）/ 研究（查询与导出的默认核心列）/ 自定义。"""
 
 from __future__ import annotations
 
@@ -18,8 +18,26 @@ WATCH_KEYS: tuple[str, ...] = (
     "pb",
 )
 
-# 与改 P1 前 registry.default=True 一致（离线测试 figure1 仍用此列表显式传参）。
-RESEARCH_KEYS: tuple[str, ...] = tuple(s.key for s in registry.all() if s.default)
+# 前端查询与沪深全市场导出的默认列，顺序与工作台表头一致。
+RESEARCH_KEYS: tuple[str, ...] = (
+    "name",
+    "code",
+    "price",
+    "pct",
+    "industry",
+    "concept",
+    "business",
+    "holders",
+    "zgb",
+    "ltgb",
+    "mgwfplr",
+    "mgjzc",
+    "eps",
+    "pe",
+    "gross",
+    "net",
+    "pb",
+)
 
 
 def _valid(keys: tuple[str, ...] | list[str]) -> list[str]:
@@ -51,7 +69,7 @@ def catalog() -> list[dict]:
         {
             "id": PRESET_RESEARCH,
             "label": "研究",
-            "description": "行业、股东、财务、资金、底顶等；需点「全量更新」拉齐慢字段。",
+            "description": "行业、概念、主营、前十大流通股东与财务估值；不含资金流和底顶。",
             "fields": list(RESEARCH_KEYS),
         },
         {

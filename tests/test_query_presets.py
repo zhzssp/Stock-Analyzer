@@ -1,7 +1,8 @@
 from fastapi.testclient import TestClient
 
 from src.main import app
-from src.query.presets import PRESET_RESEARCH, PRESET_WATCH, keys_for_preset, WATCH_KEYS
+from src.query.presets import PRESET_RESEARCH, PRESET_WATCH, RESEARCH_KEYS, keys_for_preset, WATCH_KEYS
+from src.query.registry import registry
 
 
 def _headers(client: TestClient) -> dict:
@@ -17,11 +18,14 @@ def test_watch_preset_is_minimal():
     assert "price" in keys
 
 
-def test_research_preset_includes_slow_fields():
+def test_research_preset_is_the_core_sheet():
     keys = keys_for_preset(PRESET_RESEARCH)
-    assert "holders" in keys
-    assert "low1y" in keys
-    assert len(keys) > len(WATCH_KEYS)
+    assert keys == list(RESEARCH_KEYS)
+    assert keys == registry.default_keys()
+    assert keys[:4] == ["name", "code", "price", "pct"]
+    assert keys[-1] == "pb"
+    for dropped in ("sector", "sw_l1", "hot_concepts", "top_holders", "yffy", "flow_net", "low1y", "target"):
+        assert dropped not in keys
 
 
 def test_api_prefs_preset():
