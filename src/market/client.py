@@ -788,23 +788,23 @@ class MarketClient:
         out = {"source": "live"}
         try:
             psi = self._get(f"/hsstock/financial/pershareindex/{inst.code_full}")
-            row = psi[0] if isinstance(psi, list) else psi
-            # 千万别把循环变量写成 key：外层 key 是缓存键，被覆盖后缓存会写去别处，
-            # 结果就是每次查询都重新拉财务（每只 3 次请求白烧）。
+            # 列表从旧到新。取第 1 条会得到上市初期的每股净资产和每股收益。
+            # 循环变量不要写成 key：外层 key 是缓存键，被覆盖后缓存会写去别处。
+            row = _latest_row(psi, ("jzrq", "plrq"))
             for field in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
                 out[field] = row.get(field)
         except MarketError as exc:
             self.note_issue("finance", str(exc), inst.code6)
         try:
             income = self._get(f"/hsstock/financial/income/{inst.code_full}")
-            row = income[0] if isinstance(income, list) else income
+            row = _latest_row(income, ("jzrq", "plrq"))
             yffy = row.get("yffy")
             out["yffy"] = None if yffy in (None, "", "-", 0, "0") else yffy
         except MarketError as exc:
             self.note_issue("finance", str(exc), inst.code6)
         try:
             cap = self._get(f"/hsstock/financial/capital/{inst.code_full}")
-            row = cap[0] if isinstance(cap, list) else cap
+            row = _latest_row(cap, ("bdrq", "plrq", "jzrq"))
             out["zgb"] = row.get("zgb")
             out["ysltag"] = row.get("ysltag")
         except MarketError as exc:
@@ -824,27 +824,22 @@ class MarketClient:
         psi, err = self._get_quiet(f"/bj/financial/pershareindex/{inst.code_full}")
         if err:
             self.note_issue("finance", err, inst.code6)
-        if isinstance(psi, list) and psi:
-            row = psi[0]
-        elif isinstance(psi, dict):
-            row = psi
-        else:
-            row = {}
+        row = _latest_row(psi, ("jzrq", "plrq")) if psi else {}
         for field in ("mgwfplr", "mgjzc", "jbmgsy", "xsmlv", "jlv"):
             if field in row:
                 out[field] = row.get(field)
         income, err = self._get_quiet(f"/bj/financial/income/{inst.code_full}")
         if err:
             self.note_issue("finance", err, inst.code6)
-        if isinstance(income, list) and income:
-            irow = income[0]
+        irow = _latest_row(income, ("jzrq", "plrq")) if income else {}
+        if irow:
             yffy = irow.get("yffy")
             out["yffy"] = None if yffy in (None, "", "-", 0, "0") else yffy
         cap, err = self._get_quiet(f"/bj/financial/capital/{inst.code_full}")
         if err:
             self.note_issue("finance", err, inst.code6)
-        if isinstance(cap, list) and cap:
-            crow = cap[0]
+        crow = _latest_row(cap, ("bdrq", "plrq", "jzrq")) if cap else {}
+        if crow:
             out["zgb"] = crow.get("zgb")
             out["ysltag"] = crow.get("ysltag")
         return out
@@ -1292,14 +1287,72 @@ def _with_taxonomy(row: dict, extra: dict | None = None) -> dict:
     return out
 
 
+def _date_key(row: dict, keys: tuple[str, ...]) -> str:
+    """把截止日期收成 YYYYMMDD，方便不同接口比哪一期更新。"""
+    for key in keys:
+        value = row.get(key)
+        if value in (None, "", "-"):
+            continue
+        digits = "".join(ch for ch in str(value) if ch.isdigit())
+        if len(digits) >= 8:
+            return digits[:8]
+    return ""
+
+
+def _latest_row(data, date_keys: tuple[str, ...] = ("jzrq", "plrq")) -> dict:
+    """财务列表按报告期从旧到新。按日期取最新一条，不能用下标 0。"""
+    if isinstance(data, dict):
+        return data
+    if not isinstance(data, list):
+        return {}
+    rows = [row for row in data if isinstance(row, dict)]
+    if not rows:
+        return {}
+    dated: list[tuple[str, dict]] = []
+    for row in rows:
+        stamp = _date_key(row, date_keys)
+        if stamp:
+            dated.append((stamp, row))
+    if not dated:
+        return rows[-1]
+    best = max(stamp for stamp, _row in dated)
+    return [row for stamp, row in dated if stamp == best][-1]
+
+
+def _holder_rank(row: dict) -> float:
+    value = row.get("cgpm")
+    if value in (None, "", "-"):
+        value = row.get("pm")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 1e9
+
+
 def _holder_rows(data) -> list[dict]:
-    if not data:
+    """取最新一期的前十名。
+
+    流通股东、十大股东是按时间铺开的扁平行，第 1 行是最老一期。
+    备用接口则是一期一个对象，股东名单在 sdgd 里。
+    """
+    if isinstance(data, dict):
+        rows = [data]
+    elif isinstance(data, list):
+        rows = [row for row in data if isinstance(row, dict)]
+    else:
         return []
-    latest = data[0] if isinstance(data, list) else data
-    detail = latest.get("sdgd") if isinstance(latest, dict) and "sdgd" in latest else data
-    if not isinstance(detail, list):
+    if not rows:
         return []
-    return [x for x in detail[:10] if isinstance(x, dict)]
+    if any(isinstance(row.get("sdgd"), list) for row in rows):
+        periods = [row for row in rows if isinstance(row.get("sdgd"), list)]
+        latest = _latest_row(periods, ("jzrq", "ggrq", "plrq"))
+        detail = [row for row in (latest.get("sdgd") or []) if isinstance(row, dict)]
+    else:
+        best = max((_date_key(row, ("jzrq", "plrq")) for row in rows), default="")
+        period = [row for row in rows if _date_key(row, ("jzrq", "plrq")) == best] if best else rows
+        detail = period
+    detail.sort(key=_holder_rank)
+    return detail[:10]
 
 
 def _pack_holders(flow_raw: list, top_raw: list, source: str) -> dict:

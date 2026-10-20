@@ -60,6 +60,60 @@ def test_finance_cache_key_is_not_shadowed(monkeypatch, tmp_path):
     assert not (settings.cache_dir / "jlv.json").exists()
 
 
+def test_finance_uses_latest_period_not_the_first_row(monkeypatch, tmp_path):
+    """每股指标和股本的列表从旧到新，第 1 条是上市初期。"""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    inst = normalize_instrument("000001.SZ", "平安银行", "SZ")
+    psi = [
+        {"jzrq": "2007-03-31", "mgwfplr": 0.72, "mgjzc": 3.65, "jbmgsy": 0.27, "xsmlv": "-", "jlv": 22.7},
+        {"jzrq": "2026-06-30", "mgwfplr": 14.8, "mgjzc": 24.13, "jbmgsy": 1.24, "xsmlv": "-", "jlv": 30.1},
+    ]
+    income = [{"jzrq": "2007-03-31", "yffy": 1}, {"jzrq": "2026-06-30", "yffy": 9}]
+    cap = [
+        {"bdrq": "19910403", "zgb": 48500171, "ysltag": 26500000},
+        {"bdrq": "20260630", "zgb": 19405918198, "ysltag": 19405684991},
+    ]
+
+    from src.market.client import MarketClient
+
+    client = MarketClient.__new__(MarketClient)
+    client.offline = False
+    client.sample_only = False
+    client.query_refresh_mode = "full"
+    client.slow_cache_stats = {"hits": 0, "misses": 0}
+
+    with patch.object(client, "_get", side_effect=[psi, income, cap]):
+        out = client.finance(inst)
+
+    assert out["mgjzc"] == 24.13
+    assert out["jbmgsy"] == 1.24
+    assert out["mgwfplr"] == 14.8
+    assert out["jlv"] == 30.1
+    assert out["yffy"] == 9
+    assert out["zgb"] == 19405918198
+    assert out["ysltag"] == 19405684991
+
+
+def test_holder_rows_use_latest_period():
+    from src.market.client import _holder_rows
+
+    flat = [
+        {"jzrq": "2003-12-31", "gdmc": "博时裕富证券投资基金", "cgpm": 1, "cgsl": 1, "cgbl": 0.4},
+        {"jzrq": "2003-12-31", "gdmc": "深圳国债服务中心", "cgpm": 2, "cgsl": 1, "cgbl": 0.2},
+        {"jzrq": "2026-06-30", "gdmc": "香港中央结算有限公司", "cgpm": 2, "cgsl": 10, "cgbl": 3.8},
+        {"jzrq": "2026-06-30", "gdmc": "中国平安保险(集团)股份有限公司", "cgpm": 1, "cgsl": 20, "cgbl": 49.5},
+    ]
+    names = [row["gdmc"] for row in _holder_rows(flat)]
+    assert names == ["中国平安保险(集团)股份有限公司", "香港中央结算有限公司"]
+
+    grouped = [
+        {"jzrq": "1992-12-31", "sdgd": [{"pm": 1, "gdmc": "深圳市投资管理公司"}]},
+        {"jzrq": "2026-06-30", "sdgd": [{"pm": 1, "gdmc": "中国平安保险(集团)股份有限公司"}]},
+    ]
+    assert _holder_rows(grouped)[0]["gdmc"] == "中国平安保险(集团)股份有限公司"
+
+
 def test_read_fresh_expires(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
