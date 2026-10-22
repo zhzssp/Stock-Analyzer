@@ -638,36 +638,37 @@ def _field_view(keys: list[str]) -> list[dict]:
 
 
 def _user_fields(user: User, db: Session) -> list[str]:
-    from src.query.presets import PRESET_CUSTOM, PRESET_RESEARCH, PRESET_WATCH, keys_for_preset
+    from src.query.presets import PRESET_CUSTOM, PRESET_RESEARCH, PRESET_WATCH, default_for_new_user, keys_for_preset
 
     allowed = {s.key for s in registry.all()}
+    _, research = default_for_new_user()
     pref = db.query(FieldPref).filter_by(user_id=user.id).first()
     if not pref:
-        return keys_for_preset(PRESET_WATCH)
+        return research
     saved: list[str] = []
     if pref.field_keys:
         saved = [k for k in json.loads(pref.field_keys) if k in allowed]
-    preset = (pref.preset or PRESET_WATCH).strip().lower()
+    preset = (pref.preset or PRESET_RESEARCH).strip().lower()
     watch = keys_for_preset(PRESET_WATCH)
-    # 升级前已保存的列清单：preset 列默认 watch，但 field_keys 仍是完整研究列
-    if preset == PRESET_WATCH and saved and saved != watch:
+    # 列设置里逐项勾过、但预设名仍停在看盘：按勾选结果，不改回十七列。
+    if preset == PRESET_WATCH and saved and saved != watch and not set(research).issubset(saved):
         return saved
     if preset == PRESET_RESEARCH:
-        return keys_for_preset(PRESET_RESEARCH)
+        return research
     if preset == PRESET_CUSTOM and saved:
         return saved
     if preset == PRESET_WATCH:
         return watch
-    return saved or watch
+    return saved or research
 
 
 def _user_preset(user: User, db: Session) -> str:
-    from src.query.presets import PRESET_WATCH
+    from src.query.presets import PRESET_RESEARCH
 
     pref = db.query(FieldPref).filter_by(user_id=user.id).first()
     if not pref or not pref.preset:
-        return PRESET_WATCH
-    return (pref.preset or PRESET_WATCH).strip().lower()
+        return PRESET_RESEARCH
+    return (pref.preset or PRESET_RESEARCH).strip().lower()
 
 
 def _sort_rows(rows: list[dict], key: str, direction: str) -> list[dict]:

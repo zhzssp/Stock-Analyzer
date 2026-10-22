@@ -55,7 +55,7 @@ def keys_for_preset(preset: str) -> list[str]:
         return _valid(RESEARCH_KEYS)
     if name == PRESET_WATCH:
         return _valid(WATCH_KEYS)
-    return _valid(WATCH_KEYS)
+    return _valid(RESEARCH_KEYS)
 
 
 def catalog() -> list[dict]:
@@ -82,4 +82,5 @@ def catalog() -> list[dict]:
 
 
 def default_for_new_user() -> tuple[str, list[str]]:
-    return PRESET_WATCH, keys_for_preset(PRESET_WATCH)
+    """查询结果的默认勾选：十七个研究列。看盘仍可在列设置里另选。"""
+    return PRESET_RESEARCH, keys_for_preset(PRESET_RESEARCH)

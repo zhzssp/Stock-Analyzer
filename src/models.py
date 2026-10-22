@@ -58,7 +58,7 @@ class FieldPref(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     field_keys: Mapped[str] = mapped_column(Text, default="[]")
-    preset: Mapped[str] = mapped_column(String(16), default="watch")
+    preset: Mapped[str] = mapped_column(String(16), default="research")
 
 
 class ConceptPref(Base):

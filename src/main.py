@@ -30,6 +30,9 @@ def init_db() -> None:
     db = SessionLocal()
     try:
         bootstrap(db)
+        from src.platform.column_default import apply_column_default
+
+        apply_column_default(db)
     finally:
         db.close()
 

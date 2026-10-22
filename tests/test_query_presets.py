@@ -1,7 +1,14 @@
 from fastapi.testclient import TestClient
 
 from src.main import app
-from src.query.presets import PRESET_RESEARCH, PRESET_WATCH, RESEARCH_KEYS, keys_for_preset, WATCH_KEYS
+from src.query.presets import (
+    PRESET_RESEARCH,
+    PRESET_WATCH,
+    RESEARCH_KEYS,
+    WATCH_KEYS,
+    default_for_new_user,
+    keys_for_preset,
+)
 from src.query.registry import registry
 
 
@@ -16,6 +23,12 @@ def test_watch_preset_is_minimal():
     assert keys == list(WATCH_KEYS)
     assert "holders" not in keys
     assert "price" in keys
+
+
+def test_default_checked_fields_are_the_seventeen():
+    preset, keys = default_for_new_user()
+    assert preset == PRESET_RESEARCH
+    assert keys == list(RESEARCH_KEYS)
 
 
 def test_research_preset_is_the_core_sheet():
@@ -41,3 +54,10 @@ def test_api_prefs_preset():
         )
         assert put.status_code == 200
         assert put.json()["fields"] == list(WATCH_KEYS)
+        restored = client.put(
+            "/api/query/prefs",
+            json={"preset": "research", "fields": []},
+            headers=headers,
+        )
+        assert restored.status_code == 200
+        assert restored.json()["fields"] == list(RESEARCH_KEYS)

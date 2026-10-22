@@ -3088,7 +3088,7 @@
 
     const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", flow: "资金", bottom: "底/顶", card: "决策卡" };
 
-    state.colPreset = "watch";
+    state.colPreset = "research";
     state.colPresetDefs = [];
 
     function applyColPreset(presetId) {
@@ -3501,30 +3501,40 @@
       );
     }
 
-    // 首屏只拉「快列」（只依赖行情那一批），慢字段（财务/股东/主营/日线）后台再补齐。
-    // 冷缓存时慢字段每只约 9 次请求，是首屏卡顿的主因。
+    // 首屏可以先画行情六列，但默认勾选是十七列。账号列里还有行业、股东、财务时，后台必须再查一次。
     const FAST_FIELDS = ["name", "code", "price", "pct", "pe", "pb"];
 
     async function bootTableQuery() {
+      let wanted = [];
+      try {
+        const prefs = await api("/query/prefs");
+        wanted = prefs.fields || [];
+        if (prefs.preset) state.colPreset = prefs.preset;
+      } catch {
+        /* 列设置读不到时，查询本身仍走服务端默认的十七列 */
+      }
+      const wantsSlow = wanted.some((k) => FAST_FIELDS.indexOf(k) < 0);
       try {
         await runQuery(null, { refreshMode: "snapshot", forceLive: false });
-        return; // 有快照：零请求，秒开
+        const shown = new Set((state.fields || []).map((f) => f.key));
+        const missing = wanted.filter((k) => !shown.has(k));
+        if (!wantsSlow || !missing.length) return;
       } catch {
-        /* 没有快照，走下面的快列首查 */
+        /* 没有快照，先出行情列，再按默认勾选补齐 */
       }
       try {
-        await runQuery(null, { refreshMode: "cache", forceLive: false, fields: FAST_FIELDS });
+        const opts = { refreshMode: "cache", forceLive: false };
+        if (wantsSlow) opts.fields = FAST_FIELDS;
+        await runQuery(null, opts);
       } catch {
         await runQuery(null, { refreshMode: "cache", forceLive: false });
         return;
       }
-      const current = (state.fields || []).map((f) => f.key);
-      const needSlow = !current.length || current.some((k) => FAST_FIELDS.indexOf(k) < 0);
-      if (!needSlow) return;
+      if (!wantsSlow) return;
       const hint = document.getElementById("queryHint");
-      if (hint) hint.textContent = "已显示行情列，正在后台补齐财务 / 股东 / 底顶…";
+      if (hint) hint.textContent = "已显示行情列，正在后台补齐行业、股东和财务…";
       runQuery(null, { refreshMode: "cache", forceLive: false, stream: true })
-        .then(() => toast("财务 / 股东等字段已补齐"))
+        .then(() => toast("行业、股东和财务已补齐"))
         .catch(() => {});
     }
 
