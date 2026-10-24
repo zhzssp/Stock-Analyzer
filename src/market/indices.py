@@ -57,12 +57,13 @@ INDEX_SPECS = [
 # kind=quote：麦蕊 hsindex 有实时点位（官方《沪深主要指数列表》611 条，仅 SH / SZ）。
 # kind=pool：官方没有该指数的实时点位（北证50 不在 hsindex 覆盖范围内，实测 404 / 422），
 #            只展示官方成份数量，不打点位、不编数、不拿别的东西冒充。
-# 科创用科创50点位（000688），不是科创综指（000680）成份池。
+# 科创栏点位用科创综指 000680（2026-10-24 实测 hsindex/real/time/000680.SH 有点位）。
+# 成份树仍无 zhishu_000680，行情成份池不因此改用科创50或科创板全市场。
 BOARD_INDICES = [
     {"code": "000001.SH", "short": "上证", "label": "上证指数", "kind": "quote"},
     {"code": "399001.SZ", "short": "深成", "label": "深证成指", "kind": "quote"},
     {"code": "899050.BJ", "short": "北证", "label": "北证50", "kind": "pool"},
-    {"code": "000688.SH", "short": "科创", "label": "科创50", "kind": "quote"},
+    {"code": "000680.SH", "short": "科创", "label": "科创综指", "kind": "quote"},
     {"code": "399006.SZ", "short": "创业", "label": "创业板指", "kind": "quote"},
 ]
 

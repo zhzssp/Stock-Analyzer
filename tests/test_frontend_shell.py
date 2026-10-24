@@ -29,6 +29,8 @@ def test_workbench_exposes_landed_backend_entries():
     assert 'id="userLabel"' in html
     assert 'id="warehouseBox"' in html
     assert 'id="storageBox"' in html
+    assert 'id="runtimeSave"' in html
+    assert 'name="runtimeMode"' in html
     assert 'id="clockDirSave"' in html
     assert 'id="clockChart"' in html
     assert "/clock/series" in html
@@ -139,7 +141,12 @@ def test_workbench_picker_dialog_is_wide_and_short():
     assert "picker-toolbar" in html
     assert "picker-tax" in html
     assert "min(900px" in html
-    assert "min(86vh, 680px)" in html
+    assert "min(92vh, 800px)" in html
+    assert ".picker-tax" in html
+    tax_css = html.split(".picker-tax {", 1)[1].split("}", 1)[0]
+    assert "flex: 0 0 auto" in tax_css
+    assert "min-height: 240px" in tax_css
+    assert "max-height: 240px" in tax_css
     assert "font: 15px/1.5" in html
     assert ".table-wrap { overflow: auto;" in html or "table-wrap { overflow: auto" in html
 

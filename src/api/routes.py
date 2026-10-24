@@ -48,6 +48,7 @@ from src.market.normalize import infer_market
 from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, MonitorPref, User, UserRule, WatchItem
 from src.platform.export_xlsx import write_query_xlsx
 from src.platform.jobs import job_payload as bg_job_payload, jobs
+from src.platform.runtime_profile import LITE_DETAIL, agents_enabled, apply as apply_runtime, public as runtime_public
 from src.platform.monitor_prefs import pref_payload, save_pref
 from src.platform.pools import catalog, resolve_pool
 from src.platform.security import issue_token, verify_password
@@ -228,14 +229,21 @@ def _tool_http(result: ToolResult) -> dict:
     return result.to_dict()
 
 
+def _require_agents() -> None:
+    if not agents_enabled():
+        raise HTTPException(status_code=409, detail=LITE_DETAIL)
+
+
 @router.get("/health")
 def health():
     ensure_market()
     return {
         "ok": True,
         "market": market.health(),
+        "runtime": runtime_public(),
         "agent": {
             "id": "analyst",
+            "enabled": agents_enabled(),
             "agents": ["analyst", "watcher", "researcher"],
             "llm": llm_available(),
             "llm_status": llm_status(),
@@ -1120,6 +1128,26 @@ def warehouse(
     return _tool_http(warehouse_get(args, _tool_ctx(user, db)))
 
 
+class RuntimeIn(BaseModel):
+    mode: str = "auto"
+
+
+@router.get("/runtime")
+def get_runtime(user: User = Depends(current_user)):
+    return runtime_public()
+
+
+@router.post("/runtime")
+def post_runtime(body: RuntimeIn, user: User = Depends(current_user)):
+    raw = (settings.runtime_profile or "").strip().lower()
+    if raw in {"auto", "full", "lite"}:
+        raise HTTPException(status_code=409, detail="运行档位已由环境变量 RUNTIME_PROFILE 固定，界面上改不了。")
+    try:
+        return apply_runtime(body.mode, persist=True, source="user")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/storage")
 def get_storage(user: User = Depends(current_user), db: Session = Depends(get_db)):
     snap = usage()
@@ -1299,6 +1327,7 @@ def agent_bus(topic: str = ""):
 
 @router.post("/agent/chat")
 def agent_chat(body: ChatIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _require_agents()
     question = (body.question or "").strip()
     attachments = [a.model_dump() for a in body.attachments if a.text or a.content_base64]
     if not question and not attachments:
@@ -1480,12 +1509,14 @@ def patch_job(job_key: str, body: JobPatchIn, user: User = Depends(current_user)
 
 @router.post("/monitor/jobs/{job_key}/run")
 def run_one_job(job_key: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _require_agents()
     ensure_jobs(db, user)
     return run_watcher(db, user, market, job_key)
 
 
 @router.post("/monitor/run")
 def run_all_jobs(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _require_agents()
     return run_watcher(db, user, market)
 
 
@@ -1552,6 +1583,7 @@ def delete_rule(rule_id: int, user: User = Depends(current_user), db: Session = 
 
 @router.post("/monitor/rules/preview")
 def preview_rule(body: PreviewIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _require_agents()
     if body.job_key:
         return run_watcher(db, user, market, body.job_key, persist=False)
     if not body.spec:
@@ -1592,6 +1624,7 @@ def list_reviews(user: User = Depends(current_user), db: Session = Depends(get_d
 
 @router.post("/monitor/review/run")
 def run_reviews(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _require_agents()
     return run_reviewer(db, user, market)
 
 

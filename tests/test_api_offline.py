@@ -210,8 +210,8 @@ def test_board_indices_offline():
         assert by["北证"]["kind"] == "pool"
         assert by["北证"]["p"] is None
         assert by["北证"]["count"] == len(INDEX_CONSTITUENTS["899050.BJ"])
-        assert by["科创"]["code"] == "000688.SH"
-        assert by["科创"]["label"] == "科创50"
+        assert by["科创"]["code"] == "000680.SH"
+        assert by["科创"]["label"] == "科创综指"
         assert by["科创"]["p"] == 1948.21
         assert by["科创"]["pc"] == 2.37
         assert by["创业"]["code"] == "399006.SZ"
@@ -240,7 +240,7 @@ def test_index_quote_parser_accepts_mairui_shapes(monkeypatch):
             return [{"p": 3900.87, "pc": 1.86}]
         if "399001" in path:
             return {"zs": 13650.68, "zf": "+2.01%"}
-        if "000688" in path:
+        if "000680" in path:
             return {"close": 1948.21, "percent": 2.37}
         return None
 

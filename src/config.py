@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # 只省 CPU / 磁盘 IO，不省额度；出问题在 .env 设 CACHE_MEMORY_ENABLED=0 关掉。
     cache_memory_enabled: bool = True
     cache_memory_max_mb: float = 64
+    # 运行档位。留空 = 没在环境变量里锁死，启动时按本机内存自动（≤8GB 走轻量），
+    # 界面上的选择写在 data/runtime_profile.json。设成 auto / full / lite 之后界面改不了。
+    runtime_profile: str = ""
     # 麦蕊请求复用长连接（keep-alive）：省掉每次请求的 TCP + TLS 握手。
     # 只省时间、不省额度——HTTP 次数完全不变。出问题在 .env 设 HTTP_KEEPALIVE=0 退回短连接。
     http_keepalive: bool = True

@@ -55,6 +55,10 @@ async def lifespan(_app: FastAPI):
             enforce_all(db)
         finally:
             db.close()
+        # 先定档位再挂调度：轻量档从第一轮起就不跑问答盯盘。
+        from src.platform.runtime_profile import apply_startup
+
+        apply_startup()
         sched = start_scheduler()
         schedule_flush()
     yield

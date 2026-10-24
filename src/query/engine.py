@@ -110,6 +110,7 @@ class QueryEngine:
         if opener:
             opener()
         try:
+            self._note_x_price_gap(keys, x_date, mode)
             return self._run_rows(
                 instruments,
                 keys,
@@ -135,6 +136,16 @@ class QueryEngine:
             early = [self._quote_gap] if isinstance(getattr(self, "_quote_gap", None), dict) else []
             self.last_issues = combine_issues(notes, early)
             self.market.query_refresh_mode = prev_mode
+
+    def _note_x_price_gap(self, keys: list[str], x_date: str | None, mode: str) -> None:
+        """没去取收盘价时说明原因。接口报错由日线那一条单独带回来。"""
+        note = getattr(self.market, "note_issue", None)
+        if not note or "x_price" not in (keys or []):
+            return
+        if not x_date:
+            note("x_price", "没有选择日期，X日价为空。选好日期后再点「查询」。")
+        elif (mode or "").strip().lower() == REFRESH_QUOTE:
+            note("x_price", "刷新只更新现价，不会取历史收盘。要看 X日价请点「查询」。")
 
     def _run_rows(
         self,

@@ -114,3 +114,59 @@ def test_stream_sends_field_objects_and_issues():
         assert body.status_code == 200
         assert body.json()["issues"] == []
         assert body.json()["rows"][0]["name"]
+
+
+def test_x_price_without_date_explains_the_blank():
+    market = MarketClient()
+    engine = QueryEngine(market)
+    rows = engine.run(resolve_instruments(["600038.SH"], market), ["name", "x_price"])
+    assert rows[0]["x_price"] is None
+    assert any("没有选择日期" in item["message"] and item["block"] == "x_price" for item in engine.last_issues)
+
+
+def test_x_price_before_bars_explains_the_blank():
+    market = MarketClient()
+    engine = QueryEngine(market)
+    rows = engine.run(
+        resolve_instruments(["600038.SH"], market),
+        ["name", "x_price"],
+        x_date="19990104",
+        refresh_mode="full",
+    )
+    assert rows[0]["x_price"] is None
+    hit = [item for item in engine.last_issues if item["block"] == "x_price"]
+    assert hit and "早于现有日线" in hit[0]["message"]
+    assert "600038" in hit[0]["codes"]
+
+
+def test_x_price_refresh_does_not_pretend_to_fetch():
+    market = MarketClient()
+    engine = QueryEngine(market)
+    rows = engine.run(
+        resolve_instruments(["600038.SH"], market),
+        ["name", "x_price"],
+        x_date="2026-09-12",
+        refresh_mode="quote",
+    )
+    assert rows[0]["x_price"] is None
+    assert any("刷新只更新现价" in item["message"] for item in engine.last_issues)
+
+
+def test_history_error_is_the_x_price_reason():
+    market = MarketClient()
+
+    def boom(inst, *args, **kwargs):
+        market.note_issue("bars", "Licence 额度已用尽", inst.code6)
+        return []
+
+    market.history = boom
+    engine = QueryEngine(market)
+    rows = engine.run(
+        resolve_instruments(["600038.SH"], market),
+        ["name", "x_price"],
+        x_date="2026-09-12",
+        refresh_mode="full",
+    )
+    assert rows[0]["x_price"] is None
+    assert any(item["block"] == "bars" and "额度" in item["message"] for item in engine.last_issues)
+    assert not any(item["block"] == "x_price" for item in engine.last_issues)

@@ -288,6 +288,7 @@
       font: inherit;
     }
     .tab.on { color: var(--ink); border-bottom-color: var(--teal); font-weight: 600; }
+    .tab.is-paused { opacity: 0.55; }
     .toolbar {
       display: flex;
       gap: 8px;
@@ -395,7 +396,7 @@
     .login-card.picker-card {
       width: min(900px, calc(100vw - 48px));
       max-width: calc(100vw - 48px);
-      max-height: min(86vh, 680px);
+      max-height: min(92vh, 800px);
       overflow: auto;
       display: flex;
       flex-direction: column;
@@ -416,7 +417,9 @@
       display: grid;
       grid-template-columns: 1fr 1fr 1fr;
       gap: 6px 14px;
-      max-height: 140px;
+      flex: 0 0 auto;
+      min-height: 240px;
+      max-height: 240px;
       overflow: auto;
       margin-bottom: 10px;
     }
@@ -450,7 +453,7 @@
     .picker-card .pick-actions { flex-shrink: 0; flex-wrap: wrap; }
     @media (max-width: 800px) {
       .picker-toolbar { grid-template-columns: 1fr; }
-      .picker-tax { grid-template-columns: 1fr; max-height: 96px; }
+      .picker-tax { grid-template-columns: 1fr; min-height: 200px; max-height: 200px; }
       .picker-card .pick-list { grid-template-columns: 1fr; }
       .picker-card .pick-list label { border-right: 0; }
     }
@@ -803,6 +806,7 @@
         </div>
 
         <div id="agent" class="view">
+          <div id="agentLite" class="query-alert warn" style="display:none;"></div>
           <div class="split">
             <div class="chat">
               <div id="agentRules" class="policy-bar">本轮守则加载中。问答走 analyst；盯盘在监控中心。</div>
@@ -849,6 +853,7 @@
         </div>
 
         <div id="monitor" class="view">
+          <div id="monitorLite" class="query-alert warn" style="display:none;"></div>
           <div class="toolbar">
             <div class="subtabs">
               <button class="subtab on" data-monitor="today" type="button">今日</button>
@@ -939,6 +944,17 @@
             <span class="toolbar-help"><span data-help-tip="数据在软件根目录的 data/。缓存可删；自选、对话、提醒在 app.db，不要手删整个文件夹。">数据位置</span></span>
           </div>
           <div class="panel" style="flex:1; overflow:auto;">
+            <div class="clock-box" id="runtimeBox">
+              <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="内存不超过 8GB 时，自动档会暂停问答和自动盯盘，并把内存缓存收到 16MB、查询并发降到 2 路。传统查询、导出和墙钟保留。切回完整后马上恢复；要让占用真正降下来，退出助手再打开一次。">运行档位</span></div>
+              <div id="runtimeStatus" class="meta">尚未加载</div>
+              <div class="lic-pref-row" style="margin-top:8px;">
+                <label class="hint"><input type="radio" name="runtimeMode" value="auto" checked /> 按内存自动</label>
+                <label class="hint"><input type="radio" name="runtimeMode" value="full" /> 完整（问答 + 盯盘）</label>
+                <label class="hint"><input type="radio" name="runtimeMode" value="lite" /> 轻量（只留查询）</label>
+                <button class="btn sm primary" id="runtimeSave" type="button">保存档位</button>
+              </div>
+              <div id="runtimeNote" class="meta" style="margin-top:8px;"></div>
+            </div>
             <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="日线只缓存你查过的股票，同一文件覆盖写，默认最多 500 根。缓存超过上限会先删最久未用的日线，名单缓存尽量留到最后。每人默认最多留 20 份 Excel。">存储占用</span></div>
             <div id="storageBox" class="storage-grid meta-list">尚未加载</div>
             <div class="clock-box licence-box" id="licenceBox">
@@ -1409,6 +1425,7 @@
       quoteItems: [],
       pickMarket: "all",
       lastChat: null,
+      runtime: null,
       attachFile: null,
       sessionId: Number(sessionStorage.getItem("sa_session") || "") || null,
       nextAgent: "auto",
@@ -1531,8 +1548,68 @@
       </details>`;
     }
 
+    function agentPaused() {
+      return !!(state.runtime && state.runtime.resolved === "lite");
+    }
+
+    function blockIfLite() {
+      if (!agentPaused()) return false;
+      toast((state.runtime && state.runtime.summary) || "轻量模式已暂停问答和盯盘。到「本机数据」切回完整即可。");
+      return true;
+    }
+
+    function applyRuntime(rt) {
+      state.runtime = rt || null;
+      const lite = agentPaused();
+      document.querySelectorAll('.tab[data-view="agent"], .tab[data-view="monitor"]').forEach((tab) => {
+        tab.classList.toggle("is-paused", lite);
+      });
+      ["agentLite", "monitorLite"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (!lite) {
+          el.style.display = "none";
+          el.textContent = "";
+          return;
+        }
+        el.className = "query-alert warn";
+        el.style.display = "block";
+        el.textContent = (rt && rt.summary) || "轻量模式：问答和自动盯盘已暂停。传统查询不受影响。";
+      });
+      const box = document.getElementById("runtimeStatus");
+      if (box && rt) {
+        const label = rt.resolved === "lite" ? "轻量" : "完整";
+        const ask = rt.request === "auto" ? "自动" : (rt.request === "lite" ? "轻量" : "完整");
+        box.innerHTML = `<div><b>当前</b> ${label}（选择：${ask}） · 本机内存 ${esc(rt.ram_human || "未知")} · 本进程 ${esc(rt.process_human || "未知")}</div>`;
+      }
+      const note = document.getElementById("runtimeNote");
+      if (note && rt) note.textContent = rt.summary || "";
+      document.querySelectorAll('input[name="runtimeMode"]').forEach((el) => {
+        el.checked = el.value === (rt.request || "auto");
+        el.disabled = !!rt.locked;
+      });
+      const save = document.getElementById("runtimeSave");
+      if (save) save.disabled = !!(rt && rt.locked);
+    }
+
+    async function loadRuntime() {
+      const data = await api("/runtime");
+      applyRuntime(data);
+      return data;
+    }
+
+    async function saveRuntime() {
+      const picked = document.querySelector('input[name="runtimeMode"]:checked');
+      const mode = picked ? picked.value : "auto";
+      const data = await api("/runtime", { method: "POST", body: JSON.stringify({ mode }) });
+      applyRuntime(data);
+      toast(data.resolved === "lite" ? "已切到轻量：问答和盯盘暂停" : "已切回完整");
+      return data;
+    }
+
     async function loadHealth() {
       const data = await api("/health");
+      applyRuntime(data.runtime || null);
       const a = data.agent || {};
       renderPolicy(a.policies || {});
       const chBox = document.getElementById("channelBox");
@@ -3443,6 +3520,7 @@
     }
 
     async function runMonitor() {
+      if (blockIfLite()) return;
       const data = await api("/monitor/run", { method: "POST", body: "{}" });
       toast(data.count ? `本轮 ${data.count} 条提醒` : "本轮没有新提醒");
       toastInvalidRules(data);
@@ -3450,6 +3528,7 @@
     }
 
     async function runReview() {
+      if (blockIfLite()) return;
       const data = await api("/monitor/review/run", { method: "POST", body: "{}" });
       toast(data.count ? `复盘 ${data.count} 条` : "没有到期的待复盘提醒");
       await loadMonitor();
@@ -3668,6 +3747,7 @@
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
     document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
     document.getElementById("storageRefresh").addEventListener("click", () => loadStorage().catch((e) => toast(e.message)));
+    document.getElementById("runtimeSave").addEventListener("click", () => saveRuntime().catch((e) => toast(e.message)));
     document.getElementById("licRenewableAdd").addEventListener("click", () => addLicence("renewable", "licRenewableInput").catch((e) => toast(e.message)));
     document.getElementById("licConsumableAdd").addEventListener("click", () => addLicence("consumable", "licConsumableInput").catch((e) => toast(e.message)));
     document.getElementById("licPrefSave").addEventListener("click", () => saveLicencePreference().catch((e) => toast(e.message)));
@@ -3732,6 +3812,7 @@
       }
       const run = e.target.closest("[data-run]");
       if (run) {
+        if (blockIfLite()) return;
         try {
           const data = await api("/monitor/jobs/" + run.dataset.run + "/run", { method: "POST" });
           toast(data.count ? `本条 ${data.count} 条提醒` : "这条没有新提醒");
@@ -4139,6 +4220,7 @@
     }
 
     async function sendChat() {
+      if (blockIfLite()) return;
       const input = document.getElementById("chatInput");
       const raw = input.value || "";
       const question = raw.trim();
@@ -4237,6 +4319,7 @@
     }
 
     async function exportChat() {
+      if (blockIfLite()) return;
       if (!state.lastChat) return toast("先问一轮再导出");
       const data = await api("/agent/export", { method: "POST", body: JSON.stringify(state.lastChat) });
       await downloadArtifact(data.id, data.filename);
@@ -4696,6 +4779,7 @@
     async function loadStorage() {
       const data = await api("/storage");
       renderStorage(data);
+      await loadRuntime().catch(() => {});
       await loadLicences().catch(() => {});
       await loadClock().catch(() => {});
       return data;
@@ -4884,6 +4968,7 @@
     document.getElementById("customRules").addEventListener("click", async (e) => {
       const run = e.target.closest("[data-run]");
       if (run) {
+        if (blockIfLite()) return;
         try {
           const data = await api("/monitor/jobs/" + run.dataset.run + "/run", { method: "POST" });
           toast(data.count ? `本条 ${data.count} 条提醒` : "这条没有新提醒");

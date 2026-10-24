@@ -91,17 +91,21 @@ def start_scheduler():
         market = live_market
         db = SessionLocal()
         try:
-            for user in db.query(User).all():
-                # 一个用户出错不能拖垮其他用户，也不能让复盘 / 配额清理跟着不跑
-                try:
-                    run_watcher(db, user, market, schedule=schedule)
-                except Exception as exc:  # noqa: BLE001
-                    log_scheduler_error(f"run_watcher user={getattr(user, 'username', '?')}", exc)
-                if schedule == "eod":
+            # 轻量档只停问答盯盘。日终的缓存清理照旧，查询用的墙钟也照旧。
+            from src.platform.runtime_profile import agents_enabled
+
+            if agents_enabled():
+                for user in db.query(User).all():
+                    # 一个用户出错不能拖垮其他用户，也不能让复盘 / 配额清理跟着不跑
                     try:
-                        run_reviewer(db, user, market)
+                        run_watcher(db, user, market, schedule=schedule)
                     except Exception as exc:  # noqa: BLE001
-                        log_scheduler_error(f"run_reviewer user={getattr(user, 'username', '?')}", exc)
+                        log_scheduler_error(f"run_watcher user={getattr(user, 'username', '?')}", exc)
+                    if schedule == "eod":
+                        try:
+                            run_reviewer(db, user, market)
+                        except Exception as exc:  # noqa: BLE001
+                            log_scheduler_error(f"run_reviewer user={getattr(user, 'username', '?')}", exc)
             if schedule == "eod":
                 try:
                     enforce_all(db)
