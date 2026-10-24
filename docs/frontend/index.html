@@ -2237,6 +2237,36 @@
       renderTableMore(total || 0, 0);
     }
 
+    function rememberStreamRow(row) {
+      if (!row || row.code6 == null || row.code6 === "") return;
+      const prev = state.streamRows[row.code6];
+      state.streamRows[row.code6] = prev ? Object.assign({}, prev, row) : row;
+    }
+
+    function paintNewStreamRows(rows) {
+      const fields = state.fields || [];
+      const body = document.getElementById("tableBody");
+      const trs = [...body.querySelectorAll("tr")];
+      let slot = 0;
+      while (slot < trs.length && trs[slot].dataset && trs[slot].dataset.code) slot += 1;
+      rows.forEach((row) => {
+        let tr = trs[slot];
+        if (!tr) {
+          tr = document.createElement("tr");
+          body.appendChild(tr);
+          trs.push(tr);
+        }
+        slot += 1;
+        tr.className = "row-in";
+        tr.dataset.code = row.code6 || "";
+        tr.innerHTML = rowCellsHtml(fields, row);
+        if (row.code6) {
+          state.rowTr[row.code6] = tr;
+          rememberStreamRow(row);
+        }
+      });
+    }
+
     function applyStreamRows(rows, stage) {
       const fields = state.fields || [];
       if (stage === "quote") dbg("首批行情示例行（若这里就是空的，说明行情没取到）", rows && rows[0]);
@@ -2253,26 +2283,17 @@
         renderVirtual();
         return;
       }
-      const body = document.getElementById("tableBody");
-      const limit = state.tablePage * PAGE_SIZE;
       if (stage === "quote") {
-        // 首批：只有行情，按顺序把骨架行替换成真行
-        const trs = body.querySelectorAll("tr");
-        rows.slice(0, limit).forEach((row, i) => {
-          const tr = trs[i];
-          if (!tr) return;
-          tr.className = "row-in";
-          tr.innerHTML = rowCellsHtml(fields, row);
-          if (row.code6) {
-            state.rowTr[row.code6] = tr;
-            state.streamRows[row.code6] = row;
-          }
-        });
+        paintNewStreamRows(rows);
       } else {
-        // 后续：慢字段补齐，只改对应的格子
+        // 慢字段补齐时，行还没画出来就先补上这一行，避免小股票池整表空白。
+        const fresh = [];
         rows.forEach((row) => {
-          const tr = state.rowTr[row.code6];
-          if (!tr) return;
+          const tr = row.code6 ? state.rowTr[row.code6] : null;
+          if (!tr) {
+            fresh.push(row);
+            return;
+          }
           const tds = tr.querySelectorAll("td");
           fields.forEach((f, idx) => {
             const val = row[f.key];
@@ -2286,8 +2307,9 @@
             td.classList.add("cell-in");
             setTimeout(() => td.classList.remove("cell-in"), 800);
           });
-          state.streamRows[row.code6] = Object.assign({}, state.streamRows[row.code6], row);
+          rememberStreamRow(row);
         });
+        if (fresh.length) paintNewStreamRows(fresh);
       }
       state.rowsRaw = Object.values(state.streamRows || {});
     }
@@ -2323,8 +2345,8 @@
         return;
       }
       if (event === "done") {
-        // 流式只流了一页，剩下的靠滚动加载
-        state.paged = Boolean(data.has_more) || state.rowsRaw.length < (state.totalRows || 0);
+        // 只有服务端明确说还有下一页时，才提示往下滚。行没画出来不能当成「还没加载」。
+        state.paged = Boolean(data.has_more);
         state.tablePage = 1;
         renderTable(state.fields, state.rowsRaw);
         showQueryIssues(data.issues || []);
@@ -2333,9 +2355,9 @@
           const bad = (data.issues || []).length ? " · 有失败，见表格上方" : "";
           const loaded = state.rowsRaw.length;
           const total = state.totalRows || loaded;
-          hint.textContent = loaded < total
+          hint.textContent = data.has_more
             ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载${bad}`
-            : `${data.rows_count || loaded} 只 · 用时 ${sec} 秒${bad}`;
+            : `${loaded} 只 · 用时 ${sec} 秒${bad}`;
         }
         return;
       }
@@ -2457,6 +2479,34 @@
       return base;
     }
 
+    function formatShanghaiMinute(raw) {
+      const text = String(raw || "").trim();
+      if (!text) return "";
+      const d = new Date(text);
+      if (Number.isNaN(d.getTime())) return text.replace("T", " ").slice(0, 16);
+      const parts = new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(d);
+      const pick = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+      return `${pick("year")}-${pick("month")}-${pick("day")} ${pick("hour")}:${pick("minute")}`;
+    }
+
+    function quoteSourceLabel(source) {
+      const src = String(source || "");
+      if (src === "live") return "麦蕊现拉";
+      if (src === "clock") return "墙钟档";
+      if (src === "mixed") return "墙钟档+麦蕊现拉";
+      if (src === "snapshot") return "随快照保存";
+      if (src === "missing") return "未取到";
+      return src;
+    }
+
     function describeQueryMode(data) {
       const m = data.market || {};
       if (m.offline || data.sample) {
@@ -2488,8 +2538,9 @@
       }
       if (data.refresh_mode === "snapshot") {
         const sn = data.snapshot || {};
-        const at = (sn.saved_at || "").replace("T", " ").slice(0, 16);
-        return at ? `快照·${at}` : "快照·仅读本机";
+        const at = formatShanghaiMinute(sn.saved_at);
+        // saved_at 是整张表写入本机的时刻（UTC 存储）。这里换成北京时间，避免和现价档口差 8 小时。
+        return at ? `本机快照（存于 ${at}）` : "本机快照";
       }
       if (data.refresh_mode === "cache") {
         const sc = data.slow_cache || {};
@@ -2643,8 +2694,13 @@
       const scope = codes && codes.length ? "筛选一次" : (data.pool || state.poolLabel || state.pool);
       const note = data.note ? ` · ${data.note}` : "";
       const clock = data.clock || {};
-      const asOf = clock.as_of ? ` · 更新 ${String(clock.as_of).replace("T", " ").slice(0, 16)}` : "";
-      const qsrc = clock.source ? ` · 现价源 ${clock.source}` : "";
+      const savedAt = data.refresh_mode === "snapshot"
+        ? formatShanghaiMinute((data.snapshot || {}).saved_at)
+        : "";
+      const slot = formatShanghaiMinute(clock.as_of);
+      // 快照写入时刻和现价档口经常是同一分钟，只保留「存于」那一个时间。
+      const asOf = slot && slot !== savedAt ? ` · 现价档口 ${slot}` : "";
+      const qsrc = clock.source ? ` · 现价来自${quoteSourceLabel(clock.source)}` : "";
       const fetchIssue = quoteFetchIssue(data);
       const warn = fetchIssue ? ` · ${fetchIssue}` : "";
       document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}${qsrc}${asOf}${warn}`;

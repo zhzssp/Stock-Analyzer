@@ -297,6 +297,40 @@ function Test-SaStopRequested {
     return [bool][SaRunHost]::StopRequested
 }
 
+$script:RestartRequested = $false
+
+function Test-RestartHotkey {
+    try {
+        if (-not [Console]::KeyAvailable) { return $false }
+        $key = [Console]::ReadKey($true)
+        if (($key.Modifiers -band [ConsoleModifiers]::Control) -eq 0) { return $false }
+        if ($key.Key -eq 'R') { return $true }
+        # Ctrl+R 在部分终端里 Key 不是 R，但 KeyChar 为 0x12
+        if ([int][char]$key.KeyChar -eq 18) { return $true }
+    } catch { }
+    return $false
+}
+
+function Request-ServerRestart {
+    $script:RestartRequested = $true
+}
+
+function Stop-RunningServerProcess([System.Diagnostics.Process]$Running) {
+    if (-not $Running) { return }
+    try { $Running.Refresh() } catch { }
+    if ($Running.HasExited) { return }
+    Write-Info "正在结束服务 PID $($Running.Id) ..."
+    if ($script:HostReady) {
+        [SaRunHost]::ChildPid = [int]$Running.Id
+        [SaRunHost]::KillChild()
+    } elseif ($Running.Id -gt 0) {
+        Stop-ProcessTree $Running.Id
+    }
+    try { $Running.WaitForExit(4000) } catch { }
+    if ($script:HostReady) { [SaRunHost]::ChildPid = 0 }
+    Clear-PidFile
+}
+
 function Test-ControlCExitCode($Value) {
     if ($null -eq $Value) { return $false }
     try {
@@ -621,6 +655,16 @@ try {
         return $found
     }
 
+    $script:ServerCycle = 0
+    do {
+    $script:ServerCycle++
+    $script:RestartRequested = $false
+    $ready = $false
+    if ($script:ServerCycle -gt 1) {
+        Write-Host ""
+        Write-Step "重新启动服务（第 $($script:ServerCycle) 轮）"
+    }
+
     Write-Step "[3/4] 清理上次没关干净的服务"
     if (Test-Path -LiteralPath $script:PidFile) {
         $oldPidText = Get-SafeText (Get-Content -LiteralPath $script:PidFile -TotalCount 1 -ErrorAction SilentlyContinue)
@@ -700,6 +744,11 @@ try {
             Write-Info "收到停止请求，正在取消启动..."
             break
         }
+        if (Test-RestartHotkey) {
+            Request-ServerRestart
+            Write-Info "Ctrl+R：正在取消当前启动并重新拉起..."
+            break
+        }
         $listening = @(Get-ListenPids $port)
         if ($listening.Count -gt 0) {
             $ready = $true
@@ -717,9 +766,17 @@ try {
         if ($proc -and $proc.HasExited) { break }
     }
 
+    if ($script:RestartRequested) {
+        Stop-RunningServerProcess $proc
+        Start-Sleep -Milliseconds 500
+        continue
+    }
+
     if (Test-SaStopRequested) {
         $code = 0
-    } elseif ($proc -and $proc.HasExited) {
+        break
+    }
+    if ($proc -and $proc.HasExited) {
         $code = $proc.ExitCode
         if (Test-ControlCExitCode $code) {
             $code = 0
@@ -729,42 +786,61 @@ try {
             Write-LogHint
             exit $code
         }
-    } else {
-        if ($ready) {
-            Write-Host ""
-            Write-Host "========================================" -ForegroundColor Green
-            Write-Host "  启动成功，可以打开浏览器了" -ForegroundColor Green
-            Write-Host "========================================" -ForegroundColor Green
-        } else {
-            Write-Warn "60 秒内还没检测到端口 $port，服务可能仍在加载"
-            Write-Warn "请再等一会儿再试浏览器；一直打不开就把本窗口内容发给工作人员"
-            Write-Host ""
-        }
+        break
+    }
 
+    if ($ready) {
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        if ($script:ServerCycle -le 1) {
+            Write-Host "  启动成功，可以打开浏览器了" -ForegroundColor Green
+        } else {
+            Write-Host "  服务已重新启动，可以刷新浏览器" -ForegroundColor Green
+        }
+        Write-Host "========================================" -ForegroundColor Green
+    } else {
+        Write-Warn "60 秒内还没检测到端口 $port，服务可能仍在加载"
+        Write-Warn "请再等一会儿再试浏览器；一直打不开就把本窗口内容发给工作人员"
+        Write-Host ""
+    }
+
+    if ($script:ServerCycle -le 1) {
         Write-Host "  请在浏览器地址栏输入（不要去搜索）："
         Write-Host "    $url" -ForegroundColor Yellow
         Write-Host "  登录账号: $user"
         Write-Host "  登录密码: $pass"
         Write-Host ""
-        Write-Host "  关掉本窗口后，助手留在右下角托盘（小图标）。点它可打开工作台。" -ForegroundColor Yellow
-        Write-Host "  彻底退出：托盘右键选「退出助手」，或点一下本窗口按 Ctrl+C。"
-        Write-Host "  不必回答 Terminate batch job。"
-        Write-Host ""
-        Write-LogHint
-        Write-Host ""
-
-        while ($proc -and -not $proc.HasExited) {
-            if (Test-SaStopRequested) { break }
-            Start-Sleep -Milliseconds 300
-            $proc.Refresh()
-        }
-        if ($proc -and $proc.HasExited -and $null -ne $proc.ExitCode) {
-            $code = $proc.ExitCode
-        }
-        if (Test-SaStopRequested -or (Test-ControlCExitCode $code)) {
-            $code = 0
-        }
     }
+    Write-Host "  关掉本窗口后，助手留在右下角托盘（小图标）。点它可打开工作台。" -ForegroundColor Yellow
+    Write-Host "  本窗口：Ctrl+C 停止并退出；Ctrl+R 原地重启后台服务（不关黑窗口）。" -ForegroundColor Yellow
+    Write-Host "  也可双击 scripts\restart.cmd 另开窗口重启；不必回答 Terminate batch job。"
+    Write-Host ""
+    Write-LogHint
+    Write-Host ""
+
+    while ($proc -and -not $proc.HasExited) {
+        if (Test-SaStopRequested) { break }
+        if (Test-RestartHotkey) {
+            Request-ServerRestart
+            break
+        }
+        Start-Sleep -Milliseconds 300
+        $proc.Refresh()
+    }
+    if ($proc -and $proc.HasExited -and $null -ne $proc.ExitCode) {
+        $code = $proc.ExitCode
+    }
+    if (Test-SaStopRequested -or (Test-ControlCExitCode $code)) {
+        $code = 0
+    }
+
+    if ($script:RestartRequested) {
+        Stop-RunningServerProcess $proc
+        Start-Sleep -Milliseconds 500
+        continue
+    }
+    break
+    } while ($true)
 } catch {
     $code = 1
     Write-Fail "启动遇到未处理的错误。"

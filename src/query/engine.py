@@ -12,6 +12,24 @@ from src.query.cards import derive_card_metrics
 from src.query.issues import combine_issues
 from src.query.registry import registry
 
+
+def _holder_names(detail, summary) -> str | None:
+    """导出和表格都用明细里的前十名。旧缓存的摘要只拼了前三名，不能再拿来当单元格。"""
+    names: list[str] = []
+    for item in detail or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        names.append(name)
+        if len(names) >= 10:
+            break
+    if names:
+        return "、".join(names)
+    text = str(summary or "").strip()
+    return text or None
+
 REFRESH_QUOTE = "quote"
 REFRESH_CACHE = "cache"
 REFRESH_SNAPSHOT = "snapshot"
@@ -348,8 +366,8 @@ class QueryEngine:
             "hot_concepts": p.get("hot_concepts"),
             "concept": p.get("concept"),
             "business": p.get("business"),
-            "holders": h.get("holders"),
-            "top_holders": h.get("top_holders"),
+            "holders": _holder_names(h.get("holders_detail"), h.get("holders")),
+            "top_holders": _holder_names(h.get("top_holders_detail"), h.get("top_holders")),
             "flow_in": fl.get("inflow"),
             "flow_out": fl.get("outflow"),
             "flow_net": fl.get("net_in"),

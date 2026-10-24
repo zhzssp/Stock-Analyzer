@@ -47,6 +47,47 @@ def test_query_has_taxonomy_and_flow_columns():
     assert "挪威政府全球养老基金" in (row["holders"] or "")
 
 
+def test_holder_cell_and_excel_keep_all_ten_names(monkeypatch, tmp_path):
+    from openpyxl import load_workbook
+
+    from src.config import settings
+    from src.market.holders_diff import summarize
+    from src.market.normalize import normalize_instrument
+    from src.platform.export_xlsx import write_query_xlsx
+
+    names = [f"股东{i}" for i in range(1, 11)]
+    assert summarize([{"name": name} for name in names]) == "、".join(names)
+    assert "股东11" not in summarize([{"name": f"股东{i}"} for i in range(1, 13)])
+
+    engine = QueryEngine(MarketClient())
+    inst = normalize_instrument("000001.SZ", "平安银行", "SZ")
+    detail = [{"name": name} for name in names]
+    bag = {
+        "quote": {},
+        "profile": {},
+        "holders": {"holders": "股东1、股东2、股东3", "holders_detail": detail},
+        "finance": {},
+        "flow": {},
+        "bottom": {},
+    }
+    text = engine._value("holders", inst, bag)
+    assert text == "、".join(names)
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    settings.artifact_dir.mkdir(parents=True, exist_ok=True)
+    path = write_query_xlsx([{"holders": text}], ["holders"], "平安银行")
+    wb = load_workbook(path, data_only=True)
+    ws = wb.active
+    assert ws.cell(1, 1).value == "前十大流通股东"
+    cell = ws.cell(2, 1)
+    assert cell.alignment.wrap_text is True
+    for name in names:
+        assert name in cell.value
+    assert cell.value.count("\n") == 9
+    assert "股东11" not in cell.value
+    wb.close()
+
+
 def test_holder_diff_and_swf_alias():
     old = normalize_holders([{"Gdmc": "中直股份控股股东", "Cgbl": 48.2}])
     new = normalize_holders(

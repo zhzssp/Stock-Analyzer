@@ -2,14 +2,54 @@ from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.styles import Alignment
+from openpyxl.utils import get_column_letter
 
 from src.config import settings
 from src.query.registry import registry
+
+# 前十名拼在一个单元格里。列宽按最长的一个名字留，每人一行，避免默认窄列看起来像被截断。
+_HOLDER_KEYS = frozenset({"holders", "top_holders"})
+_HOLDER_WRAP = Alignment(wrap_text=True, vertical="top")
 
 
 def _safe_token(name: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (name or "pool"))
     return cleaned.strip("_") or "pool"
+
+
+def _holder_lines(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return text
+    parts = [part.strip() for part in text.split("、") if part.strip()]
+    if len(parts) <= 1:
+        return text
+    return "\n".join(parts)
+
+
+def _fit_holder_columns(ws, cols: list[int]) -> None:
+    if not cols:
+        return
+    for col in cols:
+        widest = 12
+        for row_idx in range(2, ws.max_row + 1):
+            cell = ws.cell(row_idx, col)
+            cell.alignment = _HOLDER_WRAP
+            text = "" if cell.value is None else str(cell.value)
+            for line in text.split("\n"):
+                widest = max(widest, len(line))
+        ws.column_dimensions[get_column_letter(col)].width = min(widest * 2 + 4, 80)
+    for row_idx in range(2, ws.max_row + 1):
+        lines = 1
+        for col in cols:
+            text = ws.cell(row_idx, col).value
+            if text:
+                lines = max(lines, str(text).count("\n") + 1)
+        if lines > 1:
+            ws.row_dimensions[row_idx].height = min(16 * lines + 6, 220)
 
 
 def write_query_xlsx(
@@ -27,8 +67,16 @@ def write_query_xlsx(
     ws.title = "query"
     headers = [registry.get(k).label for k in field_keys]
     ws.append(headers)
+    holder_cols = [i for i, key in enumerate(field_keys, start=1) if key in _HOLDER_KEYS]
     for row in rows:
-        ws.append([row.get(k) for k in field_keys])
+        values = []
+        for key in field_keys:
+            value = row.get(key)
+            if key in _HOLDER_KEYS:
+                value = _holder_lines(value)
+            values.append(value)
+        ws.append(values)
+    _fit_holder_columns(ws, holder_cols)
     meta = wb.create_sheet("meta")
     meta.append(["exported_at", datetime.now().isoformat(timespec="seconds")])
     meta.append(["pool", pool_name])

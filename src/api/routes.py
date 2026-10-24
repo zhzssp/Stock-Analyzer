@@ -1035,6 +1035,8 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 "note": meta.get("note") or "",
             },
         )
+        # 行情批必须马上以 quote 发出。页面只靠这一批把骨架换成真行。
+        # 不满 10 只时如果和后面的慢字段攒在一起，结束时会被标成 full，两行都会被页面丢掉。
         pending: list[dict] = []
         sent = 0
         while True:
@@ -1044,23 +1046,30 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                     yield frame("batch", {"rows": pending, "stage": "full"})
                 break
             event, data = item
+            if event == "batch" and data.get("stage") == "quote":
+                if pending:
+                    yield frame("batch", {"rows": pending, "stage": "full"})
+                    pending = []
+                quote_rows = data.get("rows") or []
+                if quote_rows:
+                    yield frame("batch", {"rows": quote_rows, "stage": "quote"})
+                continue
             if event == "batch":
                 rows = data.get("rows") or []
                 pending.extend(rows)
                 # 进度只统计「慢字段已补齐的只数」，首批行情不算，否则会显示 200%
-                if data.get("stage") == "full":
-                    sent += len(rows)
+                sent += len(rows)
                 if len(pending) >= 10:
-                    yield frame("batch", {"rows": pending, "stage": data.get("stage", "full")})
+                    yield frame("batch", {"rows": pending, "stage": "full"})
                     yield frame("progress", {"done": sent, "total": len(insts)})
                     pending = []
-            else:
-                if pending:
-                    yield frame("batch", {"rows": pending, "stage": "full"})
-                    pending = []
-                yield frame(event, data)
-                if event in ("done", "error"):
-                    break
+                continue
+            if pending:
+                yield frame("batch", {"rows": pending, "stage": "full"})
+                pending = []
+            yield frame(event, data)
+            if event in ("done", "error"):
+                break
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

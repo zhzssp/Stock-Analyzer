@@ -39,7 +39,8 @@ def normalize_holders(items: list | None, catalog: list[dict] | None = None) -> 
     return out
 
 
-def summarize(items: list[dict], limit: int = 3) -> str:
+def summarize(items: list[dict], limit: int = 10) -> str:
+    """前十大股东的单元格写全十名。明细列表本身也只保留十名。"""
     names = [x["name"] for x in items[:limit] if x.get("name")]
     return "、".join(names) or ""
 

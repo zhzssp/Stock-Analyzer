@@ -70,6 +70,28 @@ def _events(text: str) -> list[tuple[str, dict]]:
     return out
 
 
+def test_small_pool_stream_emits_quote_batch_before_done():
+    """不满 10 只时，行情批必须仍以 quote 发出。标成 full 会让页面画不出任何行。"""
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})
+        assert login.status_code == 200, login.text
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        res = client.post(
+            "/api/query/stream",
+            json={"codes": ["600038.SH", "000725.SZ"], "refresh_mode": "quote", "fields": ["name", "code", "price"]},
+            headers=headers,
+        )
+        assert res.status_code == 200, res.text
+        events = _events(res.text)
+        batches = [data for name, data in events if name == "batch"]
+        assert batches
+        assert batches[0]["stage"] == "quote"
+        assert {row["code6"] for row in batches[0]["rows"]} == {"600038", "000725"}
+        done = next(data for name, data in events if name == "done")
+        assert done["rows_count"] == 2
+        assert done["has_more"] is False
+
+
 def test_stream_sends_field_objects_and_issues():
     with TestClient(app) as client:
         login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})

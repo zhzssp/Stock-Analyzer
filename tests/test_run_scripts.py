@@ -18,13 +18,31 @@ def _last_nonempty_line(name: str) -> str:
 
 
 def test_cmd_wrappers_end_on_powershell_so_ctrl_c_skips_yn_prompt():
-    for name in ("run.cmd", "run-server.cmd"):
+    for name in ("run-server.cmd", "restart.cmd"):
         body = _text(name)
         assert "STOCK_ANALYZER_KEEP_WINDOW=1" in body
         assert _last_nonempty_line(name).lower().startswith("powershell ")
         after_ps = body.lower().split("powershell -noprofile", 1)[1]
         assert "pause" not in after_ps
         assert "exit /b" not in after_ps
+    run_body = _text("run.cmd")
+    assert "STOCK_ANALYZER_KEEP_WINDOW=1" in run_body
+    main_part = run_body.split(":do_restart", 1)[0]
+    after_ps = main_part.lower().split("powershell -noprofile", 1)[1]
+    assert "pause" not in after_ps
+
+
+def test_run_cmd_supports_restart_subcommand():
+    body = _text("run.cmd")
+    assert "restart.ps1" in body
+    assert 'if /i "%~1"=="restart" goto do_restart' in body
+
+
+def test_restart_ps1_invokes_run_server_with_skip_setup():
+    body = _text("restart.ps1")
+    assert "STOCK_ANALYZER_SKIP_SETUP" in body
+    assert "run-server.ps1" in body
+    assert "src.main" in body or "Get-OurServerPids" in body
 
 
 def test_run_ps1_starts_server_in_process():
@@ -42,6 +60,8 @@ def test_run_server_handles_ctrl_c_and_window_close():
     assert "KillChild" in body
     assert "Wait-KeepWindow" in body
     assert "StopRequested" in body
+    assert "Test-RestartHotkey" in body
+    assert "Ctrl+R" in body
     assert "data\\run\\server.pid" in body
     assert "Initialize-SaRunHost" in body
     assert "AssignPidToJob" in body
