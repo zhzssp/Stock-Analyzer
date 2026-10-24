@@ -101,3 +101,31 @@ def test_watcher_jobs_alerts_and_disabled_slots():
         again = client.post("/api/monitor/jobs/holders-change/run", json={}, headers=headers)
         assert again.status_code == 200
         assert any(h["job_key"] == "holders-change" for h in again.json()["hits"])
+
+
+def test_institution_whitelist_starts_empty_and_drops_old_seed():
+    import json
+
+    from src.market.institutions import INSTITUTIONS
+    from src.platform.monitor_prefs import parse_pref
+
+    assert parse_pref(None)["selected"] == []
+    assert parse_pref(None)["custom"] == []
+
+    class Pref:
+        institutions = json.dumps(
+            {"selected": [i["name"] for i in INSTITUTIONS], "custom": [], "sources": []},
+            ensure_ascii=False,
+        )
+
+    assert parse_pref(Pref())["selected"] == []
+
+    class Kept:
+        institutions = json.dumps(
+            {"selected": ["高盛"], "custom": [{"name": "某某基金", "aliases": ["某某基金"]}]},
+            ensure_ascii=False,
+        )
+
+    kept = parse_pref(Kept())
+    assert kept["selected"] == ["高盛"]
+    assert kept["custom"][0]["name"] == "某某基金"

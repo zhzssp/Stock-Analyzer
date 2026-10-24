@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config import settings
+from src.market.client import _clean_concept
 from src.market.normalize import Instrument
 from src.platform.storage import atomic_write_text
 from src.query.cards import derive_card_metrics
@@ -115,6 +116,8 @@ def rows_from_snapshot(
         row["market"] = inst.market
         if not row.get("quote_source"):
             row["quote_source"] = "snapshot"
+        if row.get("concept"):
+            row["concept"] = _clean_concept(row["concept"])
         derived = derive_card_metrics(row.get("price"), (cards or {}).get(inst.code6), row.get("target"))
         for key in card_keys:
             if key in field_keys:

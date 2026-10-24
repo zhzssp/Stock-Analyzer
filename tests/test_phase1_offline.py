@@ -13,6 +13,14 @@ def test_official_concept_filter():
     assert all(x.get("concept_source") == "offline-fixture" for x in rows)
 
 
+def test_clean_concept_drops_section_label():
+    from src.market.client import _clean_concept
+
+    assert _clean_concept("所属概念板块,券商重仓,军工航天") == "券商重仓,军工航天"
+    assert _clean_concept("所属概念板块") == ""
+    assert _clean_concept("券商重仓,国防军工") == "券商重仓,国防军工"
+
+
 def test_indicators_and_x_price():
     market = MarketClient()
     engine = QueryEngine(market)

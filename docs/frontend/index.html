@@ -321,6 +321,31 @@
     }
     /* 虚拟滚动：行高必须固定，否则占位高度算不准会出现跳动 / 空档 */
     #queryTable tbody tr { height: 38px; }
+    .cell-peek {
+      position: fixed;
+      z-index: 80;
+      display: none;
+      width: min(420px, calc(100vw - 24px));
+      max-height: 240px;
+      overflow: auto;
+      padding: 10px 12px;
+      background: #fff;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .cell-peek .peek-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .cell-peek .peek-tag {
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--teal-soft);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .cell-peek .peek-text { white-space: normal; word-break: break-word; }
     #queryTable tbody td { padding-top: 6px; padding-bottom: 6px; }
     #queryTable tr.vspacer, #queryTable tr.vspacer td {
       height: auto; padding: 0; border: 0; background: transparent;
@@ -396,7 +421,7 @@
     .login-card.picker-card {
       width: min(900px, calc(100vw - 48px));
       max-width: calc(100vw - 48px);
-      max-height: min(92vh, 800px);
+      max-height: min(96vh, 1080px);
       overflow: auto;
       display: flex;
       flex-direction: column;
@@ -416,14 +441,27 @@
     .picker-tax {
       display: grid;
       grid-template-columns: 1fr 1fr 1fr;
-      gap: 6px 14px;
-      flex: 0 0 auto;
-      min-height: 240px;
-      max-height: 240px;
-      overflow: auto;
+      gap: 8px 14px;
+      flex: 0 0 400px;
+      height: 400px;
+      min-height: 400px;
+      overflow: hidden;
       margin-bottom: 10px;
     }
-    .picker-tax .chips { margin: 0; }
+    .picker-tax > div {
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .picker-tax .chips {
+      margin: 0;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      align-content: flex-start;
+    }
     .picker-tax-label {
       font-size: 13px;
       color: var(--muted);
@@ -453,7 +491,7 @@
     .picker-card .pick-actions { flex-shrink: 0; flex-wrap: wrap; }
     @media (max-width: 800px) {
       .picker-toolbar { grid-template-columns: 1fr; }
-      .picker-tax { grid-template-columns: 1fr; min-height: 200px; max-height: 200px; }
+      .picker-tax { grid-template-columns: 1fr; flex-basis: 320px; height: 320px; min-height: 320px; }
       .picker-card .pick-list { grid-template-columns: 1fr; }
       .picker-card .pick-list label { border-right: 0; }
     }
@@ -506,6 +544,7 @@
     .session-item.on, .session-item:hover { background: var(--paper); }
     .session-item .sub { color: var(--muted); font-size: 13px; }
     .meta-list { color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .inst-row { color: var(--ink); padding: 4px 0; cursor: context-menu; }
     .meta-list .sub, .meta-list b { color: var(--ink); }
     .meta-list .sub { color: var(--muted); font-weight: 400; display: block; }
     .preview-wrap { overflow: auto; max-height: 280px; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; }
@@ -892,7 +931,7 @@
               <div class="pane-add-bar" data-bar="inst">
                 <button class="btn primary add-btn" id="instAddToggle" type="button">＋ 追加机构</button>
               </div>
-              <div class="side-title"><span data-help-tip="监控对照用的名字表，不是持仓实况。可取消勾选，也可追加名字。追加按钮固定在板块右上角，不随列表滚动。">关注机构白名单</span></div>
+              <div class="side-title"><span data-help-tip="监控对照用的名字表，不是持仓实况。开始是空的，点右上角追加。右键某一行可以把这家移出白名单，不是只取消勾选。">关注机构白名单</span></div>
               <div id="instList" class="meta-list">尚未加载</div>
               <div class="composer-row" id="instAddRow" style="margin:8px 0; display:none;">
                 <input id="instCustom" placeholder="追加机构名，如 某某基金" style="flex:1;" />
@@ -1274,6 +1313,8 @@
     const exchangeLabel = { SH: "沪", SZ: "深", BJ: "北" };
     const COL_MIN = 64;
     const COL_MAX_DEFAULT = 200;
+    const PEEK_KEYS = new Set(["concept", "hot_concepts", "business", "holders", "top_holders", "thesis", "low_note"]);
+    const PEEK_TAGS = new Set(["concept", "hot_concepts"]);
     const COL_SHORT = {
       name: 96, code: 112, price: 80, pct: 96, pe: 80, pb: 80,
       zgb: 96, ltgb: 96, mgwfplr: 120, yffy: 96, mgjzc: 104, eps: 96,
@@ -1722,7 +1763,16 @@
       return data;
     }
 
+    function cleanConcept(value) {
+      return String(value == null ? "" : value)
+        .split(/[,，、]/)
+        .map((part) => part.trim())
+        .filter((part) => part && part !== "所属概念板块")
+        .join(",");
+    }
+
     function fmt(key, value) {
+      if (key === "concept") value = cleanConcept(value);
       if (value === null || value === undefined || value === "") return "—";
       if ((key === "pct" || key === "off_low" || key === "turnover" || key === "pct60" || key === "pct_ytd" || key === "vs_cost" || key === "dist_buy" || key === "dist_reduce") && typeof value === "number") {
         const sign = (key === "pct" || key === "pct60" || key === "pct_ytd") && value > 0 ? "+" : "";
@@ -1814,6 +1864,10 @@
       const el = document.getElementById("poolHint");
       if (!el) return;
       el.innerHTML = helpTip(text || "");
+    }
+
+    function wantVirtualScroll(total, rowCount) {
+      return (total || 0) > VSCROLL_MIN || (rowCount || 0) > VSCROLL_MIN;
     }
 
     function defaultColWidth(field) {
@@ -2171,7 +2225,9 @@
         const display = String(fmt(f.key, raw));
         let cls = "";
         if (SIGNED_KEYS[f.key]) cls = signedClass(raw);
-        return `<td class="${cls}" title="${escAttr(display)}">${escHtml(display)}</td>`;
+        const peek = PEEK_KEYS.has(f.key) ? ` data-peek="${escAttr(f.key)}"` : "";
+        const title = peek ? "" : ` title="${escAttr(display)}"`;
+        return `<td class="${cls}"${title}${peek}>${escHtml(display)}</td>`;
       }).join("");
     }
 
@@ -2181,15 +2237,19 @@
       state.fields = fields;
       // append=true 是「滚动加载下一页」：接在已加载的行后面，不覆盖
       state.rowsRaw = o.append ? (state.rowsRaw || []).concat(rows || []) : (rows || []);
+      state.vscroll = wantVirtualScroll(state.totalRows, state.rowsRaw.length);
       applyColLayout(fields);
       if (state.vscroll) {
         renderTableHead(fields);
         renderVirtual();
       } else {
         const all = sortedRows(state.rowsRaw);
-        const limit = state.tablePage * PAGE_SIZE;
+        const pageLimit = state.tablePage * PAGE_SIZE;
+        // 后端分页追加的行要整页留下。只在「一次拿全、本机翻页」时才按 tablePage 截断。
+        const limit = (o.append || state.paged) ? all.length : Math.min(all.length, pageLimit);
         const shown = all.slice(0, limit);
-        renderTableMore(all.length, limit);
+        if (state.paged) renderPagedHint(all.length);
+        else renderTableMore(all.length, limit);
         renderTableHead(fields);
         document.getElementById("tableBody").innerHTML = shown.map((row) => `<tr>${rowCellsHtml(fields, row)}</tr>`).join("");
         state.rowTr = {};
@@ -2241,7 +2301,10 @@
     }
 
     function onTableScroll() {
-      if (!state.vscroll) return;
+      if (!state.vscroll) {
+        if (state.paged) maybeLoadMore();
+        return;
+      }
       if (vscrollRaf) cancelAnimationFrame(vscrollRaf);
       vscrollRaf = requestAnimationFrame(() => {
         vscrollRaf = 0;
@@ -2403,7 +2466,7 @@
       if (event === "meta") {
         // meta.total 是整池行数（不是本页），据此决定是否启用虚拟滚动
         state.totalRows = data.total || 0;
-        state.vscroll = state.totalRows > VSCROLL_MIN;
+        state.vscroll = wantVirtualScroll(state.totalRows, 0);
         renderSkeleton(data.fields || [], data.total || 0);
         if (hint) hint.textContent = `共 ${data.total || 0} 只 · 正在取行情…`;
         return;
@@ -2732,7 +2795,7 @@
       } else {
         state.totalRows = data.total || rows.length;
         state.paged = Boolean(data.has_more);
-        state.vscroll = state.totalRows > VSCROLL_MIN || rows.length > VSCROLL_MIN;
+        state.vscroll = wantVirtualScroll(state.totalRows, rows.length);
       }
       dbg("分页状态", { total: state.totalRows, loaded: rows.length, paged: state.paged, vscroll: state.vscroll });
       if (refreshMode === "quote" && !appending && state.rowsRaw && state.rowsRaw.length) {
@@ -4379,19 +4442,21 @@
     function renderInstitutions() {
       const box = document.getElementById("instList");
       const pref = state.monitorPrefs || { catalog: state.institutions || [], selected: [], custom: [] };
-      const selected = new Set(pref.selected || []);
-      const catalog = pref.catalog || state.institutions || [];
-      if (!catalog.length && !(pref.custom || []).length) {
-        box.innerHTML = "名单为空";
+      const byName = new Map((pref.catalog || state.institutions || []).map((i) => [i.name, i]));
+      const selected = pref.selected || [];
+      const custom = pref.custom || [];
+      if (!selected.length && !custom.length) {
+        box.textContent = "名单为空。点右上角追加机构；右键某一行可移出白名单。";
         return;
       }
-      const system = catalog.map((i) =>
-        `<label><input type="checkbox" data-inst="${esc(i.name)}" ${selected.has(i.name) ? "checked" : ""} /><span>${esc(i.name)}<div class="sub">${esc(kindLabel(i.kind))}</div></span></label>`
+      const system = selected.map((name) => {
+        const i = byName.get(name) || { name, kind: "" };
+        return `<div class="inst-row" data-inst-name="${escAttr(name)}" data-inst-origin="builtin" title="右键移出白名单"><b>${esc(i.name)}</b><div class="sub">${esc(kindLabel(i.kind) || "已加入")}</div></div>`;
+      }).join("");
+      const extra = custom.map((i) =>
+        `<div class="inst-row" data-inst-name="${escAttr(i.name)}" data-inst-origin="custom" title="右键移出白名单"><b>${esc(i.name)}</b><div class="sub">自定义</div></div>`
       ).join("");
-      const custom = (pref.custom || []).map((i, idx) =>
-        `<label><input type="checkbox" checked disabled /><span>${esc(i.name)}<div class="sub">自定义 <button class="btn sm ghost" type="button" data-drop-inst="${idx}">移除</button></div></span></label>`
-      ).join("");
-      box.innerHTML = system + custom;
+      box.innerHTML = system + extra;
     }
 
     async function loadMonitorPrefs() {
@@ -5117,17 +5182,20 @@
       }
     });
     document.getElementById("closeCard").addEventListener("click", closeCard);
+    async function saveInstitutionPref(okText) {
+      const pref = state.monitorPrefs || { selected: [], custom: [] };
+      state.monitorPrefs = await api("/monitor/prefs", {
+        method: "PUT",
+        body: JSON.stringify({ selected: pref.selected || [], custom: pref.custom || [] }),
+      });
+      renderInstitutions();
+      renderSources();
+      if (okText) toast(okText);
+    }
+
     document.getElementById("instSave").addEventListener("click", async () => {
-      const selected = [...document.querySelectorAll("#instList [data-inst]:checked")].map((el) => el.dataset.inst);
-      const custom = (state.monitorPrefs && state.monitorPrefs.custom) || [];
       try {
-        state.monitorPrefs = await api("/monitor/prefs", {
-          method: "PUT",
-          body: JSON.stringify({ selected, custom }),
-        });
-        renderInstitutions();
-        renderSources();
-        toast("已保存白名单");
+        await saveInstitutionPref("已保存白名单");
       } catch (err) {
         toast(err.message);
       }
@@ -5136,17 +5204,43 @@
       const name = (document.getElementById("instCustom").value || "").trim();
       if (!name) return toast("先填机构名");
       state.monitorPrefs = state.monitorPrefs || { selected: [], custom: [], catalog: [] };
-      state.monitorPrefs.custom = (state.monitorPrefs.custom || []).concat([{ name, aliases: [name] }]);
+      const pref = state.monitorPrefs;
+      const catalog = pref.catalog || state.institutions || [];
+      const builtin = catalog.find((i) => i.name === name || (i.aliases || []).some((a) => a === name));
+      if (builtin) {
+        if ((pref.selected || []).includes(builtin.name)) return toast("已经在白名单里");
+        pref.selected = (pref.selected || []).concat([builtin.name]);
+      } else {
+        if ((pref.custom || []).some((i) => i.name === name)) return toast("已经在白名单里");
+        pref.custom = (pref.custom || []).concat([{ name, aliases: [name] }]);
+      }
       document.getElementById("instCustom").value = "";
       renderInstitutions();
     });
-    document.getElementById("instList").addEventListener("click", (e) => {
-      const drop = e.target.closest("[data-drop-inst]");
-      if (!drop) return;
-      const idx = Number(drop.dataset.dropInst);
-      if (!state.monitorPrefs) return;
-      state.monitorPrefs.custom = (state.monitorPrefs.custom || []).filter((_, i) => i !== idx);
+    async function removeInstitution(name, origin) {
+      const pref = state.monitorPrefs || { selected: [], custom: [] };
+      if (origin === "custom") {
+        pref.custom = (pref.custom || []).filter((i) => i.name !== name);
+      } else {
+        pref.selected = (pref.selected || []).filter((n) => n !== name);
+      }
+      state.monitorPrefs = pref;
       renderInstitutions();
+      try {
+        await saveInstitutionPref("已移出白名单");
+      } catch (err) {
+        toast(err.message);
+      }
+    }
+    document.getElementById("instList").addEventListener("contextmenu", (e) => {
+      const row = e.target.closest("[data-inst-name]");
+      if (!row) return;
+      e.preventDefault();
+      const name = row.dataset.instName;
+      const origin = row.dataset.instOrigin || "builtin";
+      openCtxMenu(e.clientX, e.clientY, [
+        { label: "移出白名单", danger: true, run: () => removeInstitution(name, origin) },
+      ]);
     });
     document.getElementById("srcAdd").addEventListener("click", () => {
       const name = (document.getElementById("srcName").value || "").trim();
@@ -5208,8 +5302,85 @@
       }
     });
 
+    function bindCellPeek() {
+      const card = document.createElement("div");
+      card.className = "cell-peek";
+      card.setAttribute("role", "tooltip");
+      document.body.appendChild(card);
+      let hideTimer = 0;
+      let current = null;
+
+      function place(td) {
+        const r = td.getBoundingClientRect();
+        const width = card.offsetWidth;
+        const height = card.offsetHeight;
+        let left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
+        let top = r.bottom + 6;
+        if (top + height > window.innerHeight - 8) top = Math.max(8, r.top - height - 6);
+        card.style.left = left + "px";
+        card.style.top = top + "px";
+      }
+
+      function fill(key, text) {
+        card.replaceChildren();
+        if (PEEK_TAGS.has(key)) {
+          const box = document.createElement("div");
+          box.className = "peek-tags";
+          text.split(/[,，、]/).map((part) => part.trim()).filter(Boolean).forEach((name) => {
+            const tag = document.createElement("span");
+            tag.className = "peek-tag";
+            tag.textContent = name;
+            box.appendChild(tag);
+          });
+          card.appendChild(box);
+          return;
+        }
+        const block = document.createElement("div");
+        block.className = "peek-text";
+        block.textContent = text;
+        card.appendChild(block);
+      }
+
+      function show(td) {
+        const text = (td.textContent || "").trim();
+        if (!text || text === "—" || text === "-") return;
+        if (td.scrollWidth <= td.clientWidth + 1) return;
+        clearTimeout(hideTimer);
+        current = td;
+        fill(td.getAttribute("data-peek") || "", text);
+        card.style.display = "block";
+        place(td);
+      }
+
+      function scheduleHide() {
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+          current = null;
+          card.style.display = "none";
+        }, 160);
+      }
+
+      document.getElementById("tableBody").addEventListener("mouseover", (e) => {
+        const td = e.target.closest ? e.target.closest("td[data-peek]") : null;
+        if (!td) return;
+        show(td);
+      });
+      document.getElementById("tableBody").addEventListener("mouseout", (e) => {
+        const td = e.target.closest ? e.target.closest("td[data-peek]") : null;
+        if (!td || td !== current) return;
+        const next = e.relatedTarget;
+        if (next && card.contains(next)) return;
+        scheduleHide();
+      });
+      card.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+      card.addEventListener("mouseleave", scheduleHide);
+      const wrap = document.querySelector(".table-wrap");
+      if (wrap) wrap.addEventListener("scroll", () => { current = null; card.style.display = "none"; }, { passive: true });
+    }
+
     mountHelpTips();
     bindHelpBubble();
+    bindCellPeek();
     setPoolHint(poolHintText("watch"));
     setAttachHint();
 

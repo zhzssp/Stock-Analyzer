@@ -44,6 +44,8 @@ def test_workbench_exposes_landed_backend_entries():
     assert "只留最近导出" in html
     assert "本机数据" in html
     assert 'id="instList"' in html
+    assert "移出白名单" in html
+    assert "data-inst-origin" in html
     assert 'id="sourceList"' in html
     assert 'id="srcSave"' in html
     assert "检索源" in html
@@ -141,12 +143,12 @@ def test_workbench_picker_dialog_is_wide_and_short():
     assert "picker-toolbar" in html
     assert "picker-tax" in html
     assert "min(900px" in html
-    assert "min(92vh, 800px)" in html
+    assert "min(96vh, 1080px)" in html
     assert ".picker-tax" in html
     tax_css = html.split(".picker-tax {", 1)[1].split("}", 1)[0]
-    assert "flex: 0 0 auto" in tax_css
-    assert "min-height: 240px" in tax_css
-    assert "max-height: 240px" in tax_css
+    assert "flex: 0 0 400px" in tax_css
+    assert "height: 400px" in tax_css
+    assert "min-height: 400px" in tax_css
     assert "font: 15px/1.5" in html
     assert ".table-wrap { overflow: auto;" in html or "table-wrap { overflow: auto" in html
 

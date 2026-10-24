@@ -618,7 +618,14 @@ class MarketClient:
             zg = self._get(f"/hszg/zg/{inst.code6}")
             names = [x.get("name", "") for x in zg if isinstance(x, dict)]
             industries = [n for n in names if "申万" in n or "行业" in n]
-            concepts = [n.split("-")[-1] for n in names if n]
+            concepts = []
+            for n in names:
+                if not n:
+                    continue
+                name = n.split("-")[-1].strip()
+                if not name or name == "所属概念板块":
+                    continue
+                concepts.append(name)
             out["industry"] = industries[0].split("-")[-1] if industries else (concepts[0] if concepts else "")
             out["concept"] = ",".join(concepts[:6])
         except MarketError as exc:
@@ -628,7 +635,7 @@ class MarketClient:
             row = info[0] if isinstance(info, list) else info
             out["business"] = row.get("bscope") or row.get("desc") or ""
             if row.get("idea"):
-                out["concept"] = row["idea"]
+                out["concept"] = _clean_concept(row["idea"])
         except MarketError as exc:
             self.note_issue("profile", str(exc), inst.code6)
         self._slow_store(key, out)
@@ -1309,9 +1316,22 @@ def cninfo_url(code6: str) -> str:
     return f"https://www.cninfo.com.cn/new/disclosure/stock?orgId=&stockCode={code6}"
 
 
+def _clean_concept(value: str) -> str:
+    """去掉接口塞在概念串开头的栏目标题，它不是一只股票的概念。"""
+    parts = []
+    for raw in str(value or "").replace("，", ",").replace("、", ",").split(","):
+        name = raw.strip()
+        if not name or name == "所属概念板块":
+            continue
+        parts.append(name)
+    return ",".join(parts)
+
+
 def _with_taxonomy(row: dict, extra: dict | None = None) -> dict:
-    tax = classify(row.get("industry") or "", row.get("concept") or "", extra)
+    concept = _clean_concept(row.get("concept") or "")
+    tax = classify(row.get("industry") or "", concept, extra)
     out = dict(row)
+    out["concept"] = concept
     out["sector"] = tax["sector"]
     out["sw_l1"] = tax["sw_l1"]
     out["hot_concepts"] = tax["hot_concepts"]

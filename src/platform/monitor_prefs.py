@@ -10,7 +10,21 @@ from src.platform.web_sources import enabled_kinds, normalize_sources
 
 
 def default_selected() -> list[str]:
-    return [i["name"] for i in INSTITUTIONS]
+    # 白名单默认是空的。内置机构名只用来识别别名，不会自己出现在名单里。
+    return []
+
+
+def _builtin_names() -> set[str]:
+    return {i["name"] for i in INSTITUTIONS}
+
+
+def _is_legacy_full_seed(selected: list[str], custom: list) -> bool:
+    """旧版会把全部内置机构预选进白名单。那份原样种子清掉，用户后来改过的选择保留。"""
+    if custom:
+        return False
+    names = {str(x).strip() for x in selected if str(x).strip()}
+    builtin = _builtin_names()
+    return bool(names) and names == builtin
 
 
 def _empty() -> dict:
@@ -30,6 +44,8 @@ def parse_pref(pref: MonitorPref | None) -> dict:
     if not isinstance(selected, list):
         selected = default_selected()
     custom = data.get("custom") if isinstance(data.get("custom"), list) else []
+    if _is_legacy_full_seed(selected, custom):
+        selected = []
     try:
         sources = normalize_sources(data.get("sources") if isinstance(data.get("sources"), list) else [], strict=False)
     except ValueError:
