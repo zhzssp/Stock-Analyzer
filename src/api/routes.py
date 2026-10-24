@@ -1640,6 +1640,16 @@ def patch_alert(alert_id: int, body: AlertPatchIn, user: User = Depends(current_
     return _alert_payload(rec)
 
 
+@router.delete("/alerts/{alert_id}")
+def delete_alert(alert_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rec = db.query(Alert).filter_by(id=alert_id, user_id=user.id).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="没有这条提醒")
+    db.delete(rec)
+    db.commit()
+    return {"ok": True, "id": alert_id}
+
+
 def _alert_payload(i: Alert) -> dict:
     return {
         "id": i.id,

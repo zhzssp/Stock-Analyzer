@@ -108,6 +108,31 @@ def test_watcher_writes_hit_price():
             db.close()
 
 
+def test_delete_pending_review_removes_the_alert():
+    with TestClient(app) as client:
+        headers = _auth(client)
+        db = SessionLocal()
+        try:
+            user = _user(db)
+            rec = _make_alert(db, user, job_key="near-bottom", hit_date="2026-09-11", hit_price=10.0, code6="600129")
+            alert_id = rec.id
+        finally:
+            db.close()
+        listed = client.get("/api/monitor/reviews", headers=headers)
+        assert listed.status_code == 200, listed.text
+        assert any(x["id"] == alert_id for x in listed.json()["pending"])
+        gone = client.delete(f"/api/alerts/{alert_id}", headers=headers)
+        assert gone.status_code == 200, gone.text
+        assert gone.json()["id"] == alert_id
+        listed = client.get("/api/monitor/reviews", headers=headers)
+        body = listed.json()
+        assert all(x["id"] != alert_id for x in body["pending"] + body["done"])
+        alerts = client.get("/api/alerts", headers=headers)
+        assert all(x["id"] != alert_id for x in alerts.json())
+        missing = client.delete(f"/api/alerts/{alert_id}", headers=headers)
+        assert missing.status_code == 404
+
+
 def test_review_api_run_and_list():
     with TestClient(app) as client:
         headers = _auth(client)

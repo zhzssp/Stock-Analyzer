@@ -45,6 +45,9 @@ def test_workbench_exposes_landed_backend_entries():
     assert "本机数据" in html
     assert 'id="instList"' in html
     assert "移出白名单" in html
+    assert 'id="reviewPending"' in html
+    assert "data-alert-id" in html
+    assert "deleteReviewAlert" in html
     assert "data-inst-origin" in html
     assert 'id="sourceList"' in html
     assert 'id="srcSave"' in html
