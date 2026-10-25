@@ -1,9 +1,18 @@
 .venv/
 __pycache__/
 *.pyc
-.env
-data/
+# 本机配置与工作台状态随仓库走，克隆后启动效果与这台机器一致。
+# 缓存、日志、导出文件和进程号仍只留在本机。
+data/*
+!data/app.db
+!data/snapshots/
+!data/snapshots/**
+!data/licence_pool.json
+!data/licence_registry.json
+!data/column_default_research
+!data/last_eod.json
 *.db
+!data/app.db
 .pytest_cache/
 .mypy_cache/
 apps/web/node_modules/
