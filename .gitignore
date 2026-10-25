@@ -1,18 +1,11 @@
 .venv/
 __pycache__/
 *.pyc
-# 本机配置与工作台状态随仓库走，克隆后启动效果与这台机器一致。
-# 缓存、日志、导出文件和进程号仍只留在本机。
+# 启动配置在仓库根目录的 .env，跟仓库走。对方 pull 之后，端口、账号、证书和开关与这台机器一致。
+# data/ 里是各台电脑自己跑出来的内容：自选库、查询快照、当天证书用量、日终标记。
+# 这些文件两台机器都会改，放进仓库会让 git pull 互相覆盖。不要再提交。
 data/*
-!data/app.db
-!data/snapshots/
-!data/snapshots/**
-!data/licence_pool.json
-!data/licence_registry.json
-!data/column_default_research
-!data/last_eod.json
 *.db
-!data/app.db
 .pytest_cache/
 .mypy_cache/
 apps/web/node_modules/

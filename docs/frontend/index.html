@@ -1564,6 +1564,7 @@
       dragCode: null,
       gsItems: [],
       stockCode: "",
+      selectedCode: "",
       emptyWarned: false,
       exportOpts: null,
       exportSnapshot: null,
@@ -2106,8 +2107,8 @@
         return;
       }
       // 自选全部展示；按住拖动可改顺序，右键出菜单（打开决策卡 / 移出自选）。
-      ul.innerHTML = shown.map((it, i) =>
-        `<li class="${i === 0 ? "active" : ""} ${it.card_filled ? "filled" : ""}" data-code="${it.code6}" draggable="true" title="按住拖动改顺序 · 右键打开菜单">
+      ul.innerHTML = shown.map((it) =>
+        `<li class="${it.code6 === state.selectedCode ? "active" : ""} ${it.card_filled ? "filled" : ""}" data-code="${it.code6}" draggable="true" title="按住拖动改顺序 · 右键打开菜单">
           <span class="meta" style="flex:1;min-width:0;"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || marketLabel[it.market] || it.market || ""} · ${esc(it.group || "自选")}</span></span>
         </li>`
       ).join("");
@@ -2133,8 +2134,8 @@
       const page = shown.slice(0, limit);
       const rest = shown.length - page.length;
       ul.innerHTML =
-        page.map((it, i) =>
-          `<li class="${i === 0 ? "active" : ""}">
+        page.map((it) =>
+          `<li class="${it.code6 === state.selectedCode ? "active" : ""}" data-code="${escAttr(it.code6)}">
             <span class="meta"><span>${it.name}</span><span class="code">${it.code6} · ${exchangeLabel[it.exchange] || it.exchange || ""}</span></span>
           </li>`
         ).join("") +
@@ -3801,6 +3802,13 @@
       return Number.isFinite(n) ? n : null;
     }
 
+    function markSelected(code6) {
+      state.selectedCode = code6 || "";
+      document.querySelectorAll("#watchList li[data-code], #quoteList li[data-code], #exchangeList li[data-code]").forEach((li) => {
+        li.classList.toggle("active", Boolean(state.selectedCode) && li.dataset.code === state.selectedCode);
+      });
+    }
+
     function openCard(code6) {
       const item = (state.watch || []).find((x) => x.code6 === code6);
       if (!item) return;
@@ -3820,6 +3828,7 @@
       document.getElementById("cardInvalid").value = card.invalid_if || "";
       document.getElementById("cardRemindAt").value = card.remind_at || "";
       document.getElementById("cardRemindNote").value = card.remind_note || "";
+      markSelected(code6);
       document.getElementById("cardMask").style.display = "flex";
     }
 
@@ -4240,6 +4249,7 @@
     async function removeWatch(code) {
       try {
         const data = await api("/watchlist/" + code, { method: "DELETE" });
+        if (state.selectedCode === code) state.selectedCode = "";
         renderWatch(data.items);
         dropDisplayedRow(code);
         toast("已移出 " + code);
