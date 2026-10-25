@@ -79,6 +79,17 @@ def test_workbench_exposes_landed_backend_entries():
     assert "历史对话" in html
 
 
+def test_list_refresh_ignores_stale_progress():
+    """换池或再次刷新后，上一轮不得再改右上角进度。"""
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert "function supersedeListQuery" in html
+    assert "function listQueryCurrent" in html
+    assert "activeJobId" in html
+    assert 'api("/query/jobs/" + jobId + "/cancel"' in html
+    assert "if (poolId !== state.pool) supersedeListQuery();" in html
+    assert 'if (gen != null && !listQueryCurrent(gen)) return;' in html
+
+
 def test_workbench_query_table_columns_are_resizable():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert 'id="queryTable"' in html

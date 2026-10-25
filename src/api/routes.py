@@ -946,13 +946,23 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
         result["force_live"] = body.force_live
         result["refresh_mode"] = (body.refresh_mode or "full").strip().lower()
         return result
-    job = jobs.create("export" if do_export else "query", meta.get("id") or body.pool, len(insts))
     snapshot = list(insts)
+    job_offset = max(0, int(body.offset or 0))
+    job_limit = int(body.limit or 0)
+    page = snapshot
+    if job_limit > 0:
+        page = snapshot[job_offset : job_offset + job_limit]
+    # 只算请求的这一页。整池有几千只时，不能在返回前把全部财务、股东都拉完，进度才会一直停在 0。
+    covers_pool = job_limit <= 0 or (job_offset == 0 and len(snapshot) <= job_limit)
+    job = jobs.create("export" if do_export else "query", meta.get("id") or body.pool, len(page))
 
     def worker():
         try:
+            def on_row(_row: dict) -> None:
+                jobs.advance(job.id)
+
             result = _execute_query(
-                snapshot,
+                page,
                 fields,
                 do_export,
                 pool_name,
@@ -963,9 +973,21 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                 x_date=body.x_date,
                 force_live=body.force_live,
                 refresh_mode=body.refresh_mode,
+                on_row=on_row,
+                sort_key=body.sort_key,
+                sort_dir=body.sort_dir,
                 file_label=body.export_label,
                 pool_id=meta.get("id") or "watch",
+                persist_snapshot=(meta.get("id") or "") != "codes" and covers_pool,
+                snapshot_partial=not covers_pool,
+                pool_total=len(snapshot),
+                cancel=job.cancel_event,
             )
+            result["total"] = len(snapshot)
+            result["offset"] = job_offset
+            result["limit"] = job_limit or len(snapshot)
+            result["has_more"] = job_offset + len(page) < len(snapshot)
+            result["count"] = len(result.get("rows") or [])
             result["sample"] = meta.get("sample", False)
             result["note"] = meta.get("note") or ""
             result["pool_id"] = meta.get("id")
@@ -1132,6 +1154,15 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
 @router.get("/query/jobs/{job_id}")
 def query_job(job_id: str, user: User = Depends(current_user)):
     job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return bg_job_payload(job)
+
+
+@router.post("/query/jobs/{job_id}/cancel")
+def cancel_query_job(job_id: str, user: User = Depends(current_user)):
+    """换池或再次刷新时停掉上一轮。已经结束的任务保持原状态。"""
+    job = jobs.request_cancel(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     return bg_job_payload(job)

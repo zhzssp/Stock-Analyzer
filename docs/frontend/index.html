@@ -1564,6 +1564,7 @@
       gsItems: [],
       stockCode: "",
       selectedCode: "",
+      jobId: "",
       emptyWarned: false,
       exportOpts: null,
       exportSnapshot: null,
@@ -1579,6 +1580,9 @@
       cardCode: "",
       pickOfficialConcept: "",
       queryIssueSig: "",
+      // 中间列表同一时间只认一轮刷新。换池或再点刷新会把代数加一，旧轮次不得再改进度或表格。
+      queryGen: 0,
+      activeJobId: "",
     };
 
     let toastTimer = 0;
@@ -2232,6 +2236,8 @@
     }
 
     async function selectPool(poolId) {
+      // 换到另一池时，上一池的刷新还在写右上角进度，先作废那一轮。
+      if (poolId !== state.pool) supersedeListQuery();
       state.pool = poolId;
       state.poolPage = 1;
       if (poolId !== "watch") {
@@ -2597,7 +2603,8 @@
       state.rowsRaw = Object.values(state.streamRows || {});
     }
 
-    function handleStreamEvent(event, data) {
+    function handleStreamEvent(event, data, gen) {
+      if (gen != null && !listQueryCurrent(gen)) return;
       const hint = document.getElementById("queryHint");
       saDebug.streamEvents.push({
         event,
@@ -2652,46 +2659,52 @@
       }
     }
 
-    async function runQueryStream(codes, opts) {
+    async function runQueryStream(codes, opts, gen) {
+      if (gen != null && !listQueryCurrent(gen)) throw querySupersededError();
       if (state.streamAbort) state.streamAbort.abort();
       const ctrl = new AbortController();
       state.streamAbort = ctrl;
-      // 流式同样只流一页：首屏更快，前端也不用把整池攒在内存里
-      const payload = queryPayload(codes, {
-        refreshMode: (opts && opts.refreshMode) || "quote",
-        forceLive: opts ? opts.forceLive : undefined,
-        limit: (opts && opts.limit) || PAGE_LIMIT,
-        offset: opts && opts.append ? opts.offset : 0,
-      });
-      const headers = { "Content-Type": "application/json" };
-      if (state.token) headers.Authorization = "Bearer " + state.token;
-      const res = await fetch("/api/query/stream", {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: ctrl.signal,
-      });
-      if (!res.ok || !res.body) throw new Error("流式查询不可用");
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buf = "";
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        buf += decoder.decode(chunk.value, { stream: true });
-        let idx = buf.indexOf("\n\n");
-        while (idx >= 0) {
-          const raw = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const evMatch = /event:\s*(\S+)/.exec(raw);
-          const dataMatch = /data:\s*([\s\S]*)/.exec(raw);
-          if (evMatch && dataMatch) {
-            let data = {};
-            try { data = JSON.parse(dataMatch[1]); } catch { data = {}; }
-            handleStreamEvent(evMatch[1], data);
+      try {
+        // 流式同样只流一页：首屏更快，前端也不用把整池攒在内存里
+        const payload = queryPayload(codes, {
+          refreshMode: (opts && opts.refreshMode) || "quote",
+          forceLive: opts ? opts.forceLive : undefined,
+          limit: (opts && opts.limit) || PAGE_LIMIT,
+          offset: opts && opts.append ? opts.offset : 0,
+        });
+        const headers = { "Content-Type": "application/json" };
+        if (state.token) headers.Authorization = "Bearer " + state.token;
+        const res = await fetch("/api/query/stream", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: ctrl.signal,
+        });
+        if (!res.ok || !res.body) throw new Error("流式查询不可用");
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buf = "";
+        for (;;) {
+          if (gen != null && !listQueryCurrent(gen)) throw querySupersededError();
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buf += decoder.decode(chunk.value, { stream: true });
+          let idx = buf.indexOf("\n\n");
+          while (idx >= 0) {
+            const raw = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            const evMatch = /event:\s*(\S+)/.exec(raw);
+            const dataMatch = /data:\s*([\s\S]*)/.exec(raw);
+            if (evMatch && dataMatch) {
+              let data = {};
+              try { data = JSON.parse(dataMatch[1]); } catch { data = {}; }
+              handleStreamEvent(evMatch[1], data, gen);
+            }
+            idx = buf.indexOf("\n\n");
           }
-          idx = buf.indexOf("\n\n");
         }
+      } finally {
+        if (state.streamAbort === ctrl) state.streamAbort = null;
       }
     }
 
@@ -2701,12 +2714,84 @@
       document.getElementById("queryHint").textContent = `自选 ${items.length} 只`;
     }
 
-    async function waitJob(jobId) {
+    function listQueryCurrent(gen) {
+      return gen === state.queryGen;
+    }
+
+    function querySupersededError() {
+      const err = new Error("查询已切换");
+      err.name = "AbortError";
+      return err;
+    }
+
+    function isQueryAbort(err) {
+      return !!(err && err.name === "AbortError");
+    }
+
+    function setQueryHint(gen, text) {
+      if (gen != null && !listQueryCurrent(gen)) return false;
+      const hint = document.getElementById("queryHint");
+      if (hint) hint.textContent = text;
+      return true;
+    }
+
+    // 新的一轮开始：旧流式请求断开，旧后台任务取消。之后只有这一轮可以改进度提示。
+    function supersedeListQuery() {
+      state.queryGen = (state.queryGen || 0) + 1;
+      if (state.streamAbort) {
+        try { state.streamAbort.abort(); } catch (err) { /* 流已经结束 */ }
+        state.streamAbort = null;
+      }
+      const jobId = state.activeJobId;
+      state.activeJobId = "";
+      if (jobId) {
+        api("/query/jobs/" + jobId + "/cancel", { method: "POST", body: "{}" }).catch(() => {});
+      }
+      return state.queryGen;
+    }
+
+    function abandonQueryJob(data) {
+      const jobId = data && data.job_id;
+      if (!jobId || data.status !== "running") return;
+      if (state.activeJobId === jobId) state.activeJobId = "";
+      api("/query/jobs/" + jobId + "/cancel", { method: "POST", body: "{}" }).catch(() => {});
+    }
+
+    async function trackQueryJob(jobId, gen) {
+      if (!listQueryCurrent(gen)) {
+        abandonQueryJob({ job_id: jobId, status: "running" });
+        throw querySupersededError();
+      }
+      state.activeJobId = jobId;
+      try {
+        return await waitJob(jobId, gen);
+      } finally {
+        if (state.activeJobId === jobId) state.activeJobId = "";
+      }
+    }
+
+    async function adoptQueryResult(data, gen) {
+      if (!listQueryCurrent(gen)) {
+        abandonQueryJob(data);
+        throw querySupersededError();
+      }
+      if (data && data.job_id && data.status === "running") return trackQueryJob(data.job_id, gen);
+      return data;
+    }
+
+    async function waitJob(jobId, gen) {
       for (;;) {
+        if (gen != null && !listQueryCurrent(gen)) throw querySupersededError();
         const data = await api("/query/jobs/" + jobId);
+        if (gen != null && !listQueryCurrent(gen)) throw querySupersededError();
         if (data.status === "done") return data;
+        if (data.status === "cancelled") throw querySupersededError();
         if (data.status === "error") throw new Error(data.error || "任务失败");
-        document.getElementById("queryHint").textContent = `任务进行中 · ${data.progress || 0}/${data.total || "?"}`;
+        // 不带代数的是导出。列表查询只有当前轮次能写，避免两池进度来回跳。
+        if (gen == null || listQueryCurrent(gen)) {
+          const hint = document.getElementById("queryHint");
+          if (hint) hint.textContent = `任务进行中 · ${data.progress || 0}/${data.total || "?"}`;
+        }
         await new Promise((resolve) => setTimeout(resolve, 400));
       }
     }
@@ -2911,12 +2996,20 @@
     async function runQuery(codes, opts) {
       const o = opts && typeof opts === "object" ? opts : { forceLive: !!opts, refreshMode: opts ? "full" : "quote" };
       const appending = Boolean(o.append); // 滚动加载下一页，不重置已有内容
+      let gen;
+      if (appending) {
+        gen = state.queryGen || 0;
+      } else if (o.gen != null) {
+        gen = o.gen;
+        if (!listQueryCurrent(gen)) throw querySupersededError();
+      } else {
+        gen = supersedeListQuery();
+      }
       if (!appending) {
         if (codes && codes.length) state.lastQueryCodes = codes;
         else state.lastQueryCodes = null;
       }
-      const hintEl = document.getElementById("queryHint");
-      if (!appending) hintEl.textContent = "查询中…";
+      if (!appending && !setQueryHint(gen, "查询中…")) throw querySupersededError();
       if (!appending) showQueryIssues([]);
       // 顶部指数先走：请求轻、返回快，让小板块先于大表刷新出来
       if (!appending) loadBoard().catch(() => {});
@@ -2937,20 +3030,26 @@
       dbg("发起查询", payload, "| 侧栏:", state.side, "| 池:", state.pool, "| 流式:", Boolean(o.stream), "| 追加:", appending);
       let data;
       try {
-        // 排序时必须走一次性查询：流式是按池顺序边算边发，没法先排好再发
-        if (o.stream && refreshMode !== "snapshot" && !state.sortKey) {
+        // 交易所 / 板块把涨跌幅设成排序键。流式仍然按页取，取回后再在本机排序。
+        // 否则会改走整池后台任务：财务和股东还没开始，进度就停在 0。
+        if (o.stream && refreshMode !== "snapshot") {
           // 流式：先出骨架与行情，再逐只补齐；失败自动退回一次性查询
           try {
-            await runQueryStream(codes, o);
+            await runQueryStream(codes, o, gen);
           } catch (streamErr) {
-            if (streamErr && streamErr.name === "AbortError") throw streamErr;
-            data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
-            if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+            if (isQueryAbort(streamErr) || !listQueryCurrent(gen)) {
+              throw isQueryAbort(streamErr) ? streamErr : querySupersededError();
+            }
+            data = await adoptQueryResult(
+              await api("/query/run", { method: "POST", body: JSON.stringify(payload) }),
+              gen
+            );
           }
+          if (!listQueryCurrent(gen)) throw querySupersededError();
           if (data) {
             const fields = data.fields || [];
             if (!fields.length) {
-              hintEl.textContent = "查询失败：未返回列定义";
+              setQueryHint(gen, "查询失败：未返回列定义");
               throw new Error("查询未返回列定义");
             }
             state.tablePage = 1;
@@ -2959,15 +3058,20 @@
             return; // 流式路径已自行渲染完成
           }
         } else {
-          data = await api("/query/run", { method: "POST", body: JSON.stringify(payload) });
-          if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+          data = await adoptQueryResult(
+            await api("/query/run", { method: "POST", body: JSON.stringify(payload) }),
+            gen
+          );
         }
       } catch (err) {
-        if (err && err.name === "AbortError") throw err;
-        hintEl.textContent = "查询失败";
+        if (isQueryAbort(err) || !listQueryCurrent(gen)) {
+          throw isQueryAbort(err) ? err : querySupersededError();
+        }
+        setQueryHint(gen, "查询失败");
         toast(err.message || "查询失败");
         throw err;
       }
+      if (!listQueryCurrent(gen)) throw querySupersededError();
       const fields = data.fields || [];
       let rows = data.rows || [];
       // 后端分页元信息：total 是整池行数，has_more 表示后面还有
@@ -2984,11 +3088,12 @@
         rows = mergeQuoteRefreshRows(state.rowsRaw, rows, { dropMissing: complete });
       }
       if (!fields.length) {
-        hintEl.textContent = "查询失败：未返回列定义";
+        setQueryHint(gen, "查询失败：未返回列定义");
         toast("查询未返回列定义，请重启助手后重试");
         return;
       }
       try {
+        if (!listQueryCurrent(gen)) throw querySupersededError();
         if (!appending) {
           state.tablePage = 1;
           state.listOnly = false;
@@ -2996,7 +3101,10 @@
         }
         renderTable(fields, rows, { append: appending });
       } catch (renderErr) {
-        hintEl.textContent = "表格渲染失败";
+        if (isQueryAbort(renderErr) || !listQueryCurrent(gen)) {
+          throw isQueryAbort(renderErr) ? renderErr : querySupersededError();
+        }
+        setQueryHint(gen, "表格渲染失败");
         toast(renderErr.message || "表格渲染失败");
         throw renderErr;
       }
@@ -3029,7 +3137,7 @@
       const qsrc = clock.source ? ` · 现价来自${quoteSourceLabel(clock.source)}` : "";
       const fetchIssue = quoteFetchIssue(data);
       const warn = fetchIssue ? ` · ${fetchIssue}` : "";
-      document.getElementById("queryHint").textContent = `${data.rows.length} 只 · ${scope} · ${mode}${note}${qsrc}${asOf}${warn}`;
+      if (!setQueryHint(gen, `${data.rows.length} 只 · ${scope} · ${mode}${note}${qsrc}${asOf}${warn}`)) return;
       saDebug.lastResult = {
         pool: data.pool,
         refresh_mode: data.refresh_mode || refreshMode,
@@ -3223,7 +3331,13 @@
       if (!code) return;
       closeStock();
       // 临时代码查询：整只按列设置现网重拉。pool 是 codes，不会写成自选快照。
-      await runQuery([code], { refreshMode: "full", forceLive: true });
+      try {
+        await runQuery([code], { refreshMode: "full", forceLive: true });
+      } catch (err) {
+        if (isQueryAbort(err)) return;
+        toast(err.message);
+        return;
+      }
       toast("已单独查询这一只，中间列表是实时结果");
     });
     document.getElementById("stockAdd").addEventListener("click", async () => {
@@ -3521,7 +3635,12 @@
       if (preset === "custom" && !fields.length) return toast("至少保留一列");
       await api("/query/prefs", { method: "PUT", body: JSON.stringify({ fields, preset }) });
       closeCols();
-      await runQuery(null, { refreshMode: "cache", forceLive: false });
+      try {
+        await runQuery(null, { refreshMode: "cache", forceLive: false });
+      } catch (err) {
+        if (isQueryAbort(err)) return;
+        throw err;
+      }
     }
 
     function paramInput(job, field) {
@@ -3927,15 +4046,21 @@
         const shown = new Set((state.fields || []).map((f) => f.key));
         const missing = wanted.filter((k) => !shown.has(k));
         if ((!wantsSlow || !missing.length) && !slowFieldsMostlyEmpty(wanted)) return;
-      } catch {
+      } catch (err) {
+        if (isQueryAbort(err)) return;
         /* 没有这一池的快照，或快照对不上，先出行情列，再按默认勾选补齐 */
       }
       try {
         const opts = { refreshMode: "cache", forceLive: false };
         if (wantsSlow) opts.fields = FAST_FIELDS;
         await runQuery(null, opts);
-      } catch {
-        await runQuery(null, { refreshMode: "cache", forceLive: false });
+      } catch (err) {
+        if (isQueryAbort(err)) return;
+        try {
+          await runQuery(null, { refreshMode: "cache", forceLive: false });
+        } catch (again) {
+          if (isQueryAbort(again)) return;
+        }
         return;
       }
       if (!wantsSlow) return;
@@ -3991,31 +4116,41 @@
 
     bindColResize();
     bindColumnSort();
+    function toastQueryError(err) {
+      if (isQueryAbort(err)) return;
+      toast((err && err.message) || "查询失败");
+    }
     document.getElementById("queryBtn").addEventListener("click", () =>
-      runQuery(null, { refreshMode: "cache", forceLive: false, stream: true }).catch((e) => toast(e.message))
+      runQuery(null, { refreshMode: "cache", forceLive: false, stream: true }).catch(toastQueryError)
     );
     document.getElementById("fullQueryBtn").addEventListener("click", () =>
-      runQuery(null, { refreshMode: "full", forceLive: true, stream: true }).catch((e) => toast(e.message))
+      runQuery(null, { refreshMode: "full", forceLive: true, stream: true }).catch(toastQueryError)
     );
     document.getElementById("refreshBtn").addEventListener("click", async () => {
+      const gen = supersedeListQuery();
       const codes = state.lastQueryCodes;
       const shown = (state.rowsRaw || []).length;
       // 中间已经铺开的名单长过一页时，按这份名单的长度刷新，而不是只刷第一页。
       const limit = shown > PAGE_LIMIT ? shown : PAGE_LIMIT;
+      const stopped = (err) => !listQueryCurrent(gen) || isQueryAbort(err);
       if (state.listOnly) {
+        // 刚换上的名单还没有行情。只流式补第一页。
+        // 按整板行数去查会变成后台任务：财务还没开始，进度就停在 0。
         try {
-          await runQuery(codes, { refreshMode: "cache", forceLive: false, limit });
+          await runQuery(null, { refreshMode: "cache", forceLive: false, stream: true, limit: PAGE_LIMIT, gen });
         } catch (e) {
-          toast(e.message);
+          if (!stopped(e)) toastQueryError(e);
         }
         return;
       }
       let quoteErr = null;
       try {
-        await runQuery(codes, { refreshMode: "quote", forceLive: false, limit });
+        await runQuery(codes, { refreshMode: "quote", forceLive: false, limit, gen });
       } catch (e) {
+        if (stopped(e)) return;
         quoteErr = e;
       }
+      if (!listQueryCurrent(gen)) return;
       let wanted = (state.fields || []).map((f) => f.key);
       try {
         const prefs = await api("/query/prefs");
@@ -4023,14 +4158,16 @@
       } catch {
         /* 用当前表头判断慢字段是不是空的 */
       }
+      if (!listQueryCurrent(gen)) return;
       if (!slowFieldsMostlyEmpty(wanted)) {
-        if (quoteErr) toast(quoteErr.message);
+        if (quoteErr) toastQueryError(quoteErr);
         return;
       }
       try {
-        await runQuery(codes, { refreshMode: "cache", forceLive: false, stream: shown <= PAGE_LIMIT, limit });
+        await runQuery(codes, { refreshMode: "cache", forceLive: false, stream: shown <= PAGE_LIMIT, limit, gen });
       } catch (e) {
-        toast(quoteErr ? quoteErr.message : e.message);
+        if (stopped(e)) return;
+        toastQueryError(quoteErr || e);
       }
     });
     document.getElementById("exportBtn").addEventListener("click", () => openExport().catch((e) => toast(e.message)));
@@ -4143,8 +4280,10 @@
       const btn = e.target.closest("[data-side]");
       if (!btn) return;
       const side = btn.dataset.side;
+      const switchingAway = side !== state.side;
       setSide(side);
       if (side === "watch") {
+        if (switchingAway) supersedeListQuery();
         showCenterList(state.watch || [], "自选");
         return;
       }
@@ -4741,6 +4880,7 @@
         closePicker();
         toast("已按筛选结果查询，未改自选。导出 Excel 会导出这一批。");
       } catch (err) {
+        if (isQueryAbort(err)) return;
         toast(err.message);
       }
     });

@@ -129,3 +129,47 @@ def test_large_pool_uses_job():
                 raise AssertionError(data["error"])
             time.sleep(0.05)
         raise AssertionError("job did not finish")
+
+
+def test_paged_job_does_not_wait_for_the_whole_board():
+    """带 limit 的后台任务只算这一页。整板不能在进度还是 0 时把全部慢字段拉完。"""
+    with TestClient(app) as client:
+        headers = _auth(client)
+        started = client.post(
+            "/api/query/run",
+            json={"pool": "exchange:sh", "async_mode": True, "limit": 1, "refresh_mode": "quote"},
+            headers=headers,
+        )
+        assert started.status_code == 200, started.text
+        body = started.json()
+        assert body["total"] == 1
+        for _ in range(40):
+            data = client.get(f"/api/query/jobs/{body['job_id']}", headers=headers).json()
+            if data["status"] == "done":
+                assert len(data["rows"]) == 1
+                assert data["has_more"] is True
+                assert data["total"] > 1
+                return
+            if data["status"] == "error":
+                raise AssertionError(data["error"])
+            time.sleep(0.05)
+        raise AssertionError("paged job did not finish")
+
+
+def test_cancelled_job_does_not_publish_its_result():
+    """换池后再完成的旧任务不能变回 done，否则进度和表格会写到新池上。"""
+    from src.platform.jobs import jobs
+
+    job = jobs.create("query", "board:kc", 100)
+    with TestClient(app) as client:
+        headers = _auth(client)
+        cancelled = client.post(f"/api/query/jobs/{job.id}/cancel", headers=headers)
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+        assert job.cancel_event.is_set()
+        jobs.finish(job.id, {"rows": [{"code": "688001.SH"}], "total": 100})
+        jobs.advance(job.id)
+        again = client.get(f"/api/query/jobs/{job.id}", headers=headers).json()
+        assert again["status"] == "cancelled"
+        assert again["progress"] == 0
+        assert "rows" not in again
