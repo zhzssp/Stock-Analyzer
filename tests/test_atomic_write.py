@@ -90,7 +90,7 @@ def test_snapshot_write_is_atomic(tmp_path, monkeypatch):
         refresh_mode="cache",
     )
 
-    assert any("user_1.json" in c for c in calls)
+    assert any("user_1_watch.json" in c for c in calls)
     snap = load_table_snapshot(1)
     assert snap["pool"] == "watch"
     assert snap["rows"][0]["price"] == 10

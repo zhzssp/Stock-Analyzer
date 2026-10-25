@@ -744,6 +744,7 @@ def _execute_query(
     sort_dir: str = "desc",
     persist_snapshot: bool = True,
     file_label: str = "",
+    pool_id: str = "watch",
 ) -> dict:
     ensure_market()
     file_label = (file_label or "").strip()[:80]
@@ -755,9 +756,9 @@ def _execute_query(
 
         from src.query.snapshot import load_table_snapshot, rows_from_snapshot
 
-        snap = load_table_snapshot(user_id)
+        snap = load_table_snapshot(user_id, pool_id)
         if not snap:
-            raise HTTPException(status_code=404, detail="尚无表级快照，请先点「查询」或「全量更新」")
+            raise HTTPException(status_code=404, detail="尚无这一池的表级快照，请先点「查询」或「全量更新」")
         rows = rows_from_snapshot(snap, insts, fields, cards)
         clock_meta = snap.get("clock") or {}
         # 快照读出来就是整表，分页字段按「一页装完」填，保持响应形状和 /query/run 一致。
@@ -781,6 +782,8 @@ def _execute_query(
             "issues": [],
             "snapshot": {
                 "saved_at": snap.get("saved_at") or "",
+                "pool_id": snap.get("pool_id") or pool_id,
+                "pool": snap.get("pool") or "",
                 "source_refresh_mode": snap.get("refresh_mode") or "",
             },
         }
@@ -845,18 +848,20 @@ def _execute_query(
     }
     if mode == "cache":
         out["slow_cache"] = engine.last_slow_cache or {}
-    # 快照存的是整表（切片前）。分页只是少传给前端，不能把快照也切了。
-    # 流式分页时 insts 本身就是一段，这时不写快照，避免把半张表当成整表存下来。
-    # 现价整批失败时也不覆盖上次快照，避免下次登录直接打开一张空表。
+    # 快照只收「这一池的整表」。临时代码、分页的一段、整批失败都不写，避免单只详情盖掉自选。
+    whole = (not limit or int(limit) <= 0 or (int(offset or 0) == 0 and int(limit) >= len(ordered)))
     if (
         mode in ("cache", "full")
         and persist_snapshot
+        and pool_id != "codes"
+        and whole
         and not any(item.get("level") == "error" for item in out["issues"])
     ):
         from src.query.snapshot import save_table_snapshot
 
         save_table_snapshot(
             user_id,
+            pool_id=pool_id,
             pool=pool_name,
             field_keys=fields,
             codes=codes,
@@ -909,6 +914,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
             sort_key=body.sort_key,
             sort_dir=body.sort_dir,
             file_label=body.export_label,
+            pool_id=meta.get("id") or "watch",
         )
         result["sample"] = meta.get("sample", False)
         result["note"] = meta.get("note") or ""
@@ -934,6 +940,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                 force_live=body.force_live,
                 refresh_mode=body.refresh_mode,
                 file_label=body.export_label,
+                pool_id=meta.get("id") or "watch",
             )
             result["sample"] = meta.get("sample", False)
             result["note"] = meta.get("note") or ""
@@ -977,10 +984,14 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     # 流式同样分页：只算、只流这一段，首屏更快，前端也不用把整池攒在内存里。
     # meta.total 仍然报整池行数，前端据此决定要不要再拉下一页。
     total_insts = len(insts)
-    paged = bool(body.limit and body.limit > 0)
-    if paged:
-        start = max(0, int(body.offset or 0))
-        insts = insts[start : start + body.limit]
+    pool_id = meta.get("id") or "watch"
+    start = max(0, int(body.offset or 0))
+    page_limit = int(body.limit or 0)
+    # 一页刚好装下整池（自选通常远小于页大小）仍是整表，要写成这一池的快照。
+    # 真正的后页、或只算了池子的一段，不能拿来覆盖。临时代码（详情、只看这一只）也不写。
+    covers_pool = page_limit <= 0 or (start == 0 and total_insts <= page_limit)
+    if page_limit > 0:
+        insts = insts[start : start + page_limit]
 
     def frame(event: str, data: dict) -> bytes:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
@@ -1014,14 +1025,15 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 on_quotes=on_quotes,
                 on_row=on_row,
                 on_issue=on_issue,
-                persist_snapshot=not paged,
+                persist_snapshot=covers_pool and pool_id != "codes",
+                pool_id=pool_id,
             )
             out.put((
                 "done",
                 {
                     "rows_count": len(result.get("rows") or []),
                     "total": total_insts,
-                    "has_more": bool(paged and start + len(insts) < total_insts),
+                    "has_more": bool(page_limit > 0 and start + len(insts) < total_insts),
                     "elapsed_ms": int((time.time() - started) * 1000),
                     "issues": result.get("issues") or [],
                 },

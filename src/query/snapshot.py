@@ -27,10 +27,47 @@ _CARD_MAP = {
 }
 
 
-def _path(user_id: int) -> Path:
+# 旧文件把「自选」和「筛选一次」写在同一个 user_{id}.json 里，单只详情会把自选整表盖掉。
+_WATCH_LABELS = {"watch", "自选"}
+
+
+def _safe_pool(pool_id: str) -> str:
+    text = (pool_id or "watch").strip() or "watch"
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in text) or "watch"
+
+
+def _dir() -> Path:
     root = settings.data_dir / "snapshots"
     root.mkdir(parents=True, exist_ok=True)
-    return root / f"user_{user_id}.json"
+    return root
+
+
+def _path(user_id: int, pool_id: str) -> Path:
+    return _dir() / f"user_{user_id}_{_safe_pool(pool_id)}.json"
+
+
+def _legacy_path(user_id: int) -> Path:
+    return _dir() / f"user_{user_id}.json"
+
+
+def _read_snapshot(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _matches_pool(data: dict, pool_id: str) -> bool:
+    stored = str(data.get("pool_id") or "").strip()
+    if stored:
+        return stored == pool_id
+    label = str(data.get("pool") or "").strip()
+    if pool_id == "watch":
+        return label in _WATCH_LABELS
+    return label == pool_id
 
 
 def save_table_snapshot(
@@ -42,14 +79,19 @@ def save_table_snapshot(
     rows: list[dict],
     clock: dict | None,
     refresh_mode: str,
+    pool_id: str | None = None,
 ) -> None:
     if not rows or not field_keys:
         return
     mode = (refresh_mode or "").strip().lower()
     if mode not in ("cache", "full"):
         return
+    pid = (pool_id or pool or "watch").strip() or "watch"
+    if pid == "codes":
+        return
     payload = {
         "saved_at": datetime.now(timezone.utc).isoformat(),
+        "pool_id": pid,
         "pool": pool,
         "field_keys": list(field_keys),
         "codes": list(codes),
@@ -58,27 +100,30 @@ def save_table_snapshot(
         "refresh_mode": mode,
     }
     # 快照是整表，写的时候可能正有人在读：原子替换，别让人读到半张表。
-    atomic_write_text(_path(user_id), json.dumps(payload, ensure_ascii=False))
+    atomic_write_text(_path(user_id, pid), json.dumps(payload, ensure_ascii=False))
 
 
-def load_table_snapshot(user_id: int) -> dict | None:
-    path = _path(user_id)
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+def load_table_snapshot(user_id: int, pool_id: str = "watch") -> dict | None:
+    pid = (pool_id or "watch").strip() or "watch"
+    data = _read_snapshot(_path(user_id, pid))
+    if data and _matches_pool(data, pid):
+        return data
+    # 升级前只有一份 user_{id}.json。池名对得上才沿用，筛选一次的旧文件不能拿来填自选。
+    if pid == "watch":
+        legacy = _read_snapshot(_legacy_path(user_id))
+        if legacy and _matches_pool(legacy, "watch"):
+            return legacy
+    return None
 
 
-def snapshot_meta(user_id: int) -> dict:
-    snap = load_table_snapshot(user_id)
+def snapshot_meta(user_id: int, pool_id: str = "watch") -> dict:
+    snap = load_table_snapshot(user_id, pool_id)
     if not snap:
         return {"has_snapshot": False}
     return {
         "has_snapshot": True,
         "saved_at": snap.get("saved_at") or "",
+        "pool_id": snap.get("pool_id") or pool_id,
         "pool": snap.get("pool") or "",
         "count": len(snap.get("rows") or []),
         "field_count": len(snap.get("field_keys") or []),

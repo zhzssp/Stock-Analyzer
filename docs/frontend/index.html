@@ -151,20 +151,22 @@
     }
     .global-search .hint { font-size: 12px; }
     .gs-results {
-      position: absolute; z-index: 70; top: calc(100% + 4px); left: 0; right: 0;
-      max-height: 320px; overflow: auto; background: #fff;
-      border: 1px solid var(--line); border-radius: 10px;
-      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+      position: absolute; z-index: 70; top: calc(100% + 6px); left: 0; right: 0;
+      max-height: min(62vh, 560px); overflow: auto; background: #fff;
+      border: 1px solid var(--line); border-radius: 12px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
     }
     .gs-item {
-      display: flex; align-items: center; gap: 8px; width: 100%;
-      padding: 9px 12px; background: none; border: 0; border-bottom: 1px solid var(--line);
-      text-align: left; cursor: pointer; font-size: 13px; color: var(--ink);
+      display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; width: 100%;
+      padding: 14px 18px; background: none; border: 0; border-bottom: 1px solid var(--line);
+      text-align: left; cursor: pointer; font-size: 16px; line-height: 1.5; color: var(--ink);
     }
     .gs-item:last-child { border-bottom: 0; }
     .gs-item:hover { background: var(--teal-soft); }
-    .gs-item .gs-name { font-weight: 700; }
-    .gs-item .gs-sub { color: var(--muted); }
+    .gs-item .gs-name { font-weight: 700; font-size: 18px; line-height: 1.4; }
+    .gs-item .gs-sub { color: var(--muted); font-size: 15px; line-height: 1.5; }
+    .gs-item .chip { font-size: 14px; padding: 3px 10px; align-self: center; }
+    .gs-empty { padding: 16px 18px; font-size: 16px; line-height: 1.5; color: var(--muted); }
     .stock-card { max-width: 560px; }
     .stock-body { max-height: 56vh; overflow: auto; }
     .stock-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
@@ -894,7 +896,7 @@
           </div>
           <div class="toolbar">
             <button class="btn primary" id="queryBtn" type="button"><span data-help-tip="按列设置查表：现价优先墙钟；财务/股东等未过期则用本机分项缓存，少打麦蕊。">查询</span></button>
-            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="只更新现价相关列，优先读墙钟档口；行业/财务/股东等请用「查询」或「全量更新」。">刷新</span></button>
+            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="先更新现价。若行业、股东、财务整表都是空的，会接着按缓存把这一池补齐，并写成一份时间一致的新快照。">刷新</span></button>
             <button class="btn" id="fullQueryBtn" type="button"><span data-help-tip="忽略慢字段缓存，向麦蕊重新拉齐全部列（含财务、股东、底顶），额度消耗最大。">全量更新</span></button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
@@ -2966,7 +2968,7 @@
       if (!box) return;
       if (!items.length) {
         box.style.display = "block";
-        box.innerHTML = `<div class="gs-sub" style="padding:10px 12px;">没有匹配的股票，换个名称或代码再试</div>`;
+        box.innerHTML = `<div class="gs-empty">没有匹配的股票，换个名称或代码再试</div>`;
         if (hint) hint.textContent = "没有匹配";
         return;
       }
@@ -3773,6 +3775,20 @@
     // 首屏可以先画行情六列，但默认勾选是十七列。账号列里还有行业、股东、财务时，后台必须再查一次。
     const FAST_FIELDS = ["name", "code", "price", "pct", "pe", "pb"];
 
+    function cellFilled(v) {
+      return v != null && v !== "" && v !== "—";
+    }
+
+    // 列名在、格子是空的，不算有数。过半的行连一个慢字段都没有，就当这份快照盖不住当前表。
+    function slowFieldsMostlyEmpty(wanted) {
+      const slow = (wanted || []).filter((k) => FAST_FIELDS.indexOf(k) < 0);
+      if (!slow.length) return false;
+      const rows = state.rowsRaw || [];
+      if (!rows.length) return true;
+      const covered = rows.filter((r) => slow.some((k) => cellFilled(r[k]))).length;
+      return covered * 2 < rows.length;
+    }
+
     async function bootTableQuery() {
       let wanted = [];
       try {
@@ -3787,9 +3803,9 @@
         await runQuery(null, { refreshMode: "snapshot", forceLive: false });
         const shown = new Set((state.fields || []).map((f) => f.key));
         const missing = wanted.filter((k) => !shown.has(k));
-        if (!wantsSlow || !missing.length) return;
+        if ((!wantsSlow || !missing.length) && !slowFieldsMostlyEmpty(wanted)) return;
       } catch {
-        /* 没有快照，先出行情列，再按默认勾选补齐 */
+        /* 没有这一池的快照，或快照对不上，先出行情列，再按默认勾选补齐 */
       }
       try {
         const opts = { refreshMode: "cache", forceLive: false };
@@ -3859,10 +3875,27 @@
       runQuery(null, { refreshMode: "full", forceLive: true, stream: true }).catch((e) => toast(e.message))
     );
     document.getElementById("refreshBtn").addEventListener("click", async () => {
+      let quoteErr = null;
       try {
         await runQuery(null, { refreshMode: "quote", forceLive: false });
       } catch (e) {
-        toast(e.message);
+        quoteErr = e;
+      }
+      let wanted = (state.fields || []).map((f) => f.key);
+      try {
+        const prefs = await api("/query/prefs");
+        if (prefs.fields && prefs.fields.length) wanted = prefs.fields;
+      } catch {
+        /* 用当前表头判断慢字段是不是空的 */
+      }
+      if (!slowFieldsMostlyEmpty(wanted)) {
+        if (quoteErr) toast(quoteErr.message);
+        return;
+      }
+      try {
+        await runQuery(null, { refreshMode: "cache", forceLive: false, stream: true });
+      } catch (e) {
+        toast(quoteErr ? quoteErr.message : e.message);
       }
     });
     document.getElementById("exportBtn").addEventListener("click", () => openExport().catch((e) => toast(e.message)));
