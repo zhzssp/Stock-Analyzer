@@ -11,6 +11,23 @@ from src.query.registry import registry
 # 前十名拼在一个单元格里。列宽按最长的一个名字留，每人一行，避免默认窄列看起来像被截断。
 _HOLDER_KEYS = frozenset({"holders", "top_holders"})
 _HOLDER_WRAP = Alignment(wrap_text=True, vertical="top")
+# 股本是股、市值是元。表上和 Excel 都改成亿，保留两位小数。
+# 样例数据本身已经是亿（几十到几千），满 1 万才按原始单位换算，避免把样例再除一次。
+_YI_KEYS = frozenset({"zgb", "ltgb", "mcap", "fcap"})
+_YI = 100_000_000
+
+
+def as_yi(value):
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if number != number or number in (float("inf"), float("-inf")):
+        return value
+    scaled = number / _YI if abs(number) >= 10_000 else number
+    return round(scaled, 2)
 
 
 def _safe_token(name: str) -> str:
@@ -68,14 +85,22 @@ def write_query_xlsx(
     headers = [registry.get(k).label for k in field_keys]
     ws.append(headers)
     holder_cols = [i for i, key in enumerate(field_keys, start=1) if key in _HOLDER_KEYS]
+    yi_cols = [i for i, key in enumerate(field_keys, start=1) if key in _YI_KEYS]
     for row in rows:
         values = []
         for key in field_keys:
             value = row.get(key)
             if key in _HOLDER_KEYS:
                 value = _holder_lines(value)
+            elif key in _YI_KEYS:
+                value = as_yi(value)
             values.append(value)
         ws.append(values)
+    for col in yi_cols:
+        for row_idx in range(2, ws.max_row + 1):
+            cell = ws.cell(row_idx, col)
+            if isinstance(cell.value, float):
+                cell.number_format = "0.00"
     _fit_holder_columns(ws, holder_cols)
     meta = wb.create_sheet("meta")
     meta.append(["exported_at", datetime.now().isoformat(timespec="seconds")])

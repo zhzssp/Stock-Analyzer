@@ -870,7 +870,7 @@
           <ul class="watch" id="quoteList"></ul>
         </div>
         <div class="side-pane" id="exchangePane" style="display:none;">
-          <div class="side-title"><span data-help-tip="沪、深、北分开选、分开导，一次只出当前这一所。点三次得到三张表，不会混在一起。沪市含科创，深市含创业板。">交易所全市场</span></div>
+          <div class="side-title"><span data-help-tip="沪、深、北分开选、分开导。点开这里或切换某一所，只改左侧名单和导出范围，不会自动取最新行情。要看这一所的数据，再点「查询」或「刷新」。沪市含科创，深市含创业板。">交易所全市场</span></div>
           <div class="chips" id="exchangeChips"></div>
           <div class="side-title board-sub"><span data-help-tip="板块池与指数成份不同，按板块标签筛选全市场标的。">板块另池（不是指数）</span></div>
           <div class="chips" id="boardChips"></div>
@@ -1388,11 +1388,11 @@
     const PEEK_KEYS = new Set(["concept", "hot_concepts", "business", "holders", "top_holders", "thesis", "low_note"]);
     const PEEK_TAGS = new Set(["concept", "hot_concepts"]);
     const COL_SHORT = {
-      name: 96, code: 112, price: 80, pct: 96, pe: 80, pb: 80,
-      zgb: 96, ltgb: 96, mgwfplr: 120, yffy: 96, mgjzc: 104, eps: 96,
+      name: 96, code: 112, price: 80, pct: 96, pe: 128, pb: 80,
+      zgb: 120, ltgb: 128, mgwfplr: 120, yffy: 96, mgjzc: 104, eps: 96,
       gross: 80, net: 80, flow_in: 96, flow_out: 96, flow_net: 88,
       northbound: 96, low1y: 96, low_long: 88, high: 72, off_low: 80,
-      multiple: 80, target: 96, turnover: 80, mcap: 96, fcap: 96, pct60: 104, pct_ytd: 112,
+      multiple: 80, target: 96, turnover: 80, mcap: 112, fcap: 128, pct60: 104, pct_ytd: 112,
     };
     function loadColWidths() {
       try {
@@ -1843,9 +1843,22 @@
         .join(",");
     }
 
+    // 现网股本是股、市值是元；样例数据已经是亿。满 1 万才换算，和导出 Excel 的规则一致。
+    function asYi(value) {
+      if (value == null || value === "" || value === "—") return null;
+      const n = Number(value);
+      if (!Number.isFinite(n)) return null;
+      const scaled = Math.abs(n) >= 10000 ? n / 1e8 : n;
+      return scaled.toFixed(2);
+    }
+
     function fmt(key, value) {
       if (key === "concept") value = cleanConcept(value);
       if (value === null || value === undefined || value === "") return "—";
+      if (key === "zgb" || key === "ltgb" || key === "mcap" || key === "fcap") {
+        const shown = asYi(value);
+        return shown == null ? "—" : shown;
+      }
       if ((key === "pct" || key === "off_low" || key === "turnover" || key === "pct60" || key === "pct_ytd" || key === "vs_cost" || key === "dist_buy" || key === "dist_reduce") && typeof value === "number") {
         const sign = (key === "pct" || key === "pct60" || key === "pct_ytd") && value > 0 ? "+" : "";
         return sign + value.toFixed(2) + "%";
@@ -2172,7 +2185,8 @@
       renderPoolChips(data.pools || []);
     }
 
-    async function selectPool(poolId) {
+    async function selectPool(poolId, opts) {
+      const o = opts && typeof opts === "object" ? opts : {};
       state.pool = poolId;
       state.poolPage = 1;
       if (poolId !== "watch") {
@@ -2184,6 +2198,13 @@
       renderPoolList(data.items || []);
       setPoolHint(poolHintText(state.side, data));
       updateExportScope(data.label || poolId);
+      // 交易所 / 板块只切换名单。最新行情留给「查询」「刷新」「全量更新」。
+      if (o.query === false) {
+        const hint = document.getElementById("queryHint");
+        const label = data.label || poolId;
+        if (hint) hint.textContent = `已选「${label}」。中间的表仍是上一次的结果，点「查询」或「刷新」才会取这一池的数据。`;
+        return;
+      }
       await runQuery(null, { refreshMode: "cache", forceLive: false });
     }
 
@@ -2643,13 +2664,20 @@
       "vs_cost", "dist_buy", "dist_reduce", "as_of", "quote_source",
     ]);
 
-    function mergeQuoteRefreshRows(prev, incoming) {
+    function mergeQuoteRefreshRows(prev, incoming, opts) {
       if (!prev || !prev.length) return incoming || [];
+      // dropMissing：这次返回的是整份名单（没有下一页）。不在里面的旧行就是被移出的，不能再留在表上。
+      // 有下一页时不能丢：快刷只带回第一页，后面已加载的行还要留着。
+      const dropMissing = Boolean(opts && opts.dropMissing);
       const byCode = new Map((incoming || []).map((r) => [r.code6, r]));
       const seen = new Set();
-      const merged = prev.map((old) => {
+      const merged = [];
+      prev.forEach((old) => {
         const neu = byCode.get(old.code6);
-        if (!neu) return old;
+        if (!neu) {
+          if (!dropMissing) merged.push(old);
+          return;
+        }
         seen.add(old.code6);
         const out = { ...old };
         for (const [k, v] of Object.entries(neu)) {
@@ -2657,9 +2685,10 @@
             out[k] = v;
             continue;
           }
+          // 快刷没拉的慢字段是空的，空值不能盖掉表上已经有的行业 / 财务。
           if (v !== null && v !== undefined && v !== "") out[k] = v;
         }
-        return out;
+        merged.push(out);
       });
       for (const r of incoming || []) {
         if (!seen.has(r.code6)) merged.push(r);
@@ -2871,7 +2900,8 @@
       }
       dbg("分页状态", { total: state.totalRows, loaded: rows.length, paged: state.paged, vscroll: state.vscroll });
       if (refreshMode === "quote" && !appending && state.rowsRaw && state.rowsRaw.length) {
-        rows = mergeQuoteRefreshRows(state.rowsRaw, rows);
+        const complete = !data.has_more && !payload.offset;
+        rows = mergeQuoteRefreshRows(state.rowsRaw, rows, { dropMissing: complete });
       }
       if (!fields.length) {
         hintEl.textContent = "查询失败：未返回列定义";
@@ -3060,7 +3090,7 @@
           stockRow("涨跌幅", val("pct") == null ? null : val("pct") + "%") +
           stockRow("市盈率", val("pe")) +
           stockRow("市净率", val("pb")) +
-          stockRow("总市值", val("mcap")) +
+          stockRow("总市值(亿)", asYi(val("mcap"))) +
           stockRow("所属行业", val("industry") || (base && base.industry)) +
           stockRow("所属概念", val("concept") || (base && base.hot_concepts)) +
           stockRow("主营业务", val("business")) +
@@ -4011,19 +4041,22 @@
       const side = btn.dataset.side;
       setSide(side);
       if (side === "watch") {
-        runQuery().catch((err) => toast(err.message));
+        // 必须整表换掉。快刷合并会把上一个指数 / 交易所的行留在表上。
+        runQuery(null, { refreshMode: "cache", forceLive: false }).catch((err) => toast(err.message));
         return;
       }
       const kind = side === "quote" ? "index" : "exchange";
       const first = (state.pools || []).find((p) => p.kind === kind && p.enabled);
-      if (first) selectPool(first.id).catch((err) => toast(err.message));
+      if (first) selectPool(first.id, side === "exchange" ? { query: false } : undefined).catch((err) => toast(err.message));
       else toast(side === "quote" ? "还没有可用的指数成份" : "还没有可用的交易所池");
     });
     function onPoolChipClick(e) {
       const btn = e.target.closest("[data-pool]");
       if (!btn) return;
       if (btn.disabled) return toast(btn.dataset.reason || "未启用");
-      selectPool(btn.dataset.pool).catch((err) => toast(err.message));
+      const box = e.currentTarget;
+      const skipQuery = box && (box.id === "exchangeChips" || box.id === "boardChips");
+      selectPool(btn.dataset.pool, skipQuery ? { query: false } : undefined).catch((err) => toast(err.message));
     }
     document.getElementById("indexChips").addEventListener("click", onPoolChipClick);
     document.getElementById("exchangeChips").addEventListener("click", onPoolChipClick);
@@ -4038,12 +4071,84 @@
       setSide("quote");
       selectPool(el.dataset.pool).catch((err) => toast(err.message));
     });
+    function tableShowsWatch() {
+      return state.side === "watch" && state.pool === "watch" && !(state.lastQueryCodes && state.lastQueryCodes.length);
+    }
+
+    function code6Of(token) {
+      return String(token || "").split(".")[0];
+    }
+
+    function dropDisplayedRow(code6) {
+      // 右侧表正在跟着自选走，或这一行就在当前这批筛选里：立刻拿掉。
+      // 不能再发一次快刷——快刷合并会把服务端已经不返回的旧行留在表上。
+      const follows = tableShowsWatch();
+      const oneOff = (state.lastQueryCodes || []).some((c) => code6Of(c) === code6);
+      if (state.side !== "watch" || (!follows && !oneOff)) return;
+      if (state.streamRows) delete state.streamRows[code6];
+      if (oneOff) {
+        state.lastQueryCodes = (state.lastQueryCodes || []).filter((c) => code6Of(c) !== code6);
+        if (!state.lastQueryCodes.length) state.lastQueryCodes = null;
+      }
+      const prev = state.rowsRaw || [];
+      const next = prev.filter((r) => r.code6 !== code6);
+      const removed = next.length !== prev.length;
+      if ((follows || removed) && state.totalRows) state.totalRows = Math.max(0, state.totalRows - 1);
+      if (removed) renderTable(state.fields, next);
+      else if (state.paged || state.vscroll) renderPagedHint((state.rowsRaw || []).length);
+      const hint = document.getElementById("queryHint");
+      if (hint && (follows || removed)) {
+        const n = state.totalRows || (state.rowsRaw || []).length;
+        hint.textContent = follows ? `${n} 只 · 自选` : `${(state.rowsRaw || []).length} 只 · 筛选一次`;
+      }
+    }
+
+    function cardMetrics(price, card, target) {
+      const num = (v) => {
+        if (v == null || v === "" || v === "—" || v === "-") return null;
+        const n = Number(String(v).replace(/,/g, "").replace(/%/g, ""));
+        return Number.isFinite(n) ? n : null;
+      };
+      const round2 = (v) => Math.round(v * 100) / 100;
+      const px = num(price);
+      const buyLow = num(card && card.buy_low);
+      const buyHigh = num(card && card.buy_high);
+      const reduceAt = num(card && card.reduce_price);
+      const cost = num(card && card.cost);
+      const reduceFor = reduceAt != null ? reduceAt : num(target);
+      let distBuy = null;
+      if (px != null && buyHigh != null && buyHigh) distBuy = round2((px - buyHigh) / buyHigh * 100);
+      else if (px != null && buyLow != null && buyLow) distBuy = round2((px - buyLow) / buyLow * 100);
+      return {
+        buy_low: buyLow,
+        buy_high: buyHigh,
+        reduce_at: reduceAt,
+        cost,
+        vs_cost: px != null && cost ? round2((px - cost) / cost * 100) : null,
+        dist_buy: distBuy,
+        dist_reduce: px != null && reduceFor ? round2((reduceFor - px) / reduceFor * 100) : null,
+        thesis: (card && card.thesis) || "",
+        reduce_for_rule: reduceFor,
+      };
+    }
+
+    function patchDisplayedCard(saved) {
+      if (!saved || !saved.code6) return;
+      const rows = state.rowsRaw || [];
+      const row = rows.find((r) => r.code6 === saved.code6);
+      if (!row) return;
+      const metrics = cardMetrics(row.price, saved.card || {}, row.target);
+      Object.assign(row, metrics);
+      if (state.streamRows && state.streamRows[saved.code6]) Object.assign(state.streamRows[saved.code6], metrics);
+      renderTable(state.fields, rows);
+    }
+
     async function removeWatch(code) {
       try {
         const data = await api("/watchlist/" + code, { method: "DELETE" });
         renderWatch(data.items);
+        dropDisplayedRow(code);
         toast("已移出 " + code);
-        await runQuery();
       } catch (err) {
         toast(err.message);
       }
@@ -5288,9 +5393,9 @@
         });
         state.watch = (state.watch || []).map((it) => (it.code6 === saved.code6 ? saved : it));
         renderWatch(state.watch);
+        patchDisplayedCard(saved);
         closeCard();
         toast("已保存决策卡");
-        await runQuery();
       } catch (err) {
         toast(err.message);
       }
