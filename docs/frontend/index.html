@@ -864,13 +864,13 @@
           <ul class="watch" id="watchList"></ul>
         </div>
         <div class="side-pane" id="quotePane" style="display:none;">
-          <div class="side-title"><span data-help-tip="只导出当前指数的成份股。上证指数 ≠ 沪市全部，深证成指 ≠ 深市全部，北证50 ≠ 北交所全部。">指数成份</span></div>
+          <div class="side-title"><span data-help-tip="点某一指数，中间的表立刻换成这一组成份，不会自动拉行情。要更新现价和其余列，再点「刷新」。上证指数 ≠ 沪市全部，深证成指 ≠ 深市全部，北证50 ≠ 北交所全部。">指数成份</span></div>
           <div class="chips" id="indexChips"></div>
           <input id="quoteFilter" placeholder="搜索当前成份" />
           <ul class="watch" id="quoteList"></ul>
         </div>
         <div class="side-pane" id="exchangePane" style="display:none;">
-          <div class="side-title"><span data-help-tip="沪、深、北分开选、分开导。点开这里或切换某一所，只改左侧名单和导出范围，不会自动取最新行情。要看这一所的数据，再点「查询」或「刷新」。沪市含科创，深市含创业板。">交易所全市场</span></div>
+          <div class="side-title"><span data-help-tip="点某一所或某一板块，中间的表立刻换成这一池的名单，不会自动拉行情。要更新现价和其余列，再点「刷新」。沪市含科创，深市含创业板。">交易所全市场</span></div>
           <div class="chips" id="exchangeChips"></div>
           <div class="side-title board-sub"><span data-help-tip="板块池与指数成份不同，按板块标签筛选全市场标的。">板块另池（不是指数）</span></div>
           <div class="chips" id="boardChips"></div>
@@ -896,7 +896,7 @@
           </div>
           <div class="toolbar">
             <button class="btn primary" id="queryBtn" type="button"><span data-help-tip="按列设置查表：现价优先墙钟；财务/股东等未过期则用本机分项缓存，少打麦蕊。">查询</span></button>
-            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="先更新现价。若行业、股东、财务整表都是空的，会接着按缓存把这一池补齐，并写成一份时间一致的新快照。">刷新</span></button>
+            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="只更新中间这张表上的股票。先更新现价；若行业、股东、财务整表都是空的，会接着按缓存补齐。不会去刷左侧没选中的那一池。">刷新</span></button>
             <button class="btn" id="fullQueryBtn" type="button"><span data-help-tip="忽略慢字段缓存，向麦蕊重新拉齐全部列（含财务、股东、底顶），额度消耗最大。">全量更新</span></button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
@@ -1322,7 +1322,7 @@
       <div id="stockBody" class="stock-body"><div class="meta">正在读取…</div></div>
       <div class="pick-actions" style="margin-top:12px;">
         <button class="btn primary" id="stockAdd" type="button">加入自选</button>
-        <button class="btn" id="stockView" type="button">在右侧表查看</button>
+        <button class="btn" id="stockView" type="button"><span data-help-tip="只查这一只。按当前列设置向数据方取实时数据，结果显示在中间列表。不改自选，也不覆盖自选快照。导出 Excel 会导出这一只。">单独查询</span></button>
         <button class="btn ghost" id="stockClose" type="button">关闭</button>
       </div>
     </div>
@@ -1470,6 +1470,8 @@
         })
       ).length;
       if (filled > 0) return;
+      // 刚按左侧选中换上来的名单还没有行情，空列是正常的，不能当成取数失败。
+      if (state.listOnly) return;
       const hint = document.getElementById("queryHint");
       const mk = (saDebug.lastResult && saDebug.lastResult.market) || {};
       const exhausted = mk.licence_exhausted_all || mk.status === "quota-exhausted";
@@ -2164,10 +2166,11 @@
     function poolHintText(side, meta) {
       if (side === "watch") return "查询和导出只含当前自选。自选里可以同时有沪、深、北，会在同一张表。";
       if (side === "quote") {
-        return (meta && meta.note) || "只导出当前指数的成份股，不是该交易所全部挂牌。";
+        const note = (meta && meta.note) ? (meta.note + " ") : "";
+        return note + "中间的表是当前这只指数的成份。点「刷新」才更新这张表的行情。";
       }
       const extra = (meta && meta.note) ? (" " + meta.note) : "";
-      return "只导出当前选中的这一所或这一板块。沪、深、北要分开点三次，得到三张表。" + extra;
+      return "中间的表是当前这一所或这一板块的名单。点「刷新」才更新这张表的行情。" + extra;
     }
 
     function updateExportScope(label) {
@@ -2185,8 +2188,50 @@
       renderPoolChips(data.pools || []);
     }
 
-    async function selectPool(poolId, opts) {
-      const o = opts && typeof opts === "object" ? opts : {};
+    function rememberRows(rows) {
+      if (!state.rowCache) state.rowCache = new Map();
+      (rows || []).forEach((r) => {
+        if (r && r.code6) state.rowCache.set(r.code6, r);
+      });
+    }
+
+    function showCenterList(items, label) {
+      const list = items || [];
+      const prev = state.rowsRaw || [];
+      const codeOf = (it) => it.code6 || code6Of(it.code_full || it.code || "");
+      const nextCodes = list.map(codeOf).join("\n");
+      const prevCodes = prev.map((r) => r.code6).join("\n");
+      // 同一池、同一批代码：不要重画，否则会把已经刷新出来的行情清掉。
+      if (state.shownPool === state.pool && prev.length && prevCodes === nextCodes) return;
+      const byCode = new Map(prev.map((r) => [r.code6, r]));
+      const rows = list.map((it) => {
+        const code6 = codeOf(it);
+        const kept = (state.rowCache && state.rowCache.get(code6)) || byCode.get(code6);
+        if (kept) return kept;
+        return { code6, code: it.code_full || it.code || code6, name: it.name || "" };
+      });
+      state.lastQueryCodes = null;
+      state.shownPool = state.pool;
+      state.streamRows = null;
+      state.paged = false;
+      state.loadingMore = false;
+      state.tablePage = 1;
+      state.totalRows = rows.length;
+      state.listOnly = rows.every((r) => r.price == null || r.price === "");
+      const fields = (state.fields && state.fields.length)
+        ? state.fields
+        : [{ key: "name", label: "名称" }, { key: "code", label: "代码" }];
+      renderTable(fields, rows, { all: true });
+      const hint = document.getElementById("queryHint");
+      const name = label || state.poolLabel || "";
+      if (hint) {
+        hint.textContent = state.listOnly
+          ? `已显示「${name}」${rows.length} 只。点「刷新」更新这一列表。`
+          : `${rows.length} 只 · ${name}`;
+      }
+    }
+
+    async function selectPool(poolId) {
       state.pool = poolId;
       state.poolPage = 1;
       if (poolId !== "watch") {
@@ -2198,14 +2243,8 @@
       renderPoolList(data.items || []);
       setPoolHint(poolHintText(state.side, data));
       updateExportScope(data.label || poolId);
-      // 交易所 / 板块只切换名单。最新行情留给「查询」「刷新」「全量更新」。
-      if (o.query === false) {
-        const hint = document.getElementById("queryHint");
-        const label = data.label || poolId;
-        if (hint) hint.textContent = `已选「${label}」。中间的表仍是上一次的结果，点「查询」或「刷新」才会取这一池的数据。`;
-        return;
-      }
-      await runQuery(null, { refreshMode: "cache", forceLive: false });
+      // 只换中间这份名单，不拉行情。行情留给「刷新」。
+      showCenterList(data.items || [], data.label || poolId);
     }
 
     function setSide(side) {
@@ -2330,6 +2369,7 @@
       state.fields = fields;
       // append=true 是「滚动加载下一页」：接在已加载的行后面，不覆盖
       state.rowsRaw = o.append ? (state.rowsRaw || []).concat(rows || []) : (rows || []);
+      rememberRows(state.rowsRaw);
       state.vscroll = wantVirtualScroll(state.totalRows, state.rowsRaw.length);
       applyColLayout(fields);
       if (state.vscroll) {
@@ -2338,11 +2378,17 @@
       } else {
         const all = sortedRows(state.rowsRaw);
         const pageLimit = state.tablePage * PAGE_SIZE;
-        // 后端分页追加的行要整页留下。只在「一次拿全、本机翻页」时才按 tablePage 截断。
-        const limit = (o.append || state.paged) ? all.length : Math.min(all.length, pageLimit);
+        // 后端分页追加的行要整页留下。左侧选中换上来的名单也一次铺开。
+        // 只在「一次拿全、本机翻页」时才按 tablePage 截断。
+        const showAll = Boolean(o.all);
+        const limit = (o.append || showAll || state.paged) ? all.length : Math.min(all.length, pageLimit);
         const shown = all.slice(0, limit);
         if (state.paged) renderPagedHint(all.length);
-        else renderTableMore(all.length, limit);
+        else if (!showAll) renderTableMore(all.length, limit);
+        else {
+          const more = document.getElementById("tableMore");
+          if (more) more.style.display = "none";
+        }
         renderTableHead(fields);
         document.getElementById("tableBody").innerHTML = shown.map((row) => `<tr>${rowCellsHtml(fields, row)}</tr>`).join("");
         state.rowTr = {};
@@ -2408,6 +2454,10 @@
     function renderPagedHint(loadedCount) {
       const el = ensureTableMore();
       if (!el) return;
+      if (!state.paged && (state.rowsRaw || []).length >= (state.totalRows || (state.rowsRaw || []).length)) {
+        el.style.display = "none";
+        return;
+      }
       if (!state.paged && !state.vscroll) return;
       el.style.display = "flex";
       const loaded = state.rowsRaw.length;
@@ -2578,6 +2628,8 @@
         return;
       }
       if (event === "done") {
+        state.listOnly = false;
+        if (!(state.lastQueryCodes && state.lastQueryCodes.length)) state.shownPool = state.pool;
         // 只有服务端明确说还有下一页时，才提示往下滚。行没画出来不能当成「还没加载」。
         state.paged = Boolean(data.has_more);
         state.tablePage = 1;
@@ -2608,7 +2660,7 @@
       const payload = queryPayload(codes, {
         refreshMode: (opts && opts.refreshMode) || "quote",
         forceLive: opts ? opts.forceLive : undefined,
-        limit: opts && opts.append ? opts.limit : PAGE_LIMIT,
+        limit: (opts && opts.limit) || PAGE_LIMIT,
         offset: opts && opts.append ? opts.offset : 0,
       });
       const headers = { "Content-Type": "application/json" };
@@ -2748,6 +2800,37 @@
       return src;
     }
 
+    function describeSnapshotSource(sn) {
+      const sources = sn.sources || [];
+      const ownAt = formatShanghaiMinute(sn.own_saved_at);
+      const ownPool = sn.own_pool || "这一池";
+      if (!sources.length) {
+        const at = formatShanghaiMinute(sn.saved_at);
+        return at ? `本机快照（存于 ${at}）` : "本机快照";
+      }
+      const mixed = sources.length > 1 || (sn.own_used || 0) > 0;
+      const parts = sources.map((src) => {
+        const at = formatShanghaiMinute(src.saved_at);
+        const when = at ? `存于 ${at}` : "已保存";
+        const name = src.pool || src.pool_id || "其他池";
+        if (src.complete && !mixed) {
+          return `取自${name}的快照（${when}）`;
+        }
+        if (src.complete) {
+          return `其中 ${src.used || 0} 只取自${name}的快照（${when}）`;
+        }
+        return `其中 ${src.used || 0} 只取自未完成的${name}（已查 ${src.covered || 0} 只，${when}）`;
+      });
+      let text = parts.join("，");
+      if ((sn.own_used || 0) > 0) {
+        const when = ownAt ? `（存于 ${ownAt}）` : "";
+        text += `，其余 ${sn.own_used} 只仍是${ownPool}快照${when}`;
+      } else if (sources.length === 1 && sources[0].complete && ownAt) {
+        text += `，新于${ownPool}自己的快照（存于 ${ownAt}）`;
+      }
+      return text;
+    }
+
     function describeQueryMode(data) {
       const m = data.market || {};
       if (m.offline || data.sample) {
@@ -2778,10 +2861,7 @@
         return "快刷";
       }
       if (data.refresh_mode === "snapshot") {
-        const sn = data.snapshot || {};
-        const at = formatShanghaiMinute(sn.saved_at);
-        // saved_at 是整张表写入本机的时刻（UTC 存储）。这里换成北京时间，避免和现价档口差 8 小时。
-        return at ? `本机快照（存于 ${at}）` : "本机快照";
+        return describeSnapshotSource(data.snapshot || {});
       }
       if (data.refresh_mode === "cache") {
         const sc = data.slow_cache || {};
@@ -2846,8 +2926,8 @@
       const payload = queryPayload(codes, {
         refreshMode,
         forceLive,
-        // 首屏只拉一页；后端会一起回 total / has_more，滚动到底再拉下一页
-        limit: appending ? o.limit : PAGE_LIMIT,
+        // 默认只拉一页。刷新当前整表时会带上已显示的行数，避免只更新第一页、剩下的还是旧名单。
+        limit: o.limit || PAGE_LIMIT,
         offset: appending ? o.offset : 0,
         sortKey: state.sortKey || "",
         sortDir: state.sortDir || "desc",
@@ -2909,7 +2989,11 @@
         return;
       }
       try {
-        if (!appending) state.tablePage = 1;
+        if (!appending) {
+          state.tablePage = 1;
+          state.listOnly = false;
+          if (!(codes && codes.length)) state.shownPool = state.pool;
+        }
         renderTable(fields, rows, { append: appending });
       } catch (renderErr) {
         hintEl.textContent = "表格渲染失败";
@@ -3138,8 +3222,9 @@
       const code = state.stockCode;
       if (!code) return;
       closeStock();
-      await runQuery([code], { refreshMode: "cache", forceLive: false });
-      toast("已在右侧表显示这只票；导出 Excel 会导出它");
+      // 临时代码查询：整只按列设置现网重拉。pool 是 codes，不会写成自选快照。
+      await runQuery([code], { refreshMode: "full", forceLive: true });
+      toast("已单独查询这一只，中间列表是实时结果");
     });
     document.getElementById("stockAdd").addEventListener("click", async () => {
       const code = state.stockCode;
@@ -3154,7 +3239,7 @@
         addBtn.textContent = "已在自选中";
         addBtn.disabled = true;
         toast(`已加入自选（新增 ${data.added.length} 只）`);
-        if (state.side === "watch") await runQuery(null, { refreshMode: "cache", forceLive: false });
+        if (state.side === "watch") showCenterList(data.items || [], "自选");
       } catch (err) {
         toast(err.message);
       }
@@ -3905,9 +3990,21 @@
       runQuery(null, { refreshMode: "full", forceLive: true, stream: true }).catch((e) => toast(e.message))
     );
     document.getElementById("refreshBtn").addEventListener("click", async () => {
+      const codes = state.lastQueryCodes;
+      const shown = (state.rowsRaw || []).length;
+      // 中间已经铺开的名单长过一页时，按这份名单的长度刷新，而不是只刷第一页。
+      const limit = shown > PAGE_LIMIT ? shown : PAGE_LIMIT;
+      if (state.listOnly) {
+        try {
+          await runQuery(codes, { refreshMode: "cache", forceLive: false, limit });
+        } catch (e) {
+          toast(e.message);
+        }
+        return;
+      }
       let quoteErr = null;
       try {
-        await runQuery(null, { refreshMode: "quote", forceLive: false });
+        await runQuery(codes, { refreshMode: "quote", forceLive: false, limit });
       } catch (e) {
         quoteErr = e;
       }
@@ -3923,7 +4020,7 @@
         return;
       }
       try {
-        await runQuery(null, { refreshMode: "cache", forceLive: false, stream: true });
+        await runQuery(codes, { refreshMode: "cache", forceLive: false, stream: shown <= PAGE_LIMIT, limit });
       } catch (e) {
         toast(quoteErr ? quoteErr.message : e.message);
       }
@@ -4041,22 +4138,19 @@
       const side = btn.dataset.side;
       setSide(side);
       if (side === "watch") {
-        // 必须整表换掉。快刷合并会把上一个指数 / 交易所的行留在表上。
-        runQuery(null, { refreshMode: "cache", forceLive: false }).catch((err) => toast(err.message));
+        showCenterList(state.watch || [], "自选");
         return;
       }
       const kind = side === "quote" ? "index" : "exchange";
       const first = (state.pools || []).find((p) => p.kind === kind && p.enabled);
-      if (first) selectPool(first.id, side === "exchange" ? { query: false } : undefined).catch((err) => toast(err.message));
+      if (first) selectPool(first.id).catch((err) => toast(err.message));
       else toast(side === "quote" ? "还没有可用的指数成份" : "还没有可用的交易所池");
     });
     function onPoolChipClick(e) {
       const btn = e.target.closest("[data-pool]");
       if (!btn) return;
       if (btn.disabled) return toast(btn.dataset.reason || "未启用");
-      const box = e.currentTarget;
-      const skipQuery = box && (box.id === "exchangeChips" || box.id === "boardChips");
-      selectPool(btn.dataset.pool, skipQuery ? { query: false } : undefined).catch((err) => toast(err.message));
+      selectPool(btn.dataset.pool).catch((err) => toast(err.message));
     }
     document.getElementById("indexChips").addEventListener("click", onPoolChipClick);
     document.getElementById("exchangeChips").addEventListener("click", onPoolChipClick);
@@ -4414,7 +4508,7 @@
         renderWatch(data.items);
         closePicker();
         toast(`已加入 ${data.added.length} 只`);
-        await runQuery(null, { refreshMode: "cache", forceLive: false });
+        if (state.side === "watch" && state.pool === "watch") showCenterList(data.items || [], "自选");
       } catch (err) {
         toast(err.message);
       }
@@ -4432,7 +4526,8 @@
         setSide("watch");
         closePicker();
         toast("自选已替换为 " + items.length + " 只");
-        await runQuery(null, { refreshMode: "cache", forceLive: false });
+        state.pool = "watch";
+        showCenterList(items || [], "自选");
       } catch (err) {
         toast(err.message);
       }

@@ -5,7 +5,13 @@ from fastapi.testclient import TestClient
 from src.main import app
 from src.market.fixtures import WATCH_SEED
 from src.query.engine import REFRESH_SNAPSHOT, fetch_need
-from src.query.snapshot import load_table_snapshot, rows_from_snapshot, save_table_snapshot
+from src.market.normalize import normalize_instrument
+from src.query.snapshot import (
+    compose_snapshot,
+    load_table_snapshot,
+    merge_partial_snapshot,
+    save_table_snapshot,
+)
 
 
 def test_fetch_need_snapshot_empty():
@@ -125,3 +131,161 @@ def test_legacy_watch_file_still_loads(tmp_path, monkeypatch):
     )
     snap = load_table_snapshot(1, "watch")
     assert snap and snap["rows"][0]["price"] == 10
+
+
+def _inst(code: str, name: str = ""):
+    return normalize_instrument(code, name)
+
+
+def test_partial_pages_keep_earlier_rows_and_donate_the_intersection(tmp_path, monkeypatch):
+    """沪市查到一半也要留下。自选里被盖住的那只用更新的格子，空格子和其余股票仍用自选。"""
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    save_table_snapshot(
+        1,
+        pool="自选",
+        pool_id="watch",
+        field_keys=["price", "yffy"],
+        codes=["688001.SH", "688002.SH"],
+        rows=[
+            {"code6": "688001", "code_full": "688001.SH", "name": "甲", "price": 10, "yffy": 1.5},
+            {"code6": "688002", "code_full": "688002.SH", "name": "乙", "price": 20, "yffy": 2.5},
+        ],
+        clock={"as_of": "2026-10-25T07:00:00+00:00", "source": "live"},
+        refresh_mode="cache",
+        saved_at="2026-10-25T07:00:00+00:00",
+    )
+    merge_partial_snapshot(
+        1,
+        pool="沪市全部",
+        pool_id="exchange:sh",
+        field_keys=["price"],
+        rows=[{"code6": "688001", "code_full": "688001.SH", "name": "甲", "price": 11}],
+        clock={},
+        refresh_mode="cache",
+        total=2000,
+        saved_at="2026-10-25T08:00:00+00:00",
+    )
+    merge_partial_snapshot(
+        1,
+        pool="沪市全部",
+        pool_id="exchange:sh",
+        field_keys=["price"],
+        rows=[{"code6": "600000", "code_full": "600000.SH", "name": "丙", "price": 8}],
+        clock={},
+        refresh_mode="cache",
+        total=2000,
+        saved_at="2026-10-25T08:10:00+00:00",
+    )
+    sh = load_table_snapshot(1, "exchange:sh")
+    assert sh["complete"] is False
+    assert {row["code6"] for row in sh["rows"]} == {"688001", "600000"}
+    got = compose_snapshot(1, "watch", [_inst("688001.SH", "甲"), _inst("688002.SH", "乙")])
+    by = {row["code6"]: row for row in got["rows"]}
+    assert [row["code6"] for row in got["rows"]] == ["688001", "688002"]
+    assert by["688001"]["price"] == 11
+    assert by["688001"]["yffy"] == 1.5
+    assert by["688002"]["price"] == 20
+    assert got["own_used"] == 1
+    assert got["sources"][0]["pool_id"] == "exchange:sh"
+    assert got["sources"][0]["complete"] is False
+    assert got["sources"][0]["used"] == 1
+    assert got["sources"][0]["covered"] == 2
+
+
+def test_newer_complete_exchange_feeds_the_board_without_wiping_blanks(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    save_table_snapshot(
+        1,
+        pool="科创板全部",
+        pool_id="board:kc",
+        field_keys=["price", "yffy"],
+        codes=["688001.SH"],
+        rows=[{"code6": "688001", "code_full": "688001.SH", "name": "甲", "price": 10, "yffy": 3}],
+        clock={"source": "live"},
+        refresh_mode="full",
+        saved_at="2026-10-25T07:00:00+00:00",
+    )
+    save_table_snapshot(
+        1,
+        pool="沪市全部",
+        pool_id="exchange:sh",
+        field_keys=["price", "yffy"],
+        codes=["688001.SH", "600000.SH"],
+        rows=[
+            {"code6": "688001", "code_full": "688001.SH", "name": "甲", "price": 12, "yffy": None},
+            {"code6": "600000", "code_full": "600000.SH", "name": "丙", "price": 8, "yffy": 9},
+        ],
+        clock={"source": "live"},
+        refresh_mode="full",
+        saved_at="2026-10-25T09:00:00+00:00",
+    )
+    got = compose_snapshot(1, "board:kc", [_inst("688001.SH", "甲")])
+    assert got["rows"][0]["price"] == 12
+    assert got["rows"][0]["yffy"] == 3
+    assert got["sources"][0]["complete"] is True
+    assert got["sources"][0]["pool"] == "沪市全部"
+    assert got["own_used"] == 0
+
+
+def test_older_superset_does_not_replace_a_newer_own_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    save_table_snapshot(
+        1,
+        pool="沪市全部",
+        pool_id="exchange:sh",
+        field_keys=["price"],
+        codes=["688001.SH"],
+        rows=[{"code6": "688001", "price": 1}],
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T06:00:00+00:00",
+    )
+    save_table_snapshot(
+        1,
+        pool="科创板全部",
+        pool_id="board:kc",
+        field_keys=["price"],
+        codes=["688001.SH"],
+        rows=[{"code6": "688001", "price": 5}],
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T09:00:00+00:00",
+    )
+    got = compose_snapshot(1, "board:kc", [_inst("688001.SH")])
+    assert got["rows"][0]["price"] == 5
+    assert got["sources"] == []
+    assert got["own_used"] == 1
+    assert got["saved_at"] == "2026-10-25T09:00:00+00:00"
+
+
+def test_partial_merge_keeps_the_other_stock_in_a_complete_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    save_table_snapshot(
+        1,
+        pool="自选",
+        pool_id="watch",
+        field_keys=["price"],
+        codes=["600038.SH", "600893.SH"],
+        rows=[{"code6": "600038", "price": 10}, {"code6": "600893", "price": 20}],
+        clock={},
+        refresh_mode="cache",
+        saved_at="2026-10-25T07:00:00+00:00",
+    )
+    merge_partial_snapshot(
+        1,
+        pool="自选",
+        pool_id="watch",
+        field_keys=["price"],
+        rows=[{"code6": "600038", "price": 11}],
+        clock={},
+        refresh_mode="cache",
+        total=2,
+        saved_at="2026-10-25T08:00:00+00:00",
+    )
+    snap = load_table_snapshot(1, "watch")
+    assert snap["complete"] is True
+    by = {row["code6"]: row for row in snap["rows"]}
+    assert set(by) == {"600038", "600893"}
+    assert by["600038"]["price"] == 11
+    assert by["600893"]["price"] == 20
+    assert by["600893"]["row_saved_at"] == "2026-10-25T07:00:00+00:00"

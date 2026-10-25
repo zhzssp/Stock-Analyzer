@@ -141,3 +141,27 @@ def test_field_values_are_identical_between_paths(market, monkeypatch):
     legacy = _run(market, insts)
 
     assert pooled == legacy
+
+
+def test_cancel_before_start_skips_slow_fetch(market):
+    cancel = threading.Event()
+    cancel.set()
+    rows = _run(market, _insts(3), cancel=cancel)
+    assert rows == []
+    assert market.profile.call_count == 0
+    assert market.history.call_count == 0
+
+
+def test_cancel_finishes_the_started_stock_and_skips_the_rest(market, monkeypatch):
+    monkeypatch.setattr(settings, "query_workers", 1)
+    cancel = threading.Event()
+
+    def stop_after_first(inst, *_args, **_kwargs):
+        cancel.set()
+        return [{"d": "20260102", "c": 10.0, "h": 11.0, "l": 9.0}]
+
+    market.history.side_effect = stop_after_first
+    rows = _run(market, _insts(4), cancel=cancel)
+    assert [row["code6"] for row in rows] == ["600000"]
+    assert market.history.call_count == 1
+    assert market.profile.call_count == 1

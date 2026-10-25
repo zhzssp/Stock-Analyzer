@@ -745,6 +745,9 @@ def _execute_query(
     persist_snapshot: bool = True,
     file_label: str = "",
     pool_id: str = "watch",
+    snapshot_partial: bool = False,
+    pool_total: int = 0,
+    cancel: Any = None,
 ) -> dict:
     ensure_market()
     file_label = (file_label or "").strip()[:80]
@@ -754,9 +757,9 @@ def _execute_query(
     if mode == "snapshot":
         from fastapi import HTTPException
 
-        from src.query.snapshot import load_table_snapshot, rows_from_snapshot
+        from src.query.snapshot import compose_snapshot, rows_from_snapshot
 
-        snap = load_table_snapshot(user_id, pool_id)
+        snap = compose_snapshot(user_id, pool_id, insts)
         if not snap:
             raise HTTPException(status_code=404, detail="尚无这一池的表级快照，请先点「查询」或「全量更新」")
         rows = rows_from_snapshot(snap, insts, fields, cards)
@@ -785,6 +788,12 @@ def _execute_query(
                 "pool_id": snap.get("pool_id") or pool_id,
                 "pool": snap.get("pool") or "",
                 "source_refresh_mode": snap.get("refresh_mode") or "",
+                "sources": snap.get("sources") or [],
+                "own_saved_at": snap.get("own_saved_at") or "",
+                "own_pool": snap.get("own_pool") or "",
+                "own_used": int(snap.get("own_used") or 0),
+                "row_count": int(snap.get("row_count") or len(rows)),
+                "complete": bool(snap.get("complete", True)),
             },
         }
         if do_export:
@@ -818,6 +827,7 @@ def _execute_query(
         on_quotes=on_quotes,
         on_row=on_row,
         on_issue=on_issue,
+        cancel=cancel,
     )
     codes = [i.code_full for i in insts]
     clock_meta = engine.last_clock_meta or {}
@@ -848,27 +858,41 @@ def _execute_query(
     }
     if mode == "cache":
         out["slow_cache"] = engine.last_slow_cache or {}
-    # 快照只收「这一池的整表」。临时代码、分页的一段、整批失败都不写，避免单只详情盖掉自选。
-    whole = (not limit or int(limit) <= 0 or (int(offset or 0) == 0 and int(limit) >= len(ordered)))
-    if (
-        mode in ("cache", "full")
-        and persist_snapshot
-        and pool_id != "codes"
-        and whole
-        and not any(item.get("level") == "error" for item in out["issues"])
-    ):
-        from src.query.snapshot import save_table_snapshot
+    # 整池查完才整份替换。只查到一页、或中途停下时，把已组装完的行并进未完成快照。
+    # 临时代码（详情、只看这一只）不写。整批失败不覆盖已有的完整快照。
+    fatal = any(item.get("level") == "error" for item in out["issues"])
+    stopped_early = bool(
+        cancel is not None
+        and getattr(cancel, "is_set", lambda: False)()
+        and (not pool_total or len(ordered) < int(pool_total))
+    )
+    if mode in ("cache", "full") and persist_snapshot and pool_id != "codes" and ordered and not fatal:
+        if snapshot_partial or stopped_early:
+            from src.query.snapshot import merge_partial_snapshot
 
-        save_table_snapshot(
-            user_id,
-            pool_id=pool_id,
-            pool=pool_name,
-            field_keys=fields,
-            codes=codes,
-            rows=ordered,
-            clock=out.get("clock"),
-            refresh_mode=mode,
-        )
+            merge_partial_snapshot(
+                user_id,
+                pool_id=pool_id,
+                pool=pool_name,
+                field_keys=fields,
+                rows=ordered,
+                clock=out.get("clock"),
+                refresh_mode=mode,
+                total=pool_total,
+            )
+        else:
+            from src.query.snapshot import save_table_snapshot
+
+            save_table_snapshot(
+                user_id,
+                pool_id=pool_id,
+                pool=pool_name,
+                field_keys=fields,
+                codes=codes,
+                rows=ordered,
+                clock=out.get("clock"),
+                refresh_mode=mode,
+            )
     if do_export:
         path = write_query_xlsx(rows, fields, pool_name, file_label=file_label)
         db = SessionLocal()
@@ -987,8 +1011,8 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     pool_id = meta.get("id") or "watch"
     start = max(0, int(body.offset or 0))
     page_limit = int(body.limit or 0)
-    # 一页刚好装下整池（自选通常远小于页大小）仍是整表，要写成这一池的快照。
-    # 真正的后页、或只算了池子的一段，不能拿来覆盖。临时代码（详情、只看这一只）也不写。
+    # 一页刚好装下整池（自选通常远小于页大小）仍是整表，整份替换快照。
+    # 大池只算了一段时不覆盖：把这页已经组装完的行并进未完成快照。
     covers_pool = page_limit <= 0 or (start == 0 and total_insts <= page_limit)
     if page_limit > 0:
         insts = insts[start : start + page_limit]
@@ -997,6 +1021,7 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
 
     out: "queue.Queue[tuple[str, dict] | None]" = queue.Queue()
+    cancel = threading.Event()
 
     def pump() -> None:
         def on_quotes(rows: list) -> None:
@@ -1025,8 +1050,11 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 on_quotes=on_quotes,
                 on_row=on_row,
                 on_issue=on_issue,
-                persist_snapshot=covers_pool and pool_id != "codes",
+                persist_snapshot=pool_id != "codes",
                 pool_id=pool_id,
+                snapshot_partial=not covers_pool,
+                pool_total=total_insts,
+                cancel=cancel,
             )
             out.put((
                 "done",
@@ -1046,6 +1074,13 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     threading.Thread(target=pump, name="query-stream", daemon=True).start()
 
     def events():
+        try:
+            yield from _stream_frames()
+        finally:
+            # 页面断开或改去查别的池时，不再为还没开始的股票请求麦蕊。
+            cancel.set()
+
+    def _stream_frames():
         yield frame(
             "meta",
             {

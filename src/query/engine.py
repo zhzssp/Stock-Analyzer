@@ -88,6 +88,7 @@ class QueryEngine:
         on_quotes: Any = None,
         on_row: Any = None,
         on_issue: Any = None,
+        cancel: Any = None,
     ) -> list[dict]:
         """on_quotes / on_row 用于流式查询：先送一批只有行情的行，再逐只送完整行。
 
@@ -125,6 +126,7 @@ class QueryEngine:
                 on_quotes=on_quotes,
                 on_row=on_row,
                 on_issue=on_issue,
+                cancel=cancel,
             )
         finally:
             notes: list[dict] = []
@@ -162,6 +164,7 @@ class QueryEngine:
         on_quotes: Any = None,
         on_row: Any = None,
         on_issue: Any = None,
+        cancel: Any = None,
     ) -> list[dict]:
         quotes: dict[str, dict] = {}
         clock_meta = {"as_of": "", "source": "", "enabled": False, "reason": ""}
@@ -298,10 +301,18 @@ class QueryEngine:
             bags = {inst.code6: new_bag(inst) for inst in instruments}
             abort = threading.Event()
             errors: list[BaseException] = []
+            started: set[str] = set()
+            done_kinds: dict[str, set[str]] = {inst.code6: set() for inst in instruments}
+            gate = threading.Lock()
 
             def run_task(kind: str, inst: Instrument) -> None:
                 if abort.is_set():
                     return
+                with gate:
+                    # 页面已经断开时，没开始的股票不再请求。已经在取的这只要把各个字段块取完。
+                    if cancel is not None and cancel.is_set() and inst.code6 not in started:
+                        return
+                    started.add(inst.code6)
                 try:
                     value = fetch_slow(kind, inst)
                 except BaseException as exc:  # noqa: BLE001 - 收集起来，最后统一抛
@@ -310,21 +321,40 @@ class QueryEngine:
                     abort.set()
                     return
                 apply_slow(bags[inst.code6], kind, value)
+                with gate:
+                    done_kinds[inst.code6].add(kind)
 
             # 按 kind 外层铺开：同一种接口一起打，最重的 bars 排在前面先投出去，
             # 否则最长的那个任务会拖在队尾，尾延迟就是它决定的。
             tasks = [(kind, inst) for kind in kinds for inst in instruments]
             with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
                 list(pool.map(lambda item: run_task(*item), tasks))
-            if errors:
+            required = set(kinds)
+            cancelled = cancel is not None and cancel.is_set()
+            if cancelled:
+                ready = [inst for inst in instruments if required <= done_kinds[inst.code6]]
+                rows = [assemble(inst, bags[inst.code6]) for inst in ready]
+                if not rows and errors:
+                    raise errors[0]
+            elif errors:
                 raise errors[0]
-            # 组装必须串行且按 instruments 原序：导出、分页切片、快照都依赖这个顺序。
-            rows = [assemble(inst, bags[inst.code6]) for inst in instruments]
+            else:
+                # 组装必须串行且按 instruments 原序：导出、分页切片、快照都依赖这个顺序。
+                rows = [assemble(inst, bags[inst.code6]) for inst in instruments]
         elif workers > 1 and len(instruments) > 1:
+            def build_if(inst: Instrument) -> dict | None:
+                if cancel is not None and cancel.is_set():
+                    return None
+                return build_row(inst)
+
             with ThreadPoolExecutor(max_workers=min(workers, len(instruments))) as pool:
-                rows = list(pool.map(build_row, instruments))
+                rows = [row for row in pool.map(build_if, instruments) if row]
         else:
-            rows = [build_row(i) for i in instruments]
+            rows = []
+            for inst in instruments:
+                if cancel is not None and cancel.is_set():
+                    break
+                rows.append(build_row(inst))
         self.last_slow_cache = dict(getattr(self.market, "slow_cache_stats", {}) or {})
         return rows
 
