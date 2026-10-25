@@ -902,7 +902,6 @@
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
-            <button class="btn ghost" id="diffBtn" type="button">对照上一份</button>
             <label class="hint x-date" for="xDate"><span data-help-tip="列设置勾选「X日价」时生效。">X日</span><input id="xDate" type="date" /></label>
             <span class="export-scope" id="exportScope">当前导出：自选</span>
             <span class="hint" id="queryHint">尚未查询</span>
@@ -4087,7 +4086,6 @@
         toast(err.message);
       }
     });
-    document.getElementById("diffBtn").addEventListener("click", () => openArchive({ diffLatest: true }).catch((e) => toast(e.message)));
     document.getElementById("closeCols").addEventListener("click", closeCols);
     document.getElementById("saveCols").addEventListener("click", () => saveCols().catch((e) => toast(e.message)));
     document.getElementById("colList").addEventListener("change", (e) => {
@@ -5282,15 +5280,12 @@
       toast((data.cite || "对照完成") + " · " + (((data.data || {}).change_count) || 0) + " 处");
     }
 
-    async function openArchive(opts) {
+    async function openArchive() {
       document.getElementById("archiveMask").style.display = "flex";
       const items = await api("/artifacts");
       renderArtifacts(items);
       document.getElementById("artPreview").textContent = "点预览看前几行。";
       document.getElementById("artDiff").textContent = "";
-      if (opts && opts.diffLatest) {
-        await runDiff(false);
-      }
     }
 
     function closeArchive() {

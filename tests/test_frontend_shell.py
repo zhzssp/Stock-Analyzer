@@ -15,7 +15,7 @@ def test_workbench_exposes_exchange_export_entry():
 def test_workbench_exposes_landed_backend_entries():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert 'id="archiveBtn"' in html
-    assert 'id="diffBtn"' in html
+    assert 'id="diffLatest"' in html
     assert "/artifacts/diff" in html
     assert "/artifacts/" in html and "/preview" in html
     assert 'id="sessionList"' in html
@@ -75,7 +75,7 @@ def test_workbench_exposes_landed_backend_entries():
     assert 'querySelectorAll("nav.tabs > .tab[data-view]")' in html
     assert "本轮守则" in html
     assert "/watchlist/" in html and "/card" in html
-    assert "对照上一份" in html
+    assert "对照最近两份" in html
     assert "历史对话" in html
 
 
