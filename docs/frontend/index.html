@@ -897,7 +897,7 @@
           </div>
           <div class="toolbar">
             <button class="btn primary" id="queryBtn" type="button"><span data-help-tip="按列设置查表：现价优先墙钟；财务/股东等未过期则用本机分项缓存，少打麦蕊。">查询</span></button>
-            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="只更新中间这张表上的股票。先更新现价；若行业、股东、财务整表都是空的，会接着按缓存补齐。不会去刷左侧没选中的那一池。">刷新</span></button>
+            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="只更新中间这张表上已有股票的现价，不会改成下滚翻页。自选这种小表如果行业、股东、财务是空的，会接着按缓存补齐。不会去刷左侧没选中的那一池。">刷新</span></button>
             <button class="btn" id="fullQueryBtn" type="button"><span data-help-tip="忽略慢字段缓存，向麦蕊重新拉齐全部列（含财务、股东、底顶），额度消耗最大。">全量更新</span></button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
@@ -2615,7 +2615,13 @@
       dbg("流式事件", event, data);
       if (event === "meta") {
         // meta.total 是整池行数（不是本页），据此决定是否启用虚拟滚动
-        state.totalRows = data.total || 0;
+        state.totalRows = data.total || state.totalRows || 0;
+        if (state.streamKeepRows && (state.rowsRaw || []).length) {
+          // 刷新不要先把名单换成骨架，也不要收成第一页再让人下滚。
+          state.paged = false;
+          if (hint) hint.textContent = "正在更新现价…";
+          return;
+        }
         state.vscroll = wantVirtualScroll(state.totalRows, 0);
         renderSkeleton(data.fields || [], data.total || 0);
         if (hint) hint.textContent = `共 ${data.total || 0} 只 · 正在取行情…`;
@@ -2627,29 +2633,41 @@
         return;
       }
       if (event === "batch") {
+        if (state.streamKeepRows && (state.rowsRaw || []).length) {
+          mergeKeepRows(data.rows || [], data.stage || "full");
+          return;
+        }
         applyStreamRows(data.rows || [], data.stage || "full");
         return;
       }
       if (event === "progress") {
-        if (hint) hint.textContent = `已出 ${data.done || 0}/${data.total || 0} 只 · 继续补齐…`;
+        if (hint) {
+          hint.textContent = state.streamKeepRows
+            ? `正在更新现价 ${data.done || 0}/${data.total || 0}`
+            : `已出 ${data.done || 0}/${data.total || 0} 只 · 继续补齐…`;
+        }
         return;
       }
       if (event === "done") {
-        state.listOnly = false;
+        state.listOnly = (state.rowsRaw || []).every((r) => r.price == null || r.price === "");
         if (!(state.lastQueryCodes && state.lastQueryCodes.length)) state.shownPool = state.pool;
-        // 只有服务端明确说还有下一页时，才提示往下滚。行没画出来不能当成「还没加载」。
-        state.paged = Boolean(data.has_more);
+        // 刷新走 keepRows：更新的就是当前这张表，不要再提示下滚。
+        state.paged = state.streamKeepRows ? false : Boolean(data.has_more);
         state.tablePage = 1;
-        renderTable(state.fields, state.rowsRaw);
+        renderTable(state.fields, state.rowsRaw, state.streamKeepRows ? { all: true } : undefined);
         showQueryIssues(data.issues || []);
         if (hint) {
           const sec = ((data.elapsed_ms || 0) / 1000).toFixed(1);
           const bad = (data.issues || []).length ? " · 有失败，见表格上方" : "";
           const loaded = state.rowsRaw.length;
           const total = state.totalRows || loaded;
-          hint.textContent = data.has_more
-            ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载${bad}`
-            : `${loaded} 只 · 用时 ${sec} 秒${bad}`;
+          if (state.streamKeepRows) {
+            hint.textContent = `${loaded} 只 · 现价已更新 · 用时 ${sec} 秒${bad}`;
+          } else {
+            hint.textContent = data.has_more
+              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载${bad}`
+              : `${loaded} 只 · 用时 ${sec} 秒${bad}`;
+          }
         }
         return;
       }
@@ -2800,6 +2818,31 @@
       "price", "pct", "pe", "pb", "turnover", "mcap", "fcap", "pct60", "pct_ytd",
       "vs_cost", "dist_buy", "dist_reduce", "as_of", "quote_source",
     ]);
+
+    function mergeKeepRows(incoming, stage) {
+      const prev = state.rowsRaw || [];
+      const quoteOnly = stage === "quote";
+      const byCode = new Map(prev.map((r) => [r.code6, r]));
+      const order = prev.map((r) => r.code6);
+      (incoming || []).forEach((row) => {
+        if (!row || row.code6 == null || row.code6 === "") return;
+        const old = byCode.get(row.code6);
+        if (!old) {
+          byCode.set(row.code6, row);
+          order.push(row.code6);
+          return;
+        }
+        Object.entries(row).forEach(([k, v]) => {
+          if (v === null || v === undefined || v === "") return;
+          if (quoteOnly && !QUOTE_FIELD_KEYS.has(k) && k !== "code6" && k !== "code" && k !== "name") return;
+          old[k] = v;
+        });
+      });
+      state.rowsRaw = order.map((code) => byCode.get(code)).filter(Boolean);
+      state.listOnly = state.rowsRaw.every((r) => r.price == null || r.price === "");
+      state.paged = false;
+      renderTable(state.fields, state.rowsRaw, { all: true });
+    }
 
     function mergeQuoteRefreshRows(prev, incoming, opts) {
       if (!prev || !prev.length) return incoming || [];
@@ -3033,17 +3076,21 @@
         // 交易所 / 板块把涨跌幅设成排序键。流式仍然按页取，取回后再在本机排序。
         // 否则会改走整池后台任务：财务和股东还没开始，进度就停在 0。
         if (o.stream && refreshMode !== "snapshot") {
-          // 流式：先出骨架与行情，再逐只补齐；失败自动退回一次性查询
+          // 流式：先出骨架与行情，再逐只补齐。刷新失败就直接报错，不要退回后台任务（进度会停在 0）。
+          state.streamKeepRows = Boolean(o.keepRows);
           try {
             await runQueryStream(codes, o, gen);
           } catch (streamErr) {
             if (isQueryAbort(streamErr) || !listQueryCurrent(gen)) {
               throw isQueryAbort(streamErr) ? streamErr : querySupersededError();
             }
+            if (o.noJobFallback) throw streamErr;
             data = await adoptQueryResult(
               await api("/query/run", { method: "POST", body: JSON.stringify(payload) }),
               gen
             );
+          } finally {
+            state.streamKeepRows = false;
           }
           if (!listQueryCurrent(gen)) throw querySupersededError();
           if (data) {
@@ -4130,27 +4177,31 @@
       const gen = supersedeListQuery();
       const codes = state.lastQueryCodes;
       const shown = (state.rowsRaw || []).length;
-      // 中间已经铺开的名单长过一页时，按这份名单的长度刷新，而不是只刷第一页。
-      const limit = shown > PAGE_LIMIT ? shown : PAGE_LIMIT;
+      // 池查询按整张表更新现价。上一轮如果只留下了第一页，totalRows 仍是整板，这次把现价补全。
+      const poolTotal = !(codes && codes.length) ? Math.max(state.totalRows || 0, shown) : shown;
+      const limit = Math.max(poolTotal, 1);
       const stopped = (err) => !listQueryCurrent(gen) || isQueryAbort(err);
-      if (state.listOnly) {
-        // 刚换上的名单还没有行情。只流式补第一页。
-        // 按整板行数去查会变成后台任务：财务还没开始，进度就停在 0。
-        try {
-          await runQuery(null, { refreshMode: "cache", forceLive: false, stream: true, limit: PAGE_LIMIT, gen });
-        } catch (e) {
-          if (!stopped(e)) toastQueryError(e);
-        }
-        return;
-      }
       let quoteErr = null;
       try {
-        await runQuery(codes, { refreshMode: "quote", forceLive: false, limit, gen });
+        await runQuery(codes, {
+          refreshMode: "quote",
+          forceLive: false,
+          stream: true,
+          limit,
+          gen,
+          keepRows: true,
+          noJobFallback: true,
+        });
       } catch (e) {
         if (stopped(e)) return;
         quoteErr = e;
       }
       if (!listQueryCurrent(gen)) return;
+      // 整板只更新现价。慢字段补齐只留给自选、筛选这种已经收在一页里的表，避免再开 0/N 的后台任务。
+      if ((state.rowsRaw || []).length > PAGE_LIMIT && !(codes && codes.length)) {
+        if (quoteErr) toastQueryError(quoteErr);
+        return;
+      }
       let wanted = (state.fields || []).map((f) => f.key);
       try {
         const prefs = await api("/query/prefs");
@@ -4164,7 +4215,7 @@
         return;
       }
       try {
-        await runQuery(codes, { refreshMode: "cache", forceLive: false, stream: shown <= PAGE_LIMIT, limit, gen });
+        await runQuery(codes, { refreshMode: "cache", forceLive: false, stream: true, limit: PAGE_LIMIT, gen });
       } catch (e) {
         if (stopped(e)) return;
         toastQueryError(quoteErr || e);
