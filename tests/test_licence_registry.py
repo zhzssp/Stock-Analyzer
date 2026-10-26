@@ -74,6 +74,21 @@ def test_existing_registry_with_empty_consumable_gets_seed(reg_path):
     assert DEFAULT_CONSUMABLE_SEED in reg.status()["consumable"]["licences"]
 
 
+def test_retired_consumable_is_replaced_by_new_seed(reg_path):
+    """作废的长期证不能再留在池里，也不能在下次加载时被旧种子补回来。"""
+    retired = "9EC8F5FE-BF7C-40DA-8B0B-FE9E50ADEE2F"
+    payload = _empty_registry_payload()
+    payload["renewable"]["licences"] = ["REN-A"]
+    payload["consumable"]["licences"] = [retired]
+    payload["preference"] = {"schedule": "auto", "pinned": retired}
+    reg_path.write_text(json.dumps(payload), encoding="utf-8")
+    reg = LicenceRegistry(state_path=reg_path, sync_env=False)
+    licences = reg.status()["consumable"]["licences"]
+    assert retired not in licences
+    assert DEFAULT_CONSUMABLE_SEED in licences
+    assert reg.pinned_licence() == ""
+
+
 def test_empty_pools_do_not_auto_seed(reg_path):
     reg_path.write_text(json.dumps(_empty_registry_payload()), encoding="utf-8")
     reg = LicenceRegistry(state_path=reg_path, sync_env=False)

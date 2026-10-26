@@ -23,7 +23,9 @@ POOL_CONSUMABLE: PoolKind = "consumable"
 # 进程内串行（同一进程里查询是并发的）。跨进程靠 _file_lock。
 _PROCESS_LOCK = threading.Lock()
 
-DEFAULT_CONSUMABLE_SEED = "9EC8F5FE-BF7C-40DA-8B0B-FE9E50ADEE2F"
+DEFAULT_CONSUMABLE_SEED = "1F33187D-93A9-4164-9BC4-C5F25B6AC0AB"
+# 已作废的长期证：总额度耗尽后不能再用，加载时从池里清掉，且不再自动补回。
+_RETIRED_CONSUMABLE = frozenset({"9EC8F5FE-BF7C-40DA-8B0B-FE9E50ADEE2F"})
 
 
 SCHEDULE_MODES = ("auto", "renewable", "consumable")
@@ -131,9 +133,11 @@ class LicenceRegistry:
                 data = {}
             if data:
                 self._apply_payload(data)
+                self._drop_retired_consumable()
                 self._ensure_default_consumable_seed(force=False)
                 return
         self._migrate_legacy()
+        self._drop_retired_consumable()
         self._ensure_default_consumable_seed(force=True)
 
     def _ensure_default_consumable_seed(self, force: bool = False) -> None:
@@ -151,6 +155,14 @@ class LicenceRegistry:
         if not force and not self._renewable:
             return
         self._consumable.append(token)
+
+    def _drop_retired_consumable(self) -> None:
+        """作废的长期证从池里去掉。若用户正锁着它，一并解除，避免卡在一张永远派不出的证上。"""
+        if any(x in _RETIRED_CONSUMABLE for x in self._consumable):
+            self._consumable = [x for x in self._consumable if x not in _RETIRED_CONSUMABLE]
+        pinned = str(self._preference.get("pinned") or "")
+        if pinned in _RETIRED_CONSUMABLE:
+            self._preference["pinned"] = ""
 
     def _migrate_legacy(self) -> None:
         legacy = settings.data_dir / "licence_pool.json"
@@ -398,6 +410,7 @@ class LicenceRegistry:
             if self._sync_env:
                 self._sync_env_renewable()
             # 每日池在、长期池缺内置总次数证时补回（避免老文件 consumable=[] 且进程未重启）
+            self._drop_retired_consumable()
             self._ensure_default_consumable_seed(force=False)
             if self.iteration_plan():
                 return True
