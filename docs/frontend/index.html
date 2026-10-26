@@ -552,6 +552,8 @@
     }
     .alert b { display: block; margin-bottom: 2px; }
     .alert .meta { color: var(--muted); font-size: 13px; }
+    .alert-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+    .alert-head > b { flex: 1; min-width: 0; margin-bottom: 0; }
     #reviewPending .alert[data-alert-id] { cursor: context-menu; }
     #reviewPending .alert.ctx-on { outline: 2px solid var(--teal); outline-offset: 1px; }
     .job { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); gap: 8px; }
@@ -565,7 +567,8 @@
     .session-item.on, .session-item:hover { background: var(--paper); }
     .session-item .sub { color: var(--muted); font-size: 13px; }
     .meta-list { color: var(--muted); font-size: 13px; line-height: 1.55; }
-    .inst-row { color: var(--ink); padding: 4px 0; cursor: context-menu; }
+    .inst-row { color: var(--ink); padding: 6px 0; cursor: context-menu; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .inst-row > div { min-width: 0; }
     .meta-list .sub, .meta-list b { color: var(--ink); }
     .meta-list .sub { color: var(--muted); font-weight: 400; display: block; }
     .preview-wrap { overflow: auto; max-height: 280px; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; }
@@ -776,6 +779,40 @@
     .storage-row span { color: var(--muted); }
     .storage-path { font-family: ui-monospace, Consolas, monospace; font-size: 13px; word-break: break-all; }
     .clock-box { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); }
+    #runtimeBox { max-width: 720px; }
+    .runtime-facts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 16px;
+      margin: 2px 0 12px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .runtime-facts span { white-space: nowrap; }
+    .runtime-options {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .runtime-options label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0;
+      white-space: nowrap;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .runtime-options input { margin: 0; }
+    .runtime-actions { margin-top: 12px; }
+    .runtime-note {
+      margin-top: 12px;
+      max-width: 40em;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
     .licence-box { max-width: 820px; }
     .lic-status {
       margin: 10px 0 14px;
@@ -994,7 +1031,7 @@
             <div id="monitorReview" class="monitor-pane">
               <div class="side-title"><span data-help-tip="命中后等到下一根交易日收盘再打标。同向 / 反向只描述涨跌，不是买卖建议，也不会自动关规则。">次日复盘</span> <button class="btn sm primary" id="reviewRun" type="button">立刻复盘</button></div>
               <div id="reviewCounts" class="meta">尚未复盘</div>
-              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="右键一条可以删除。删掉后不再参加次日复盘，今日里的同一条提醒也会一起去掉。">待复盘</span></div>
+              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="右键一条，或点卡片上的「删除」。删掉后不再参加次日复盘，今日里的同一条提醒也会一起去掉。已打标的卡片不能删。">待复盘</span></div>
               <div id="reviewPending" class="meta">没有待复盘的提醒</div>
               <div class="side-title" style="margin:16px 0 8px;">已打标</div>
               <div id="reviewDone" class="meta">还没有次日标签</div>
@@ -1003,7 +1040,7 @@
               <div class="pane-add-bar" data-bar="inst">
                 <button class="btn primary add-btn" id="instAddToggle" type="button">＋ 追加机构</button>
               </div>
-              <div class="side-title"><span data-help-tip="监控对照用的名字表，不是持仓实况。开始是空的，点右上角追加。右键某一行可以把这家移出白名单，不是只取消勾选。">关注机构白名单</span></div>
+              <div class="side-title"><span data-help-tip="监控对照用的名字表，不是持仓实况。开始是空的，点右上角追加。右键某一行，或点这一行的「移出」，会立刻从白名单去掉。">关注机构白名单</span></div>
               <div id="instList" class="meta-list">尚未加载</div>
               <div class="composer-row" id="instAddRow" style="margin:8px 0; display:none;">
                 <input id="instCustom" placeholder="追加机构名，如 某某基金" style="flex:1;" />
@@ -1013,7 +1050,7 @@
               <div class="pane-add-bar" data-bar="src">
                 <button class="btn primary add-btn" id="srcAddToggle" type="button">＋ 添加检索源</button>
               </div>
-              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="只抓你填的 http(s) 页面或 RSS。日终或「资讯冲击 / 产业政策」点只跑这条时拉取。标题或正文命中自选名称、代码，或不少于三个字的行业名，才进今日。不是全网搜索，也不做摘要。内网和 file 地址会被拒绝。添加按钮固定在板块右上角，不随列表滚动。">检索源</span></div>
+              <div class="side-title" style="margin:16px 0 8px;"><span data-help-tip="只抓你填的 http(s) 页面或 RSS。日终或「资讯冲击 / 产业政策」点只跑这条时拉取。标题或正文命中自选名称、代码，或不少于三个字的行业名，才进今日。不是全网搜索，也不做摘要。内网和 file 地址会被拒绝。右键一条，或点「删除」，会立刻从名单去掉。添加按钮固定在板块右上角，不随列表滚动。">检索源</span></div>
               <div id="sourceList" class="meta-list">尚未加载</div>
               <div id="srcAddRow" style="display:none;">
                 <div class="composer-row" style="margin:8px 0;">
@@ -1057,14 +1094,16 @@
           <div class="panel" style="flex:1; overflow:auto;">
             <div class="clock-box" id="runtimeBox">
               <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="内存不超过 8GB 时，自动档会暂停问答和自动盯盘，并把内存缓存收到 16MB、查询并发降到 2 路。传统查询、导出和墙钟保留。切回完整后马上恢复；要让占用真正降下来，退出助手再打开一次。">运行档位</span></div>
-              <div id="runtimeStatus" class="meta">尚未加载</div>
-              <div class="lic-pref-row" style="margin-top:8px;">
-                <label class="hint"><input type="radio" name="runtimeMode" value="auto" checked /> 按内存自动</label>
-                <label class="hint"><input type="radio" name="runtimeMode" value="full" /> 完整（问答 + 盯盘）</label>
-                <label class="hint"><input type="radio" name="runtimeMode" value="lite" /> 轻量（只留查询）</label>
+              <div id="runtimeStatus" class="runtime-facts">尚未加载</div>
+              <div class="runtime-options">
+                <label><input type="radio" name="runtimeMode" value="auto" checked /> 按内存自动</label>
+                <label><input type="radio" name="runtimeMode" value="full" /> 完整（问答 + 盯盘）</label>
+                <label><input type="radio" name="runtimeMode" value="lite" /> 轻量（只留查询）</label>
+              </div>
+              <div class="runtime-actions">
                 <button class="btn sm primary" id="runtimeSave" type="button">保存档位</button>
               </div>
-              <div id="runtimeNote" class="meta" style="margin-top:8px;"></div>
+              <div id="runtimeNote" class="runtime-note"></div>
             </div>
             <div class="side-title" style="margin-bottom:8px;"><span data-help-tip="日线只缓存你查过的股票，同一文件覆盖写，默认最多 500 根。缓存超过上限会先删最久未用的日线，名单缓存尽量留到最后。每人默认最多留 20 份 Excel。">存储占用</span></div>
             <div id="storageBox" class="storage-grid meta-list">尚未加载</div>
@@ -1699,7 +1738,13 @@
       if (box && rt) {
         const label = rt.resolved === "lite" ? "轻量" : "完整";
         const ask = rt.request === "auto" ? "自动" : (rt.request === "lite" ? "轻量" : "完整");
-        box.innerHTML = `<div><b>当前</b> ${label}（选择：${ask}） · 本机内存 ${esc(rt.ram_human || "未知")} · 本进程 ${esc(rt.process_human || "未知")}</div>`;
+        box.className = "runtime-facts";
+        box.innerHTML = [
+          `<span>当前 <b>${label}</b></span>`,
+          `<span>选择 ${ask}</span>`,
+          `<span>本机内存 ${esc(rt.ram_human || "未知")}</span>`,
+          `<span>本进程 ${esc(rt.process_human || "未知")}</span>`,
+        ].join("");
       }
       const note = document.getElementById("runtimeNote");
       if (note && rt) note.textContent = rt.summary || "";
@@ -3891,8 +3936,11 @@
         ? ((a.review_return_pct >= 0 ? "+" : "") + a.review_return_pct.toFixed(2) + "%")
         : "—";
       const attr = deletable ? ` data-alert-id="${a.id}"` : "";
+      const del = deletable
+        ? `<button class="btn sm danger" type="button" data-del-review="${a.id}">删除</button>`
+        : "";
       return `<div class="alert"${attr}>
-        <b>${esc(a.title)}</b>
+        <div class="alert-head"><b>${esc(a.title)}</b>${del}</div>
         <div class="meta">${esc(reviewLabel(a))} · 命中价 ${esc(a.hit_price == null ? "—" : a.hit_price)} · 次日 ${esc(ret)} · ${esc(a.review_note || "")}</div>
       </div>`;
     }
@@ -4545,12 +4593,27 @@
         if (ctxMenuEl) ctxMenuEl.style.display = "none";
         document.querySelectorAll(".ctx-on").forEach((node) => node.classList.remove("ctx-on"));
       };
-      document.addEventListener("click", close, true);
-      window.addEventListener("scroll", close, true);
+      document.addEventListener("click", (e) => {
+        if (e.button !== 0) return;
+        close();
+      }, true);
+      window.addEventListener("scroll", () => {
+        if (Date.now() - ctxOpenedAt < 400) return;
+        close();
+      }, true);
       return ctxMenuEl;
     }
 
+    let ctxOpenedAt = 0;
+
+    function eventElement(e) {
+      const t = e.target;
+      if (t instanceof Element) return t;
+      return t && t.parentElement ? t.parentElement : null;
+    }
+
     function openCtxMenu(x, y, actions) {
+      ctxOpenedAt = Date.now();
       const el = ensureCtxMenu();
       el.innerHTML = "";
       actions.forEach((a) => {
@@ -4558,8 +4621,12 @@
         b.type = "button";
         b.textContent = a.label;
         if (a.danger) b.style.color = "var(--danger)";
-        b.addEventListener("click", () => {
+        b.addEventListener("mousedown", (ev) => {
+          if (ev.button !== 0) return;
+          ev.preventDefault();
+          ev.stopPropagation();
           el.style.display = "none";
+          document.querySelectorAll(".ctx-on").forEach((node) => node.classList.remove("ctx-on"));
           a.run();
         });
         el.appendChild(b);
@@ -5011,15 +5078,21 @@
       const selected = pref.selected || [];
       const custom = pref.custom || [];
       if (!selected.length && !custom.length) {
-        box.textContent = "名单为空。点右上角追加机构；右键某一行可移出白名单。";
+        box.textContent = "名单为空。点右上角追加机构；右键某一行，或点「移出」，可从白名单去掉。";
         return;
       }
       const system = selected.map((name) => {
         const i = byName.get(name) || { name, kind: "" };
-        return `<div class="inst-row" data-inst-name="${escAttr(name)}" data-inst-origin="builtin" title="右键移出白名单"><b>${esc(i.name)}</b><div class="sub">${esc(kindLabel(i.kind) || "已加入")}</div></div>`;
+        return `<div class="inst-row" data-inst-name="${escAttr(name)}" data-inst-origin="builtin" title="右键或点移出">
+          <div><b>${esc(i.name)}</b><div class="sub">${esc(kindLabel(i.kind) || "已加入")}</div></div>
+          <button class="btn sm danger" type="button" data-drop-inst="1">移出</button>
+        </div>`;
       }).join("");
       const extra = custom.map((i) =>
-        `<div class="inst-row" data-inst-name="${escAttr(i.name)}" data-inst-origin="custom" title="右键移出白名单"><b>${esc(i.name)}</b><div class="sub">自定义</div></div>`
+        `<div class="inst-row" data-inst-name="${escAttr(i.name)}" data-inst-origin="custom" title="右键或点移出">
+          <div><b>${esc(i.name)}</b><div class="sub">自定义</div></div>
+          <button class="btn sm danger" type="button" data-drop-inst="1">移出</button>
+        </div>`
       ).join("");
       box.innerHTML = system + extra;
     }
@@ -5042,7 +5115,10 @@
         return;
       }
       box.innerHTML = sources.map((s, idx) =>
-        `<div><b>${esc(s.name)}</b> · ${esc(kindSourceLabel(s.kind))} · ${esc(s.url)}${(s.keywords || []).length ? " · " + esc((s.keywords || []).join("、")) : ""} <button class="btn sm ghost" type="button" data-drop-src="${idx}">移除</button></div>`
+        `<div class="inst-row" data-src-idx="${idx}" title="右键或点删除">
+          <div><b>${esc(s.name)}</b><div class="sub">${esc(kindSourceLabel(s.kind))} · ${esc(s.url)}${(s.keywords || []).length ? " · " + esc((s.keywords || []).join("、")) : ""}</div></div>
+          <button class="btn sm danger" type="button" data-drop-src="${idx}">删除</button>
+        </div>`
       ).join("");
     }
 
@@ -5803,8 +5879,16 @@
         toast(err.message);
       }
     }
+    document.getElementById("reviewPending").addEventListener("click", (e) => {
+      const start = eventElement(e);
+      const btn = start && start.closest("[data-del-review]");
+      if (!btn) return;
+      e.preventDefault();
+      deleteReviewAlert(btn.dataset.delReview);
+    });
     document.getElementById("reviewPending").addEventListener("contextmenu", (e) => {
-      const card = e.target.closest("[data-alert-id]");
+      const start = eventElement(e);
+      const card = start && start.closest("[data-alert-id]");
       if (!card) return;
       e.preventDefault();
       document.querySelectorAll("#reviewPending .alert.ctx-on").forEach((node) => node.classList.remove("ctx-on"));
@@ -5812,9 +5896,19 @@
       openCtxMenu(e.clientX, e.clientY, [
         { label: "删除", danger: true, run: () => deleteReviewAlert(card.dataset.alertId) },
       ]);
+    }, true);
+    document.getElementById("instList").addEventListener("click", (e) => {
+      const start = eventElement(e);
+      const btn = start && start.closest("[data-drop-inst]");
+      if (!btn) return;
+      const row = btn.closest("[data-inst-name]");
+      if (!row) return;
+      e.preventDefault();
+      removeInstitution(row.dataset.instName, row.dataset.instOrigin || "builtin");
     });
     document.getElementById("instList").addEventListener("contextmenu", (e) => {
-      const row = e.target.closest("[data-inst-name]");
+      const start = eventElement(e);
+      const row = start && start.closest("[data-inst-name]");
       if (!row) return;
       e.preventDefault();
       const name = row.dataset.instName;
@@ -5822,7 +5916,7 @@
       openCtxMenu(e.clientX, e.clientY, [
         { label: "移出白名单", danger: true, run: () => removeInstitution(name, origin) },
       ]);
-    });
+    }, true);
     document.getElementById("srcAdd").addEventListener("click", () => {
       const name = (document.getElementById("srcName").value || "").trim();
       const url = (document.getElementById("srcUrl").value || "").trim();
@@ -5858,14 +5952,39 @@
         toast(err.message);
       }
     });
-    document.getElementById("sourceList").addEventListener("click", (e) => {
-      const drop = e.target.closest("[data-drop-src]");
-      if (!drop) return;
-      const idx = Number(drop.dataset.dropSrc);
-      if (!state.monitorPrefs) return;
-      state.monitorPrefs.sources = (state.monitorPrefs.sources || []).filter((_, i) => i !== idx);
+    async function dropSource(idx) {
+      if (!state.monitorPrefs || Number.isNaN(idx)) return;
+      const sources = (state.monitorPrefs.sources || []).filter((_, i) => i !== idx);
+      state.monitorPrefs.sources = sources;
       renderSources();
+      try {
+        state.monitorPrefs = await api("/monitor/prefs", {
+          method: "PUT",
+          body: JSON.stringify({ sources }),
+        });
+        renderSources();
+        renderInstitutions();
+        toast("已删除这条检索源");
+        await loadMonitor();
+      } catch (err) {
+        toast(err.message);
+      }
+    }
+    document.getElementById("sourceList").addEventListener("click", (e) => {
+      const start = eventElement(e);
+      const drop = start && start.closest("[data-drop-src]");
+      if (!drop) return;
+      dropSource(Number(drop.dataset.dropSrc));
     });
+    document.getElementById("sourceList").addEventListener("contextmenu", (e) => {
+      const start = eventElement(e);
+      const row = start && start.closest("[data-src-idx]");
+      if (!row) return;
+      e.preventDefault();
+      openCtxMenu(e.clientX, e.clientY, [
+        { label: "删除", danger: true, run: () => dropSource(Number(row.dataset.srcIdx)) },
+      ]);
+    }, true);
     document.getElementById("shareLookup").addEventListener("click", () => loadExportShare().catch((e) => toast(e.message)));
     document.getElementById("shareUpload").addEventListener("click", () => document.getElementById("shareFile").click());
     document.getElementById("shareFile").addEventListener("change", async (e) => {
