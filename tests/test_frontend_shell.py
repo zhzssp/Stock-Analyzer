@@ -110,6 +110,8 @@ def test_workbench_shows_core_index_board():
     assert "深成：" in html
     assert "科创：" in html
     assert "loadBoard" in html
+    assert "无点位" in html
+    assert 'n + "只"' not in html
 
 
 def test_workbench_pct_column_sorts_index_constituents():

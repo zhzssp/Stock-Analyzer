@@ -429,7 +429,7 @@ class MarketClient:
             "kind": kind,
         }
         if kind == "pool":
-            # 官方无该指数实时点位：只报官方成份数量，不打点位。
+            # 官方无该指数实时点位：点位留空。count 只给指数池，抬头不得把它显示成点位。
             from src.market.indices import NO_QUOTE_SOURCE_NOTE, index_status
 
             st = index_status(code) or {}

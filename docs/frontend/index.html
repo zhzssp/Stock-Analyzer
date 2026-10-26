@@ -844,7 +844,7 @@
       <div class="board" id="boardBar" aria-label="核心指数">
         <div class="board-item"><span class="name">上证：</span><span class="px">—</span><span class="pc">—</span></div>
         <div class="board-item"><span class="name">深成：</span><span class="px">—</span><span class="pc">—</span></div>
-        <div class="board-item"><span class="name">北证：</span><span class="px">—</span><span class="pc">—</span></div>
+        <div class="board-item"><span class="name">北证：</span><span class="px">—</span><span class="pc">无点位</span></div>
         <div class="board-item"><span class="name">科创：</span><span class="px">—</span><span class="pc">—</span></div>
         <div class="board-item"><span class="name">创业：</span><span class="px">—</span><span class="pc">—</span></div>
       </div>
@@ -1510,7 +1510,7 @@
         const board = await api("/markets/board");
         saDebug.board = board.items || [];
         console.log("顶栏指数:", (board.items || []).map(
-          (x) => `${x.short}=${x.p != null ? x.p : (x.count != null ? x.count + "只" : "—")} [${x.kind || "quote"}/${x.source || ""}]`
+          (x) => `${x.short}=${x.p != null ? x.p : (x.kind === "pool" ? "无点位" : "—")} [${x.kind || "quote"}/${x.source || ""}]`
         ));
       } catch (err) {
         console.warn("board 请求失败：", err);
@@ -1760,22 +1760,22 @@
         const pcNum = Number(it.pc);
         let pcCls = "flat";
         let pcText = "—";
-        if (Number.isFinite(pcNum)) {
-          pcCls = pcNum > 0 ? "up" : (pcNum < 0 ? "down" : "flat");
-          pcText = (pcNum > 0 ? "+" : "") + pcNum.toFixed(2) + "%";
-        }
         let price = "—";
         if (isPool) {
-          const n = Number(it.count);
-          price = Number.isFinite(n) && n > 0 ? n + "只" : "—";
+          // 没有实时点位。成份股数量不是指数点位，不能填进这一格。
+          pcText = "无点位";
         } else {
           const pNum = Number(it.p);
-          price = Number.isFinite(pNum) ? pNum.toFixed(2) : "—";
+          if (Number.isFinite(pNum)) price = pNum.toFixed(2);
+          if (Number.isFinite(pcNum)) {
+            pcCls = pcNum > 0 ? "up" : (pcNum < 0 ? "down" : "flat");
+            pcText = (pcNum > 0 ? "+" : "") + pcNum.toFixed(2) + "%";
+          }
         }
-        const note = isPool ? (it.count ? "官方成份数量；麦蕊不提供该指数实时点位" : (it.reason || "暂无成份")) : "";
+        const note = isPool ? (it.reason || "麦蕊不提供该指数实时点位，这里不显示成份数量") : "";
         const title = [it.label || it.short || "", it.code || "", note].filter(Boolean).join(" · ");
         const poolAttr = isPool && it.enabled ? ` data-pool="index:${escAttr(it.code || "")}"` : "";
-        return `<div class="board-item"${poolAttr} title="${escAttr(title)}"><span class="name">${escHtml(it.short || "")}：</span><span class="px ${pcCls}">${escHtml(price)}</span><span class="pc ${pcCls}">${isPool ? "" : escHtml(pcText)}</span></div>`;
+        return `<div class="board-item"${poolAttr} title="${escAttr(title)}"><span class="name">${escHtml(it.short || "")}：</span><span class="px ${pcCls}">${escHtml(price)}</span><span class="pc ${pcCls}">${escHtml(pcText)}</span></div>`;
       }).join("");
     }
 
