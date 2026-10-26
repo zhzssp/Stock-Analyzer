@@ -2075,13 +2075,15 @@
         } else {
           state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
         }
-        if (state.paged || state.vscroll) {
-          // 分页后前端手里只有一页，前端排序只会排已加载那段 —— 回到后端重排并从第 0 页开始
-          runQuery(state.lastQueryCodes, { refreshMode: state.lastRefreshMode || "quote", forceLive: false })
-            .catch(() => {});
-          return;
-        }
+        // 只排已经在表里的行。大池的下一页是按名单顺序切的，再向后端要一页也排不出整池名次，
+        // 而且会把已经加载的后面几页丢掉。
         renderTable(state.fields, state.rowsRaw);
+        if (state.paged && state.sortKey) {
+          const hint = document.getElementById("queryHint");
+          const loaded = (state.rowsRaw || []).length;
+          const total = state.totalRows || loaded;
+          if (hint) hint.textContent = `已加载 ${loaded} / ${total} 只 · 排序只针对已加载的行`;
+        }
       });
     }
 
@@ -2327,7 +2329,7 @@
       }
       el.style.display = "flex";
       el.innerHTML =
-        `<span>已显示 ${limit} / ${total} 只。<b>导出 Excel 不受影响</b>，会导出这一批的全部。</span>` +
+        `<span>已显示 ${limit} / ${total} 只。默认导出包含已加载的全部 ${total} 只，不只是这一页。</span>` +
         `<button class="btn sm" type="button" id="tableMoreBtn">加载更多</button>`;
       const btn = document.getElementById("tableMoreBtn");
       if (btn) {
@@ -2467,10 +2469,15 @@
       if (!state.paged && !state.vscroll) return;
       el.style.display = "flex";
       const loaded = state.rowsRaw.length;
+      const total = state.totalRows || loaded;
       const btn = state.loadingMore
         ? `<span>加载中…</span>`
         : `<button class="btn sm" type="button" id="tableMoreBtn">加载更多</button>`;
-      el.innerHTML = `<span>已加载 ${loaded} / ${state.totalRows || loaded} 只${state.paged ? "，继续往下滚会自动加载" : ""}。<b>导出 Excel 不受影响</b>，会导出这一批的全部。</span>${btn}`;
+      const sortNote = state.paged && state.sortKey ? "排序只针对已加载的行。" : "";
+      const exportNote = state.paged
+        ? `默认导出是整池 ${total} 只，会重新取数，不是只导已加载的 ${loaded} 只。`
+        : "";
+      el.innerHTML = `<span>已加载 ${loaded} / ${total} 只${state.paged ? "，继续往下滚会自动加载。" : "。"}${sortNote}${exportNote}</span>${btn}`;
       const b = document.getElementById("tableMoreBtn");
       if (b) b.addEventListener("click", () => loadMorePage());
     }
@@ -2497,11 +2504,14 @@
           forceLive: state.lastRefreshMode === "full",
           offset: state.rowsRaw.length,
           limit: PAGE_LIMIT,
+          stream: true,
+          noJobFallback: true,
         });
       } catch (err) {
-        if (err && err.name !== "AbortError") toast("加载下一页失败：" + (err.message || ""));
+        if (!isQueryAbort(err)) toast("加载下一页失败：" + (err.message || ""));
       } finally {
         state.loadingMore = false;
+        if (state.paged || state.vscroll) renderPagedHint();
       }
     }
 
@@ -2616,6 +2626,12 @@
       if (event === "meta") {
         // meta.total 是整池行数（不是本页），据此决定是否启用虚拟滚动
         state.totalRows = data.total || state.totalRows || 0;
+        if (state.streamAppend) {
+          // 下一页先攒着，结束再接上。中途失败不能把半页写进表，否则下次 offset 会跳号。
+          state.streamAppendMap = {};
+          if (hint) hint.textContent = "正在加载下一页…";
+          return;
+        }
         if (state.streamKeepRows && (state.rowsRaw || []).length) {
           // 刷新不要先把名单换成骨架，也不要收成第一页再让人下滚。
           state.paged = false;
@@ -2633,6 +2649,15 @@
         return;
       }
       if (event === "batch") {
+        if (state.streamAppend) {
+          const map = state.streamAppendMap || {};
+          (data.rows || []).forEach((row) => {
+            if (!row || row.code6 == null || row.code6 === "") return;
+            map[row.code6] = map[row.code6] ? Object.assign({}, map[row.code6], row) : row;
+          });
+          state.streamAppendMap = map;
+          return;
+        }
         if (state.streamKeepRows && (state.rowsRaw || []).length) {
           mergeKeepRows(data.rows || [], data.stage || "full");
           return;
@@ -2642,13 +2667,42 @@
       }
       if (event === "progress") {
         if (hint) {
-          hint.textContent = state.streamKeepRows
-            ? `正在更新现价 ${data.done || 0}/${data.total || 0}`
-            : `已出 ${data.done || 0}/${data.total || 0} 只 · 继续补齐…`;
+          hint.textContent = state.streamAppend
+            ? `正在加载下一页 ${data.done || 0}/${data.total || 0}`
+            : (state.streamKeepRows
+              ? `正在更新现价 ${data.done || 0}/${data.total || 0}`
+              : `已出 ${data.done || 0}/${data.total || 0} 只 · 继续补齐…`);
         }
         return;
       }
       if (event === "done") {
+        if (state.streamAppend) {
+          const have = new Set((state.rowsRaw || []).map((r) => r.code6));
+          const incoming = Object.values(state.streamAppendMap || {}).filter((r) => r.code6 && !have.has(r.code6));
+          state.streamAppendMap = null;
+          if (!incoming.length) {
+            state.paged = false;
+            if (hint) hint.textContent = "下一页没有返回新的股票";
+            renderPagedHint();
+            return;
+          }
+          state.paged = Boolean(data.has_more);
+          state.tablePage = 1;
+          renderTable(state.fields, incoming, { append: true });
+          state.listOnly = (state.rowsRaw || []).every((r) => r.price == null || r.price === "");
+          showQueryIssues(data.issues || []);
+          if (hint) {
+            const sec = ((data.elapsed_ms || 0) / 1000).toFixed(1);
+            const bad = (data.issues || []).length ? " · 有失败，见表格上方" : "";
+            const loaded = state.rowsRaw.length;
+            const total = state.totalRows || loaded;
+            const sortNote = state.sortKey && data.has_more ? " · 排序只针对已加载的行" : "";
+            hint.textContent = data.has_more
+              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载${sortNote}${bad}`
+              : `已加载全部 ${loaded} 只 · 用时 ${sec} 秒${bad}`;
+          }
+          return;
+        }
         state.listOnly = (state.rowsRaw || []).every((r) => r.price == null || r.price === "");
         if (!(state.lastQueryCodes && state.lastQueryCodes.length)) state.shownPool = state.pool;
         // 刷新走 keepRows：更新的就是当前这张表，不要再提示下滚。
@@ -2664,8 +2718,9 @@
           if (state.streamKeepRows) {
             hint.textContent = `${loaded} 只 · 现价已更新 · 用时 ${sec} 秒${bad}`;
           } else {
+            const sortNote = state.sortKey && data.has_more ? " · 排序只针对已加载的行" : "";
             hint.textContent = data.has_more
-              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载${bad}`
+              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载${sortNote}${bad}`
               : `${loaded} 只 · 用时 ${sec} 秒${bad}`;
           }
         }
@@ -3073,11 +3128,11 @@
       dbg("发起查询", payload, "| 侧栏:", state.side, "| 池:", state.pool, "| 流式:", Boolean(o.stream), "| 追加:", appending);
       let data;
       try {
-        // 交易所 / 板块把涨跌幅设成排序键。流式仍然按页取，取回后再在本机排序。
-        // 否则会改走整池后台任务：财务和股东还没开始，进度就停在 0。
+        // 大池按名单顺序分页，取回后只在已加载的行上排序。不要为了排序改走整池任务。
         if (o.stream && refreshMode !== "snapshot") {
           // 流式：先出骨架与行情，再逐只补齐。刷新失败就直接报错，不要退回后台任务（进度会停在 0）。
           state.streamKeepRows = Boolean(o.keepRows);
+          state.streamAppend = appending;
           try {
             await runQueryStream(codes, o, gen);
           } catch (streamErr) {
@@ -3091,6 +3146,8 @@
             );
           } finally {
             state.streamKeepRows = false;
+            state.streamAppend = false;
+            state.streamAppendMap = null;
           }
           if (!listQueryCurrent(gen)) throw querySupersededError();
           if (data) {
@@ -3419,6 +3476,14 @@
         </label>`;
     }
 
+    function displayedQueryRows() {
+      // 表上这一轮真正在用的行。虚拟滚动和后端翻页都把已加载的行算进去；
+      // 只有「一次拿全、本机再翻页」才按 tablePage 截断。
+      const all = sortedRows(state.rowsRaw || []);
+      if (state.paged || state.vscroll) return all;
+      return all.slice(0, state.tablePage * PAGE_SIZE);
+    }
+
     function expCount() {
       // 当前池（或搜索批次）一共有多少只
       if (state.lastQueryCodes && state.lastQueryCodes.length) return state.lastQueryCodes.length;
@@ -3477,15 +3542,15 @@
       const n = expCount();
       const hasSnapshot = Boolean(snap && snap.has_snapshot);
       const searchCount = (state.lastQueryCodes || []).length;
-      const pageCount = Math.min(n, state.tablePage * PAGE_SIZE);
+      const pageCount = displayedQueryRows().length;
 
       const scopeOpts = [
         { id: "pool", label: `当前池（${state.poolLabel || "自选"}）`, sub: searchCount ? "" : `共 ${n} 只` },
         { id: "search", label: "搜索结果（筛选一次）", sub: searchCount ? `${searchCount} 只` : "", disabled: !searchCount },
-        { id: "page", label: "仅当前已显示的", sub: `${pageCount} 只`, disabled: n <= pageCount },
+        { id: "page", label: "仅当前已显示的", sub: `${pageCount} 只`, disabled: !pageCount || n <= pageCount, why: pageCount && n <= pageCount ? "已经是整池，和「当前池」相同" : "当前没有可导的范围" },
       ];
       document.getElementById("expScopeOpts").innerHTML = scopeOpts.map((it, i) =>
-        expOptHtml("expScope", it, i === 0, it.disabled, "当前没有可导的范围")
+        expOptHtml("expScope", it, i === 0, it.disabled, it.why || "当前没有可导的范围")
       ).join("");
       document.getElementById("expScopeCount").textContent = n ? `共 ${n} 只` : "";
 
@@ -3556,7 +3621,7 @@
         const o = state.exportOpts || {};
         const total = expCount();
         if (o.scope === "search") return (state.lastQueryCodes || []).length;
-        if (o.scope === "page") return Math.min(total, state.tablePage * PAGE_SIZE);
+        if (o.scope === "page") return displayedQueryRows().length;
         return total;
       })();
       box.innerHTML =
@@ -3572,7 +3637,7 @@
       const o = state.exportOpts || {};
       const n = expCount();
       const count = o.scope === "search" ? (state.lastQueryCodes || []).length
-        : (o.scope === "page" ? Math.min(n, state.tablePage * PAGE_SIZE) : n);
+        : (o.scope === "page" ? displayedQueryRows().length : n);
       const snap = state.exportSnapshot || {};
       const info = expEstimate(count, o.fresh, hasSnapshot, Boolean(snap && snap.has_snapshot));
       let text = `<b>${escHtml(info.level)}</b> · 约 ${count} 只<br />${escHtml(info.text)}`;
@@ -3594,8 +3659,7 @@
       const payload = {};
       if (o.scope === "search") payload.codes = state.lastQueryCodes || [];
       else if (o.scope === "page") {
-        payload.codes = sortedRows(state.rowsRaw)
-          .slice(0, state.tablePage * PAGE_SIZE)
+        payload.codes = displayedQueryRows()
           .map((r) => r.code_full || r.code6)
           .filter(Boolean);
       } else {

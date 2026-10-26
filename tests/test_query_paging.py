@@ -85,6 +85,35 @@ def test_query_sort_puts_empty_values_last():
             assert all(r.get("price") is None for r in got[len(mixed) :])
 
 
+def test_query_stream_offset_returns_the_next_slice():
+    """下一页走流式时，offset 必须接到上一页后面，不能重复第一只。"""
+    import json as _json
+
+    with TestClient(app) as client:
+        headers = _login(client)
+        full = client.post("/api/query/run", json={}, headers=headers).json()
+        assert full["total"] >= 2
+
+        def codes_from_stream(payload):
+            resp = client.post("/api/query/stream", json=payload, headers=headers)
+            assert resp.status_code == 200, resp.text
+            found = []
+            for raw in resp.text.split("event: "):
+                if not raw.startswith("batch"):
+                    continue
+                body = _json.loads(raw.split("data:", 1)[1].split("\n\n", 1)[0])
+                if body.get("stage") != "quote":
+                    continue
+                found.extend(row["code6"] for row in body.get("rows") or [])
+            return found
+
+        first = codes_from_stream({"limit": 1, "offset": 0, "refresh_mode": "quote"})
+        second = codes_from_stream({"limit": 1, "offset": 1, "refresh_mode": "quote"})
+        assert first and second
+        assert first[0] != second[0]
+        assert [first[0], second[0]] == [r["code6"] for r in full["rows"][:2]]
+
+
 def test_query_stream_paging_reports_full_total():
     """流式也分页：只流一页，但 meta.total 要报整池行数，前端才知道还要不要再拉。"""
     with TestClient(app) as client:

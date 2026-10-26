@@ -123,6 +123,14 @@ def test_workbench_pct_column_sorts_index_constituents():
     assert 'pct: "desc"' in html
     assert 'code: "asc"' in html
     assert "点击按${f.label}排序" in html
+    assert "排序只针对已加载的行" in html
+    assert "function displayedQueryRows" in html
+    # 点列头只排已加载的行，不能再发一次查询把后面几页丢掉
+    sort_fn = html.split("function bindColumnSort", 1)[1].split("function fillRuleCodes", 1)[0]
+    assert "runQuery(" not in sort_fn
+    more_fn = html.split("async function loadMorePage", 1)[1].split("function renderSkeleton", 1)[0]
+    assert "stream: true" in more_fn
+    assert "noJobFallback: true" in more_fn
     assert "/watchlist/order" in html
     assert 'id="ruleCode"' in html
     assert "一只" in html
