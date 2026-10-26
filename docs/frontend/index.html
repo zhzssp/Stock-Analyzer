@@ -865,13 +865,13 @@
           <ul class="watch" id="watchList"></ul>
         </div>
         <div class="side-pane" id="quotePane" style="display:none;">
-          <div class="side-title"><span data-help-tip="点某一指数，中间的表立刻换成这一组成份，不会自动拉行情。要更新现价和其余列，再点「刷新」。上证指数 ≠ 沪市全部，深证成指 ≠ 深市全部，北证50 ≠ 北交所全部。">指数成份</span></div>
+          <div class="side-title"><span data-help-tip="点某一指数，中间的表立刻换成这一组成份，不会自动拉行情。要更新行情，再点「刷新行情」。上证指数 ≠ 沪市全部，深证成指 ≠ 深市全部，北证50 ≠ 北交所全部。">指数成份</span></div>
           <div class="chips" id="indexChips"></div>
           <input id="quoteFilter" placeholder="搜索当前成份" />
           <ul class="watch" id="quoteList"></ul>
         </div>
         <div class="side-pane" id="exchangePane" style="display:none;">
-          <div class="side-title"><span data-help-tip="点某一所或某一板块，中间的表立刻换成这一池的名单，不会自动拉行情。要更新现价和其余列，再点「刷新」。沪市含科创，深市含创业板。">交易所全市场</span></div>
+          <div class="side-title"><span data-help-tip="点某一所或某一板块，中间的表立刻换成这一池的名单，不会自动拉行情。要更新行情，再点「刷新行情」。沪市含科创，深市含创业板。">交易所全市场</span></div>
           <div class="chips" id="exchangeChips"></div>
           <div class="side-title board-sub"><span data-help-tip="板块池与指数成份不同，按板块标签筛选全市场标的。">板块另池（不是指数）</span></div>
           <div class="chips" id="boardChips"></div>
@@ -896,9 +896,9 @@
             <div class="gs-results" id="gsResults" style="display:none;"></div>
           </div>
           <div class="toolbar">
-            <button class="btn primary" id="queryBtn" type="button"><span data-help-tip="按列设置查表：现价优先墙钟；财务/股东等未过期则用本机分项缓存，少打麦蕊。">查询</span></button>
-            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="只更新中间这张表上已有股票的现价，不会改成下滚翻页。自选这种小表如果行业、股东、财务是空的，会接着按缓存补齐。不会去刷左侧没选中的那一池。">刷新</span></button>
-            <button class="btn" id="fullQueryBtn" type="button"><span data-help-tip="忽略慢字段缓存，向麦蕊重新拉齐全部列（含财务、股东、底顶），额度消耗最大。">全量更新</span></button>
+            <button class="btn primary" id="queryBtn" type="button"><span data-help-tip="按当前选中的池子，把中间这张表按你勾选的列重新做一遍。股票多时先出前 100 只，往下滚再出后面的。现价、行业、股东、财务，本机今天已经有的就直接用，缺的才去要。">查询</span></button>
+            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="不换名单，只更新中间这张表上这些股票的行情，包括现价、涨跌幅等。沪市、深市这种大表不会顺便补行业和财务。自选这种不到 100 只、而且这些列还是空的，才会用本机已有的结果补上。没点开的池子不会被刷到。">刷新行情</span></button>
+            <button class="btn" id="fullQueryBtn" type="button"><span data-help-tip="和「查询」一样，先做前 100 只，不是把整个板块一次拉完。差别是现价、行业、股东、财务都重新向数据源要，不用本机已经存好的，所以最费次数。">全量更新</span></button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
@@ -2173,10 +2173,10 @@
       if (side === "watch") return "查询和导出只含当前自选。自选里可以同时有沪、深、北，会在同一张表。";
       if (side === "quote") {
         const note = (meta && meta.note) ? (meta.note + " ") : "";
-        return note + "中间的表是当前这只指数的成份。点「刷新」才更新这张表的行情。";
+        return note + "中间的表是当前这只指数的成份。点「刷新行情」才更新这张表的行情。";
       }
       const extra = (meta && meta.note) ? (" " + meta.note) : "";
-      return "中间的表是当前这一所或这一板块的名单。点「刷新」才更新这张表的行情。" + extra;
+      return "中间的表是当前这一所或这一板块的名单。点「刷新行情」才更新这张表的行情。" + extra;
     }
 
     function updateExportScope(label) {
@@ -2232,7 +2232,7 @@
       const name = label || state.poolLabel || "";
       if (hint) {
         hint.textContent = state.listOnly
-          ? `已显示「${name}」${rows.length} 只。点「刷新」更新这一列表。`
+          ? `已显示「${name}」${rows.length} 只。点「刷新行情」更新这一列表的行情。`
           : `${rows.length} 只 · ${name}`;
       }
     }
@@ -2251,7 +2251,7 @@
       renderPoolList(data.items || []);
       setPoolHint(poolHintText(state.side, data));
       updateExportScope(data.label || poolId);
-      // 只换中间这份名单，不拉行情。行情留给「刷新」。
+      // 只换中间这份名单，不拉行情。行情留给「刷新行情」。
       showCenterList(data.items || [], data.label || poolId);
     }
 
@@ -3088,7 +3088,7 @@
         return "麦蕊证书今日额度已用尽，请明天再试或追加证书。";
       }
       if (reason) return reason;
-      return "麦蕊行情未返回现价，请点刷新或重启助手后重试。";
+      return "麦蕊行情未返回现价，请点「刷新行情」或重启助手后重试。";
     }
 
     async function runQuery(codes, opts) {
