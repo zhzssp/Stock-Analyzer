@@ -2,6 +2,39 @@
 
 from __future__ import annotations
 
+import re
+
+_UUID = re.compile(
+    r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+)
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+_STATUS = re.compile(r"(\d{3})\s+([A-Za-z][A-Za-z ]+)")
+
+
+def friendly_failure(exc: BaseException | str) -> str:
+    """技术报错收成「查询失败（原因）」。已经是中文说明的原样保留，证书不出现在句子里。"""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int) and status >= 400:
+        reason = str(getattr(response, "reason_phrase", "") or "").strip()
+        detail = f"HTTP {status}" + (f" {reason}" if reason else "")
+        return f"查询失败（{detail}）"
+    text = " ".join(str(exc or "").split())
+    if not text:
+        return "查询失败（请求失败）"
+    if text.startswith("查询失败（"):
+        return _UUID.sub("…", text)
+    if _CJK.search(text) and "http://" not in text.lower() and "https://" not in text.lower():
+        return text
+    found = _STATUS.search(text)
+    if found:
+        return f"查询失败（HTTP {found.group(1)} {found.group(2).strip()}）"
+    cleaned = _UUID.sub("…", text)
+    cleaned = re.sub(r"https?://\S+", "", cleaned)
+    cleaned = re.sub(r"For more information check:.*", "", cleaned)
+    cleaned = " ".join(cleaned.split(" "))[:120].strip(" :'\"")
+    return f"查询失败（{cleaned or '请求失败'}）"
+
 
 def issue_level(message: str, default: str = "warn") -> str:
     text = message or ""

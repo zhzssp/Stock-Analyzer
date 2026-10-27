@@ -738,6 +738,7 @@ def _execute_query(
     on_quotes: Any = None,
     on_row: Any = None,
     on_issue: Any = None,
+    on_quote_progress: Any = None,
     offset: int = 0,
     limit: int = 0,
     sort_key: str = "",
@@ -827,6 +828,7 @@ def _execute_query(
         on_quotes=on_quotes,
         on_row=on_row,
         on_issue=on_issue,
+        on_quote_progress=on_quote_progress,
         cancel=cancel,
     )
     codes = [i.code_full for i in insts]
@@ -994,7 +996,9 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
             result["refresh_mode"] = (body.refresh_mode or "full").strip().lower()
             jobs.finish(job.id, result)
         except Exception as exc:
-            jobs.fail(job.id, str(exc))
+            from src.query.issues import friendly_failure
+
+            jobs.fail(job.id, friendly_failure(exc))
 
     jobs.spawn(worker)
     return bg_job_payload(job)
@@ -1056,6 +1060,9 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
             if items:
                 out.put(("issue", {"issues": items}))
 
+        def on_quote_progress(done: int, total: int) -> None:
+            out.put(("progress", {"done": done, "total": total, "stage": "quote"}))
+
         try:
             result = _execute_query(
                 insts,
@@ -1072,6 +1079,7 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 on_quotes=on_quotes,
                 on_row=on_row,
                 on_issue=on_issue,
+                on_quote_progress=on_quote_progress,
                 persist_snapshot=pool_id != "codes",
                 pool_id=pool_id,
                 snapshot_partial=not covers_pool,
@@ -1089,7 +1097,9 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 },
             ))
         except Exception as exc:  # noqa: BLE001 - 流式中途出错也要让前端收尾
-            out.put(("error", {"message": str(exc) or "查询失败", "partial": True}))
+            from src.query.issues import friendly_failure
+
+            out.put(("error", {"message": friendly_failure(exc), "partial": True}))
         finally:
             out.put(None)
 
@@ -1138,7 +1148,9 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 sent += len(rows)
                 if len(pending) >= 10:
                     yield frame("batch", {"rows": pending, "stage": "full"})
-                    yield frame("progress", {"done": sent, "total": len(insts)})
+                    # 刷新只拉现价，进度以每批现价为准。这里再发一遍会从 0 重新计数。
+                    if (body.refresh_mode or "").strip().lower() != "quote":
+                        yield frame("progress", {"done": sent, "total": len(insts), "stage": "full"})
                     pending = []
                 continue
             if pending:

@@ -171,6 +171,19 @@ def test_get_retries_same_licence_on_429():
     reg.mark_quota_exhausted.assert_not_called()
 
 
+def test_quotes_many_notifies_each_batch_of_20():
+    from types import SimpleNamespace
+
+    client = _client()
+    seen = []
+    client._quote_batch_progress = lambda batch: seen.append(len(batch))
+    insts = [SimpleNamespace(code6=f"{i:06d}") for i in range(25)]
+    with patch.object(client, "_quotes_batch", side_effect=lambda batch: {i.code6: {"p": 1} for i in batch}):
+        out = client.quotes_many(insts)
+    assert seen == [20, 5]
+    assert len(out) == 25
+
+
 def test_persistent_429_does_not_exhaust_licence():
     """重试后仍是 429：告诉用户请求太密，不能写成额度用尽，也不能把证移出池子。"""
     from src.market.client import RATE_LIMIT_MESSAGE, MarketError

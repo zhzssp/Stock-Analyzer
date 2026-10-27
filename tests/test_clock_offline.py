@@ -110,6 +110,35 @@ def test_universe_union_fetched_for_tape(tmp_path: Path):
     assert "000001" in payload["quotes"]
 
 
+def test_quote_progress_counts_requested_names_only(tmp_path: Path):
+    """墙钟里已有的算已完成；为补磁带多取的代码不计入这一表的进度。"""
+    at = datetime(2026, 9, 18, 10, 8, tzinfo=SHANGHAI)
+    cached = normalize_instrument("600038.SH", "中直股份")
+    live_one = normalize_instrument("000001.SZ", "平安银行")
+    merge_quotes_into_slot(tmp_path, slot_start(at), {"600038": {"p": 26.0, "pc": 1, "pe": 8, "sjl": 1}}, writer="a")
+    write_universe(tmp_path, "hanish", ["000099"])
+    seen: list[tuple[int, int]] = []
+
+    class Reporting(FakeMarket):
+        def quotes_many(self, insts):
+            hook = getattr(self, "_quote_batch_progress", None)
+            if hook:
+                hook(list(insts))
+            return super().quotes_many(insts)
+
+    align_quotes(
+        Reporting(),
+        [cached, live_one],
+        writer="hanish",
+        clock_dir=tmp_path,
+        at=at,
+        on_quote_progress=lambda done, total: seen.append((done, total)),
+    )
+    assert seen[0] == (1, 2)
+    assert seen[-1] == (2, 2)
+    assert all(total == 2 for _done, total in seen)
+
+
 def test_in_session_weekday_morning():
     assert in_session(datetime(2026, 9, 18, 10, 8, tzinfo=SHANGHAI)) is True
     assert in_session(datetime(2026, 9, 20, 10, 8, tzinfo=SHANGHAI)) is False

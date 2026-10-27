@@ -2686,6 +2686,64 @@
       state.rowsRaw = Object.values(state.streamRows || {});
     }
 
+    function formatRemain(ms) {
+      if (ms == null || !Number.isFinite(ms) || ms < 0) return "";
+      const sec = ms / 1000;
+      if (sec < 10) return "大约还需不到 10 秒";
+      if (sec < 60) {
+        const rounded = Math.max(10, Math.round(sec / 10) * 10);
+        if (rounded >= 60) return "大约还需 1 分钟";
+        return `大约还需 ${rounded} 秒`;
+      }
+      const min = sec / 60;
+      if (min < 60) {
+        const rounded = Math.max(1, Math.round(min));
+        if (rounded >= 60) return "大约还需 1 小时";
+        return `大约还需 ${rounded} 分钟`;
+      }
+      return `大约还需 ${Math.max(1, Math.round(min / 60))} 小时`;
+    }
+
+    function resetEtaClock() {
+      state.eta = { t0: performance.now(), stage: "", done0: 0, lastRemainMs: null };
+    }
+
+    // 剩余时间只在新进度到达时重算，不在本地往下减。
+    // 第一阶段用本次请求的起点；换阶段（现价 → 慢字段）后以前一拍为起点，避免把上一段耗时算进去。
+    function etaSuffix(done, total, stage) {
+      const n = Number(done) || 0;
+      const all = Number(total) || 0;
+      if (!all || n <= 0) return " · 正在估算剩余时间";
+      if (n >= all) return "";
+      if (!state.eta) resetEtaClock();
+      const eta = state.eta;
+      if (eta.stage !== stage) {
+        const first = !eta.stage;
+        eta.stage = stage;
+        eta.lastRemainMs = null;
+        if (!first) {
+          eta.t0 = performance.now();
+          eta.done0 = n;
+          return " · 正在估算剩余时间";
+        }
+        eta.done0 = 0;
+      }
+      const gained = n - eta.done0;
+      const elapsed = performance.now() - eta.t0;
+      if (gained < 10 || elapsed < 300) return " · 正在估算剩余时间";
+      const raw = (elapsed / gained) * (all - n);
+      const remain = eta.lastRemainMs == null ? raw : eta.lastRemainMs * 0.6 + raw * 0.4;
+      eta.lastRemainMs = remain;
+      const text = formatRemain(remain);
+      return text ? ` · ${text}` : " · 正在估算剩余时间";
+    }
+
+    function pageRemainClause(elapsedMs, pageCount, remaining) {
+      if (!pageCount || !remaining || remaining <= 0 || !elapsedMs || elapsedMs < 300) return "";
+      const text = formatRemain((elapsedMs / pageCount) * remaining);
+      return text ? ` · 若按这一页的速度继续，剩下${text}` : "";
+    }
+
     function handleStreamEvent(event, data, gen) {
       if (gen != null && !listQueryCurrent(gen)) return;
       const hint = document.getElementById("queryHint");
@@ -2698,6 +2756,7 @@
       dbg("流式事件", event, data);
       if (event === "meta") {
         // meta.total 是整池行数（不是本页），据此决定是否启用虚拟滚动
+        resetEtaClock();
         state.totalRows = data.total || state.totalRows || 0;
         if (state.streamAppend) {
           // 下一页先攒着，结束再接上。中途失败不能把半页写进表，否则下次 offset 会跳号。
@@ -2740,11 +2799,13 @@
       }
       if (event === "progress") {
         if (hint) {
-          hint.textContent = state.streamAppend
-            ? `正在加载下一页 ${data.done || 0}/${data.total || 0}`
-            : (state.streamKeepRows
-              ? `正在更新现价 ${data.done || 0}/${data.total || 0}`
-              : `已出 ${data.done || 0}/${data.total || 0} 只 · 继续补齐…`);
+          const done = data.done || 0;
+          const total = data.total || 0;
+          const suffix = etaSuffix(done, total, data.stage || "full");
+          if (state.streamAppend) hint.textContent = `正在加载下一页 ${done}/${total}${suffix}`;
+          else if (state.streamKeepRows) hint.textContent = `正在更新现价 ${done}/${total}${suffix}`;
+          else if (data.stage === "quote") hint.textContent = `正在取行情 ${done}/${total}${suffix}`;
+          else hint.textContent = `已出 ${done}/${total} 只${suffix}`;
         }
         return;
       }
@@ -2770,8 +2831,11 @@
             const loaded = state.rowsRaw.length;
             const total = state.totalRows || loaded;
             const sortNote = state.sortKey && data.has_more ? " · 排序只针对已加载的行" : "";
+            const extra = data.has_more
+              ? pageRemainClause(data.elapsed_ms || 0, data.rows_count || incoming.length, Math.max(0, total - loaded))
+              : "";
             hint.textContent = data.has_more
-              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载${sortNote}${bad}`
+              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒${extra} · 往下滚继续加载${sortNote}${bad}`
               : `已加载全部 ${loaded} 只 · 用时 ${sec} 秒${bad}`;
           }
           return;
@@ -2792,8 +2856,11 @@
             hint.textContent = `${loaded} 只 · 现价已更新 · 用时 ${sec} 秒${bad}`;
           } else {
             const sortNote = state.sortKey && data.has_more ? " · 排序只针对已加载的行" : "";
+            const extra = data.has_more
+              ? pageRemainClause(data.elapsed_ms || 0, data.rows_count || loaded, Math.max(0, total - loaded))
+              : "";
             hint.textContent = data.has_more
-              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒 · 往下滚继续加载${sortNote}${bad}`
+              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒${extra} · 往下滚继续加载${sortNote}${bad}`
               : `${loaded} 只 · 用时 ${sec} 秒${bad}`;
           }
         }

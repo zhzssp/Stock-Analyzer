@@ -184,6 +184,16 @@ def test_workbench_picker_dialog_is_wide_and_short():
     assert ".table-wrap { overflow: auto;" in html or "table-wrap { overflow: auto" in html
 
 
+def test_query_hint_estimates_remaining_time():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert "function formatRemain" in html
+    assert "function etaSuffix" in html
+    assert "正在估算剩余时间" in html
+    assert "若按这一页的速度继续，剩下" in html
+    assert "正在更新现价 ${done}/${total}${suffix}" in html
+    assert "已出 ${done}/${total} 只${suffix}" in html
+
+
 def test_export_job_hint_names_excel_progress():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert "Excel表格导出进度：" in html

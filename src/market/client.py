@@ -165,6 +165,8 @@ class MarketClient:
             self._probe()
 
     def _get(self, path: str) -> Any:
+        from src.query.issues import friendly_failure
+
         if self.offline:
             raise MarketError("offline mode: live API disabled")
         reg = getattr(self, "_registry", None)
@@ -231,9 +233,9 @@ class MarketClient:
                     last_error = f"Licence 不可用: {lic[:8]}…"
                     self._switch_licence(reg, lic, "unusable", f"证书不可用 → 本进程跳过（HTTP {code}）")
                     continue
-                raise MarketError(str(exc)) from exc
+                raise MarketError(friendly_failure(exc)) from exc
             except Exception as exc:
-                raise MarketError(str(exc)) from exc
+                raise MarketError(friendly_failure(exc)) from exc
         if reg.all_exhausted_today():
             self.status = "quota-exhausted"
             raise LicenceExhaustedError("所有证书今日额度已用尽（每日刷新池次日自动恢复；长期池用尽后需重新添加）")
@@ -278,11 +280,11 @@ class MarketClient:
 
     def note_issue(self, block: str, message: str, code6: str = "", level: str = "warn") -> None:
         """查询进行中才记。同一只、同一块、同一句只记一次。"""
-        from src.query.issues import issue_level
+        from src.query.issues import friendly_failure, issue_level
 
         if not self._issues_open:
             return
-        msg = " ".join((message or "请求失败").split())[:180] or "请求失败"
+        msg = friendly_failure(message)[:180]
         item = (issue_level(msg, level), str(block or "http"), str(code6 or ""), msg)
         with self._issue_lock:
             if not self._issues_open or item in self._issue_seen or len(self._query_issues) >= 240:
@@ -904,13 +906,24 @@ class MarketClient:
             return {i.code6: self.quote(i) for i in insts}
         out: dict[str, dict] = {}
         batch: list[Instrument] = []
+        # 刷新整表时，界面要在每一批回来后估算剩余时间。没挂回调时行为和以前一样。
+        hook = getattr(self, "_quote_batch_progress", None)
+
+        def flush() -> None:
+            nonlocal batch
+            if not batch:
+                return
+            done = list(batch)
+            out.update(self._quotes_batch(done))
+            batch = []
+            if hook:
+                hook(done)
+
         for inst in insts:
             batch.append(inst)
             if len(batch) == 20:
-                out.update(self._quotes_batch(batch))
-                batch = []
-        if batch:
-            out.update(self._quotes_batch(batch))
+                flush()
+        flush()
         return out
 
     def _quotes_batch(self, insts: list[Instrument]) -> dict[str, dict]:

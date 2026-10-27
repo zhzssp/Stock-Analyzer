@@ -88,11 +88,13 @@ class QueryEngine:
         on_quotes: Any = None,
         on_row: Any = None,
         on_issue: Any = None,
+        on_quote_progress: Any = None,
         cancel: Any = None,
     ) -> list[dict]:
         """on_quotes / on_row 用于流式查询：先送一批只有行情的行，再逐只送完整行。
 
         两者都在 worker 线程里被调用（取数已并发），调用方要自己做线程安全。
+        on_quote_progress(done, total) 在每一批现价回来时调用，供刷新估算剩余时间。
         """
         keys = field_keys or registry.default_keys()
         specs = [registry.get(k) for k in keys]
@@ -126,6 +128,7 @@ class QueryEngine:
                 on_quotes=on_quotes,
                 on_row=on_row,
                 on_issue=on_issue,
+                on_quote_progress=on_quote_progress,
                 cancel=cancel,
             )
         finally:
@@ -164,6 +167,7 @@ class QueryEngine:
         on_quotes: Any = None,
         on_row: Any = None,
         on_issue: Any = None,
+        on_quote_progress: Any = None,
         cancel: Any = None,
     ) -> list[dict]:
         quotes: dict[str, dict] = {}
@@ -178,6 +182,7 @@ class QueryEngine:
                 writer=writer,
                 force_live=force_live,
                 extra_codes=quote_extra,
+                on_quote_progress=on_quote_progress,
             )
         self.last_clock_meta = clock_meta
         self._note_quote_gap(instruments, quotes, clock_meta, "quote" in need, on_issue)

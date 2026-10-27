@@ -508,6 +508,7 @@ def align_quotes(
     clock_dir: Path | None = None,
     at: datetime | None = None,
     force_live: bool = False,
+    on_quote_progress: Any = None,
 ) -> tuple[dict[str, dict], dict]:
     """Return live quotes keyed by code6, preferring the current wall-clock slot file.
 
@@ -560,11 +561,28 @@ def align_quotes(
 
     live: dict[str, dict] = {}
     if fetch_list:
+        need_ids = {inst.code6 for inst in need}
+        progress_done = len(need) - len(missing)
+        if on_quote_progress and progress_done:
+            on_quote_progress(min(progress_done, len(need)), len(need))
+
+        def _on_batch(batch_insts: list) -> None:
+            nonlocal progress_done
+            for inst in batch_insts:
+                if getattr(inst, "code6", None) in need_ids:
+                    progress_done += 1
+            if on_quote_progress and need:
+                on_quote_progress(min(progress_done, len(need)), len(need))
+
+        prev_hook = getattr(market, "_quote_batch_progress", None)
+        market._quote_batch_progress = _on_batch
         try:
             live = market.quotes_many(fetch_list) or {}
         except Exception as exc:
             meta["reason"] = str(exc)
             live = {}
+        finally:
+            market._quote_batch_progress = prev_hook
 
     out: dict[str, dict] = {}
     for inst in need:

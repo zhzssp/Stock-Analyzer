@@ -6,7 +6,35 @@ from src.main import app
 from src.market.client import MarketClient, MarketError
 from src.market.client import resolve_instruments
 from src.query.engine import QueryEngine
-from src.query.issues import summarize_issues
+from src.query.issues import friendly_failure, summarize_issues
+
+
+def test_http_404_reads_as_query_failure_without_licence():
+    import httpx
+
+    secret = "1F33187D-93A9-4164-9BC4-C5F25B6AC0AB"
+    url = f"https://api.mairuiapi.com/hsstock/financial/flowholder/688006.SH/{secret}"
+    request = httpx.Request("GET", url)
+    response = httpx.Response(404, request=request)
+    exc = httpx.HTTPStatusError("boom", request=request, response=response)
+    text = friendly_failure(exc)
+    assert text == "查询失败（HTTP 404 Not Found）"
+    assert secret not in text
+    raw = (
+        "Client error '404 Not Found' for url "
+        f"'{url}' For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404"
+    )
+    assert friendly_failure(raw) == text
+    assert friendly_failure("请求过于频繁，这一项暂未取到，稍后再试即可。").startswith("请求过于频繁")
+
+    market = MarketClient()
+    market.open_query_issues()
+    market.note_issue("holders", raw, "688006")
+    market.note_issue("holders", raw.replace("688006", "688025"), "688025")
+    rows = summarize_issues(market.close_query_issues())
+    assert rows[0]["message"] == "查询失败（HTTP 404 Not Found）"
+    assert rows[0]["count"] == 2
+    assert secret not in rows[0]["message"]
 
 
 def test_same_failure_collapses_to_one_line():
