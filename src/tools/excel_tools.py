@@ -37,21 +37,24 @@ def excel_list(args: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(ok=True, data=items, source="excel_list", cite="Excel 档案 · excel_list")
 
 
-def _read_sheet(path: Path, max_rows: int = 20) -> dict:
+def _read_sheet(path: Path, max_rows: int | None = 20) -> dict:
     wb = load_workbook(path, data_only=True)
-    ws = wb["query"] if "query" in wb.sheetnames else wb.active
-    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-    rows = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        rows.append({str(headers[i] or f"c{i}"): row[i] for i in range(len(headers))})
-        if len(rows) >= max_rows:
-            break
-    meta = {}
-    if "meta" in wb.sheetnames:
-        for r in wb["meta"].iter_rows(values_only=True):
-            if r and r[0]:
-                meta[str(r[0])] = r[1]
-    return {"headers": headers, "rows": rows, "meta": meta, "truncated": ws.max_row - 1 > len(rows)}
+    try:
+        ws = wb["query"] if "query" in wb.sheetnames else wb.active
+        headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            rows.append({str(headers[i] or f"c{i}"): row[i] for i in range(len(headers))})
+            if max_rows is not None and len(rows) >= max_rows:
+                break
+        meta = {}
+        if "meta" in wb.sheetnames:
+            for r in wb["meta"].iter_rows(values_only=True):
+                if r and r[0]:
+                    meta[str(r[0])] = r[1]
+        return {"headers": headers, "rows": rows, "meta": meta, "truncated": ws.max_row - 1 > len(rows)}
+    finally:
+        wb.close()
 
 
 def excel_read(args: dict, ctx: ToolContext) -> ToolResult:
@@ -87,21 +90,7 @@ def _index_rows(sheet: dict, key_label: str = "代码") -> dict[str, dict]:
     return out
 
 
-def excel_diff(args: dict, ctx: ToolContext) -> ToolResult:
-    items = _user_arts(ctx)
-    if len(items) < 2:
-        return ToolResult(ok=False, error="至少需要两份导出才能对照。请先再导出一次。", source="excel_diff", cite="Excel 对照")
-    if args.get("id_a") and args.get("id_b"):
-        a = next((x for x in items if x.id == int(args["id_a"])), None)
-        b = next((x for x in items if x.id == int(args["id_b"])), None)
-    else:
-        a, b = items[1], items[0]
-    if not a or not b:
-        return ToolResult(ok=False, error="指定的档案不存在", source="excel_diff", cite="Excel 对照")
-    col = args.get("column") or "前十大流通股东"
-    left = _read_sheet(Path(a.path), 200)
-    right = _read_sheet(Path(b.path), 200)
-    idx_a, idx_b = _index_rows(left), _index_rows(right)
+def column_changes(idx_a: dict, idx_b: dict, col: str) -> list[dict]:
     changes = []
     for code in sorted(set(idx_a) | set(idx_b)):
         va = (idx_a.get(code) or {}).get("row", {}).get(col)
@@ -115,14 +104,34 @@ def excel_diff(args: dict, ctx: ToolContext) -> ToolResult:
                     "after": vb,
                 }
             )
+    return changes
+
+
+def excel_diff(args: dict, ctx: ToolContext) -> ToolResult:
+    items = _user_arts(ctx)
+    if len(items) < 2:
+        return ToolResult(ok=False, error="至少需要两份导出才能对照。请先再导出一次。", source="excel_diff", cite="Excel 对照")
+    if args.get("id_a") and args.get("id_b"):
+        a = next((x for x in items if x.id == int(args["id_a"])), None)
+        b = next((x for x in items if x.id == int(args["id_b"])), None)
+    else:
+        a, b = items[1], items[0]
+    if not a or not b:
+        return ToolResult(ok=False, error="指定的档案不存在", source="excel_diff", cite="Excel 对照")
+    col = args.get("column") or "前十大流通股东"
+    left = _read_sheet(Path(a.path), None)
+    right = _read_sheet(Path(b.path), None)
+    changes = column_changes(_index_rows(left), _index_rows(right), col)
     return ToolResult(
         ok=True,
         data={
             "a": _payload(a),
             "b": _payload(b),
             "column": col,
-            "changes": changes[:40],
+            "changes": changes,
             "change_count": len(changes),
+            "rows_a": len(left["rows"]),
+            "rows_b": len(right["rows"]),
         },
         source="excel_diff",
         cite=f"Excel 对照 · {a.filename} → {b.filename}",
