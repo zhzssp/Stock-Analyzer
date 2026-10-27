@@ -10,7 +10,9 @@ def test_parse_licences_dedupes_and_orders():
 
 
 def test_quota_error_detection():
-    assert is_quota_error(429, "")
+    assert not is_quota_error(429, "")
+    assert not is_quota_error(429, "Too Many Requests")
+    assert is_quota_error(429, "101:Licence证书当日次数已超出")
     assert is_quota_error(200, "101:Licence证书当日次数已超出")
     assert not is_quota_error(404, "not found")
 

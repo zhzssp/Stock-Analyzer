@@ -21,6 +21,15 @@ class MarketError(RuntimeError):
     pass
 
 
+# 429 且正文没有额度用语。不要写成「额度用尽」，也不要带证书编号。
+RATE_LIMIT_MESSAGE = "请求过于频繁，这一项暂未取到，稍后再试即可。"
+
+
+def _is_plain_rate_limit(status_code: int, body: str = "") -> bool:
+    """HTTP 429 且正文没有额度用语。正文写明额度用尽时仍交给 is_quota_error。"""
+    return status_code == 429 and not is_quota_error(status_code, body)
+
+
 class LicenceExhaustedError(MarketError):
     """池里还有证，但今天一张都派不出来。与「没配证书 / 网络不通」要分开报。"""
 
@@ -188,13 +197,17 @@ class MarketClient:
             url = self._url(path, lic)
             try:
                 resp = self._http_get(url)
-                if resp.status_code == 429:
+                if _is_plain_rate_limit(resp.status_code, resp.text):
                     # 429 是被限频，不等于这张证额度用尽：缓一下，同一张再试一次。
                     time.sleep(0.8)
                     resp = self._http_get(url)
+                if _is_plain_rate_limit(resp.status_code, resp.text):
+                    last_error = RATE_LIMIT_MESSAGE
+                    self._log_licence(f"请求被限频（HTTP 429），未记为额度用尽（{lic[:8]}…）")
+                    continue
                 if is_quota_error(resp.status_code, resp.text):
                     last_error = f"Licence 额度已用尽: {lic[:8]}…"
-                    self._switch_licence(reg, lic, "quota", f"额度/限频用尽 → 换下一张（HTTP {resp.status_code}）")
+                    self._switch_licence(reg, lic, "quota", f"额度用尽 → 换下一张（HTTP {resp.status_code}）")
                     continue
                 if is_licence_unusable(resp.status_code, resp.text):
                     last_error = f"Licence 不可用: {lic[:8]}…"
@@ -206,9 +219,13 @@ class MarketClient:
             except httpx.HTTPStatusError as exc:
                 body = exc.response.text if exc.response is not None else ""
                 code = exc.response.status_code if exc.response is not None else 0
+                if _is_plain_rate_limit(code, body):
+                    last_error = RATE_LIMIT_MESSAGE
+                    self._log_licence(f"请求被限频（HTTP 429），未记为额度用尽（{lic[:8]}…）")
+                    continue
                 if is_quota_error(code, body):
                     last_error = f"Licence 额度已用尽: {lic[:8]}…"
-                    self._switch_licence(reg, lic, "quota", f"额度/限频用尽 → 换下一张（HTTP {code}）")
+                    self._switch_licence(reg, lic, "quota", f"额度用尽 → 换下一张（HTTP {code}）")
                     continue
                 if is_licence_unusable(code, body):
                     last_error = f"Licence 不可用: {lic[:8]}…"

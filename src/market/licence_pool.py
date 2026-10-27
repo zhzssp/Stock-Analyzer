@@ -1,4 +1,7 @@
-"""麦蕊 Licence 队列：当日 429/101 后换下一张，次日自动重置。"""
+"""麦蕊 Licence 队列：当日额度用尽后换下一张，次日自动重置。
+
+HTTP 429 只表示请求太密，由调用方退避重试，不在这里当成额度用尽。
+"""
 
 from __future__ import annotations
 
@@ -33,9 +36,9 @@ def is_quota_error(status_code: int, body: str = "") -> bool:
     而没有 licence 字样的写法。原写法要求「101 且含 licence/证书」或「次数且含超出/超限」，
     漏掉的组合会让它一直卡在同一张已经用尽的证书上，看起来就是「没有自动切换」。
     宁可多换一张（代价最多一次重试），也不要卡住。
+
+    单纯的 HTTP 429 是限频，正文里没有额度用语时不算用尽。429 且正文写明额度用尽，仍算。
     """
-    if status_code == 429:
-        return True
     text = str(body or "")
     if not text:
         return False

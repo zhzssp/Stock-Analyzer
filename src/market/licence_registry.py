@@ -57,7 +57,9 @@ def _normalize_preference(pref: dict | None) -> dict:
 
 
 class LicenceRegistry:
-    """renewable：当日 101/429 后换下一张，次日自动恢复。consumable：超限后从池中删除。
+    """renewable：当日额度用尽后换下一张，次日自动恢复。consumable：额度超限后从池中删除。
+
+    单纯的 HTTP 429 是限频，不记入用尽，也不从长期池移除。
 
     两件事分开管：
     - schedule：不锁定时按什么顺序用池（auto / renewable / consumable）

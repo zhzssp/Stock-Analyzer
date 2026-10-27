@@ -184,6 +184,13 @@ def test_workbench_picker_dialog_is_wide_and_short():
     assert ".table-wrap { overflow: auto;" in html or "table-wrap { overflow: auto" in html
 
 
+def test_export_job_hint_names_excel_progress():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert "Excel表格导出进度：" in html
+    assert "Excel表格导出完成：" in html
+    assert "任务进行中 ·" in html
+
+
 def test_decision_card_overlay_sits_above_sticky_table_headers():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert "isolation: isolate;" in html

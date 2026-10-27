@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     app_port: int = 8765
     bootstrap_user: str = "hanish"
     bootstrap_password: str = "change-me"
-    # 主证书；可与 mairui_licences 组成队列（当日 429 自动换下一张）。
+    # 主证书；可与 mairui_licences 组成队列（当日额度用尽自动换下一张，HTTP 429 只是限频）。
     mairui_licence: str = _BUILTIN_LICENCE
     mairui_licences: str = _BUILTIN_LICENCES
     # True 才用 src/market/fixtures.py 喂工作台。样例文件保留，pytest 仍会设 MAIRUI_OFFLINE=1。

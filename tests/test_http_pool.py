@@ -169,3 +169,48 @@ def test_get_retries_same_licence_on_429():
     sleep.assert_called_once_with(0.8)
     # 429 是限频不是额度用尽：不能把这张证标记为用尽
     reg.mark_quota_exhausted.assert_not_called()
+
+
+def test_persistent_429_does_not_exhaust_licence():
+    """重试后仍是 429：告诉用户请求太密，不能写成额度用尽，也不能把证移出池子。"""
+    from src.market.client import RATE_LIMIT_MESSAGE, MarketError
+
+    client = _client()
+    client.licence_switches = 0
+    reg = MagicMock()
+    reg.iteration_plan.return_value = [("consumable", "LIC-0001")]
+    reg.all_exhausted_today.return_value = False
+    client._registry = reg
+
+    with patch.object(client, "_http_get", return_value=_resp(429, text="too many")) as get:
+        with patch.object(client, "_log_licence"):
+            with patch("src.market.client.time.sleep"):
+                with pytest.raises(MarketError) as caught:
+                    client._get("/hsrl/ssjy/000001")
+
+    assert get.call_count == 2
+    assert str(caught.value) == RATE_LIMIT_MESSAGE
+    assert "额度" not in str(caught.value)
+    reg.mark_quota_exhausted.assert_not_called()
+    assert client.status != "quota-exhausted"
+
+
+def test_429_with_quota_wording_still_switches_licence():
+    """429 正文写明额度用尽时，仍换下一张，避免卡在已经超限的证上。"""
+    client = _client()
+    client.licence_switches = 0
+    reg = MagicMock()
+    reg.iteration_plan.return_value = [("consumable", "LIC-0001"), ("consumable", "LIC-0002")]
+    reg.all_exhausted_today.return_value = False
+    reg.mark_quota_exhausted.return_value = "LIC-0002"
+    client._registry = reg
+
+    limited = _resp(429, text="101:Licence证书当日次数已超出")
+    ok = _resp(200, [{"p": 10}])
+    with patch.object(client, "_http_get", side_effect=[limited, ok]) as get:
+        with patch.object(client, "_log_licence"):
+            out = client._get("/hsrl/ssjy/000001")
+
+    assert out == [{"p": 10}]
+    assert get.call_count == 2
+    reg.mark_quota_exhausted.assert_called_once_with("LIC-0001")

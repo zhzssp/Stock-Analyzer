@@ -2925,18 +2925,34 @@
       return data;
     }
 
+    function paintQueryHint(text) {
+      const hint = document.getElementById("queryHint");
+      if (hint) hint.textContent = text;
+    }
+
     async function waitJob(jobId, gen) {
+      // 不带代数的是导出。列表查询只有当前轮次能写，避免两池进度来回跳。
+      const exporting = gen == null;
       for (;;) {
         if (gen != null && !listQueryCurrent(gen)) throw querySupersededError();
         const data = await api("/query/jobs/" + jobId);
         if (gen != null && !listQueryCurrent(gen)) throw querySupersededError();
-        if (data.status === "done") return data;
+        if (data.status === "done") {
+          if (exporting) {
+            const total = data.total || data.progress || 0;
+            const done = data.progress || total;
+            paintQueryHint(`Excel表格导出完成：${done}/${total}`);
+          }
+          return data;
+        }
         if (data.status === "cancelled") throw querySupersededError();
         if (data.status === "error") throw new Error(data.error || "任务失败");
-        // 不带代数的是导出。列表查询只有当前轮次能写，避免两池进度来回跳。
-        if (gen == null || listQueryCurrent(gen)) {
-          const hint = document.getElementById("queryHint");
-          if (hint) hint.textContent = `任务进行中 · ${data.progress || 0}/${data.total || "?"}`;
+        if (exporting || listQueryCurrent(gen)) {
+          const done = data.progress || 0;
+          const total = data.total || "?";
+          paintQueryHint(exporting
+            ? `Excel表格导出进度：${done}/${total}`
+            : `任务进行中 · ${done}/${total}`);
         }
         await new Promise((resolve) => setTimeout(resolve, 400));
       }
