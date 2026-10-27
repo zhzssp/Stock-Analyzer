@@ -1846,8 +1846,9 @@
           }
         }
         const note = isPool ? (it.reason || "麦蕊不提供该指数实时点位，这里不显示成份数量") : "";
-        const title = [it.label || it.short || "", it.code || "", note].filter(Boolean).join(" · ");
-        const poolAttr = isPool && it.enabled ? ` data-pool="index:${escAttr(it.code || "")}"` : "";
+        const poolId = it.code ? `index:${it.code}` : "";
+        const title = [it.label || it.short || "", it.code || "", note, poolId ? "点击打开左侧对应成份" : ""].filter(Boolean).join(" · ");
+        const poolAttr = poolId ? ` data-pool="${escAttr(poolId)}"` : "";
         return `<div class="board-item"${poolAttr} title="${escAttr(title)}"><span class="name">${escHtml(it.short || "")}：</span><span class="px ${pcCls}">${escHtml(price)}</span><span class="pc ${pcCls}">${escHtml(pcText)}</span></div>`;
       }).join("");
     }
@@ -4578,12 +4579,25 @@
     // 虚拟滚动：表格区滚动时重画可视区，接近底部时预取下一页
     const tableWrapEl = document.querySelector(".table-wrap");
     if (tableWrapEl) tableWrapEl.addEventListener("scroll", onTableScroll, { passive: true });
-    // 抬头里的池条目（如北证50）：先切到「行情」侧栏再选池，避免导出范围和屏幕上的表不一致。
+    function revealPoolChip(poolId) {
+      const safe = window.CSS && CSS.escape ? CSS.escape(poolId) : String(poolId || "").replace(/"/g, "");
+      const btn = document.querySelector('#indexChips [data-pool="' + safe + '"]');
+      if (btn && btn.scrollIntoView) btn.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+
+    // 抬头每一格都对应左侧「行情」里的同名指数成份。先切过去再选中；没有成份的只定位，不改用别的池。
     document.getElementById("boardBar").addEventListener("click", (e) => {
       const el = e.target.closest("[data-pool]");
       if (!el) return;
+      const poolId = el.dataset.pool;
       setSide("quote");
-      selectPool(el.dataset.pool).catch((err) => toast(err.message));
+      const pool = (state.pools || []).find((p) => p.id === poolId);
+      if (pool && !pool.enabled) {
+        revealPoolChip(poolId);
+        toast(pool.reason || "未启用");
+        return;
+      }
+      selectPool(poolId).then(() => revealPoolChip(poolId)).catch((err) => toast(err.message));
     });
     function tableShowsWatch() {
       return state.side === "watch" && state.pool === "watch" && !(state.lastQueryCodes && state.lastQueryCodes.length);

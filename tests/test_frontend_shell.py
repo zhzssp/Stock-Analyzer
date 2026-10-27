@@ -111,6 +111,8 @@ def test_workbench_query_table_columns_are_resizable():
 def test_workbench_shows_core_index_board():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert 'id="boardBar"' in html
+    assert "const poolId = it.code ? `index:${it.code}` : \"\";" in html
+    assert "function revealPoolChip" in html
     assert "/markets/board" in html
     assert "startBoardClock" in html
     assert "上证：" in html
