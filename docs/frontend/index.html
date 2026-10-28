@@ -301,6 +301,18 @@
       flex-shrink: 0;
     }
     .toolbar .hint { margin-left: auto; color: var(--muted); white-space: normal; }
+    .hint-stack {
+      flex: 1 0 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .toolbar .hint-stack .hint {
+      margin-left: 0;
+      line-height: 1.45;
+    }
+    .toolbar .hint-stack .hint:not([hidden]) { display: block; }
     .toolbar label.x-date {
       display: inline-flex;
       align-items: center;
@@ -970,7 +982,13 @@
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
             <label class="hint x-date" for="xDate"><span data-help-tip="列设置勾选「X日价」时生效。">X日</span><input id="xDate" type="date" /></label>
             <span class="export-scope" id="exportScope">当前导出：自选</span>
-            <span class="hint" id="queryHint">尚未查询</span>
+            <div class="hint-stack" id="hintStack">
+              <span class="hint" id="queryHint">尚未查询</span>
+              <span class="hint" id="queryHintPool" hidden></span>
+              <span class="hint" id="queryHintSort" hidden></span>
+              <span class="hint" id="queryHintExtra" hidden></span>
+              <span class="hint" id="queryHintExport" hidden></span>
+            </div>
           </div>
           <div id="queryAlert" class="query-alert" role="alert"></div>
           <div class="table-wrap">
@@ -1399,15 +1417,15 @@
       <h2><span>导出 Excel</span><span id="exportTitleMount"></span></h2>
       <div class="exp-confirm" id="expConfirm">正在读取当前选项…</div>
       <div class="exp-block">
-        <div class="exp-label">导出范围<span id="expScopeCount" class="exp-count"></span></div>
+        <div class="exp-label">要导出哪些股票<span id="expScopeCount" class="exp-count"></span></div>
         <div class="exp-opts" id="expScopeOpts"></div>
       </div>
       <div class="exp-block">
-        <div class="exp-label">数据新鲜度</div>
+        <div class="exp-label">数字从哪里来</div>
         <div class="exp-opts" id="expFreshOpts"></div>
       </div>
       <div class="exp-block">
-        <div class="exp-label">列</div>
+        <div class="exp-label">表格里放什么</div>
         <div class="exp-opts" id="expColOpts"></div>
       </div>
       <div class="exp-estimate" id="expEstimate"></div>
@@ -1528,29 +1546,16 @@
 
     // 除名称 / 代码外整张表都空 → 这不是渲染 bug，是没取到数，直接说清楚
     function warnIfAllEmpty(fields, rows) {
+      state.tableMostlyEmpty = false;
       const dataFields = (fields || []).filter((f) => f.key !== "name" && f.key !== "code");
-      if (!dataFields.length || !(rows || []).length) return;
+      if (!dataFields.length || !(rows || []).length || state.listOnly) return;
       const filled = dataFields.filter((f) =>
         (rows || []).some((r) => {
           const v = r ? r[f.key] : null;
           return v !== null && v !== undefined && v !== "" && v !== "—";
         })
       ).length;
-      if (filled > 0) return;
-      // 刚按左侧选中换上来的名单还没有行情，空列是正常的，不能当成取数失败。
-      if (state.listOnly) return;
-      const hint = document.getElementById("queryHint");
-      const mk = (saDebug.lastResult && saDebug.lastResult.market) || {};
-      const exhausted = mk.licence_exhausted_all || mk.status === "quota-exhausted";
-      if (hint) hint.textContent += exhausted ? " · 证书今日额度已用尽" : " · 取数失败：除名称 / 代码外全部为空";
-      if (state.emptyWarned) return;
-      state.emptyWarned = true;
-      if (exhausted) {
-        toast("证书今日额度已用尽：每日刷新池次日自动恢复，长期池用尽需重新添加。可在「证书池」查看剩余。");
-      } else {
-        toast("没取到任何字段：通常是证书额度用尽或网络不通。按 F12 打开控制台，执行 saDiag() 看详情");
-      }
-      dbg("整表为空：先看 saDebug.lastResult.market（探针状态、证书池），再执行 saDiag()");
+      state.tableMostlyEmpty = filled === 0;
     }
 
     // 一键诊断：出问题让用户直接跑这个，把输出贴出来
@@ -1650,6 +1655,12 @@
       // 中间列表同一时间只认一轮刷新。换池或再点刷新会把代数加一，旧轮次不得再改进度或表格。
       queryGen: 0,
       activeJobId: "",
+      // 同时成立的提示各占一行：表的进度、整池、排序、补资料、Excel 导出。
+      statusLines: { table: "尚未查询", pool: "", sort: "", extra: "", export: "" },
+      statusAction: "查询",
+      statusPool: "自选",
+      statusRole: "table",
+      exportHintLabel: "",
     };
 
     let toastTimer = 0;
@@ -2152,12 +2163,7 @@
         // 只排已经在表里的行。大池的下一页是按名单顺序切的，再向后端要一页也排不出整池名次，
         // 而且会把已经加载的后面几页丢掉。
         renderTable(state.fields, state.rowsRaw);
-        if (state.paged && state.sortKey) {
-          const hint = document.getElementById("queryHint");
-          const loaded = (state.rowsRaw || []).length;
-          const total = state.totalRows || loaded;
-          if (hint) hint.textContent = `已加载 ${loaded} / ${total} 只 · 排序只针对已加载的行`;
-        }
+        syncSortLine();
       });
     }
 
@@ -2302,13 +2308,15 @@
         ? state.fields
         : [{ key: "name", label: "名称" }, { key: "code", label: "代码" }];
       renderTable(fields, rows, { all: true });
-      const hint = document.getElementById("queryHint");
       const name = label || state.poolLabel || "";
-      if (hint) {
-        hint.textContent = state.listOnly
+      patchStatus({
+        pool: "",
+        sort: "",
+        extra: "",
+        table: state.listOnly
           ? `已显示「${name}」${rows.length} 只。点「刷新行情」更新这一列表的行情。`
-          : `${rows.length} 只 · ${name}`;
-      }
+          : `${rows.length} 只 · ${name}`,
+      });
     }
 
     async function selectPool(poolId) {
@@ -2547,11 +2555,7 @@
       const btn = state.loadingMore
         ? `<span>加载中…</span>`
         : `<button class="btn sm" type="button" id="tableMoreBtn">加载更多</button>`;
-      const sortNote = state.paged && state.sortKey ? "排序只针对已加载的行。" : "";
-      const exportNote = state.paged
-        ? `默认导出是整池 ${total} 只，会重新取数，不是只导已加载的 ${loaded} 只。`
-        : "";
-      el.innerHTML = `<span>已加载 ${loaded} / ${total} 只${state.paged ? "，继续往下滚会自动加载。" : "。"}${sortNote}${exportNote}</span>${btn}`;
+      el.innerHTML = `<span>已加载 ${loaded} / ${total} 只，往下滚继续加载。</span>${btn}`;
       const b = document.getElementById("tableMoreBtn");
       if (b) b.addEventListener("click", () => loadMorePage());
     }
@@ -2742,12 +2746,72 @@
     function pageRemainClause(elapsedMs, pageCount, remaining) {
       if (!pageCount || !remaining || remaining <= 0 || !elapsedMs || elapsedMs < 300) return "";
       const text = formatRemain((elapsedMs / pageCount) * remaining);
-      return text ? ` · 若按这一页的速度继续，剩下${text}` : "";
+      return text ? ` · 若后面每页也按这个速度，${text}` : "";
+    }
+
+    function statusHead() {
+      const action = state.statusAction || "查询";
+      const pool = state.statusPool || state.poolLabel || "";
+      return pool ? `${action} · ${pool}` : action;
+    }
+
+    function poolProgressLine(pageTotal, loaded, remain) {
+      const poolTotal = Number(state.totalRows) || 0;
+      const have = loaded != null ? loaded : (state.rowsRaw || []).length;
+      if (!poolTotal || (pageTotal && pageTotal >= poolTotal)) return "";
+      if (have >= poolTotal && !remain) return "";
+      let text = `这一池一共 ${poolTotal} 只`;
+      if (have > 0) text += `，已加载 ${have} 只`;
+      else if (pageTotal) text += `，本页共 ${pageTotal} 只`;
+      if (have > 0 && have < poolTotal) text += " · 往下滚继续";
+      if (remain) text += remain;
+      return text;
+    }
+
+    function finishStreamStatus(data, loaded, pageCount) {
+      const sec = ((data.elapsed_ms || 0) / 1000).toFixed(1);
+      const total = state.totalRows || loaded;
+      const remain = data.has_more
+        ? pageRemainClause(data.elapsed_ms || 0, pageCount || loaded, Math.max(0, total - loaded))
+        : "";
+      const head = statusHead();
+      if (state.statusRole === "extra") {
+        state.statusRole = "table";
+        patchStatus({
+          extra: "",
+          table: data.has_more
+            ? `${head} · 本页完成 · 这一页用时 ${sec} 秒`
+            : `查询 · ${state.statusPool || "自选"} · ${loaded} 只 · 用时 ${sec} 秒`,
+          pool: data.has_more ? poolProgressLine(pageCount, loaded, remain) : "",
+        });
+      } else if (state.streamKeepRows) {
+        patchStatus({
+          table: `${head} · ${loaded} 只 · 现价已更新 · 用时 ${sec} 秒`,
+          pool: "",
+          extra: "",
+        });
+      } else if (state.streamAppend && !data.has_more) {
+        patchStatus({
+          table: `全部加载完 · ${state.statusPool || ""} · ${loaded} 只 · 最后一页用时 ${sec} 秒`,
+          pool: "",
+        });
+      } else if (data.has_more) {
+        patchStatus({
+          table: `${head} · 本页完成 · 这一页用时 ${sec} 秒`,
+          pool: poolProgressLine(pageCount, loaded, remain),
+        });
+      } else {
+        patchStatus({
+          table: `${head} · ${loaded} 只 · 用时 ${sec} 秒`,
+          pool: "",
+        });
+      }
+      syncSortLine();
+      applyEmptyNote();
     }
 
     function handleStreamEvent(event, data, gen) {
       if (gen != null && !listQueryCurrent(gen)) return;
-      const hint = document.getElementById("queryHint");
       saDebug.streamEvents.push({
         event,
         rows: ((data && data.rows) || []).length,
@@ -2759,26 +2823,38 @@
         // meta.total 是整池行数（不是本页），据此决定是否启用虚拟滚动
         resetEtaClock();
         state.totalRows = data.total || state.totalRows || 0;
+        const head = statusHead();
+        const whole = Number(data.total) || 0;
+        if (state.statusRole === "extra") {
+          patchStatus({ extra: "正在补行业、股东和财务" });
+          return;
+        }
         if (state.streamAppend) {
           // 下一页先攒着，结束再接上。中途失败不能把半页写进表，否则下次 offset 会跳号。
           state.streamAppendMap = {};
-          if (hint) hint.textContent = "正在加载下一页…";
+          patchStatus({
+            table: `${head} · 正在加载本页`,
+            pool: poolProgressLine(0, (state.rowsRaw || []).length, ""),
+          });
           return;
         }
         if (state.streamKeepRows && (state.rowsRaw || []).length) {
           // 刷新不要先把名单换成骨架，也不要收成第一页再让人下滚。
           state.paged = false;
-          if (hint) hint.textContent = "正在更新现价…";
+          patchStatus({ table: `${head} · 正在更新现价` });
           return;
         }
         state.vscroll = wantVirtualScroll(state.totalRows, 0);
         renderSkeleton(data.fields || [], data.total || 0);
-        if (hint) hint.textContent = `共 ${data.total || 0} 只 · 正在取行情…`;
+        const paged = whole > PAGE_LIMIT;
+        patchStatus({
+          table: paged ? `${head} · 正在取本页现价` : `${head} · 共 ${whole} 只 · 正在取现价`,
+          pool: paged ? `这一池一共 ${whole} 只` : "",
+        });
         return;
       }
       if (event === "issue") {
         showQueryIssues(data.issues || []);
-        if (hint && (data.issues || []).length) hint.textContent = "查询遇到问题，详情在表格上方";
         return;
       }
       if (event === "batch") {
@@ -2799,15 +2875,25 @@
         return;
       }
       if (event === "progress") {
-        if (hint) {
-          const done = data.done || 0;
-          const total = data.total || 0;
-          const suffix = etaSuffix(done, total, data.stage || "full");
-          if (state.streamAppend) hint.textContent = `正在加载下一页 ${done}/${total}${suffix}`;
-          else if (state.streamKeepRows) hint.textContent = `正在更新现价 ${done}/${total}${suffix}`;
-          else if (data.stage === "quote") hint.textContent = `正在取行情 ${done}/${total}${suffix}`;
-          else hint.textContent = `已出 ${done}/${total} 只${suffix}`;
+        const done = data.done || 0;
+        const total = data.total || 0;
+        const suffix = etaSuffix(done, total, data.stage || "full");
+        if (state.statusRole === "extra") {
+          patchStatus({ extra: `正在补行业、股东和财务 ${done}/${total}${suffix}` });
+          return;
         }
+        const head = statusHead();
+        const pageIsPool = !state.totalRows || total >= state.totalRows;
+        let table;
+        if (state.streamAppend) table = `${head} · 本页 ${done}/${total}${suffix}`;
+        else if (state.streamKeepRows) table = `${head} · 现价 ${done}/${total}${suffix}`;
+        else if (data.stage === "quote") table = `${head} · ${pageIsPool ? "现价" : "本页现价"} ${done}/${total}${suffix}`;
+        else table = `${head} · ${pageIsPool ? "资料" : "本页资料"} ${done}/${total}${suffix}`;
+        const loaded = (state.rowsRaw || []).length;
+        patchStatus({
+          table,
+          pool: pageIsPool ? "" : poolProgressLine(total, loaded, ""),
+        });
         return;
       }
       if (event === "done") {
@@ -2817,7 +2903,7 @@
           state.streamAppendMap = null;
           if (!incoming.length) {
             state.paged = false;
-            if (hint) hint.textContent = "下一页没有返回新的股票";
+            patchStatus({ table: `${statusHead()} · 没有新的股票` });
             renderPagedHint();
             return;
           }
@@ -2826,19 +2912,7 @@
           renderTable(state.fields, incoming, { append: true });
           state.listOnly = (state.rowsRaw || []).every((r) => r.price == null || r.price === "");
           showQueryIssues(data.issues || []);
-          if (hint) {
-            const sec = ((data.elapsed_ms || 0) / 1000).toFixed(1);
-            const bad = (data.issues || []).length ? " · 有失败，见表格上方" : "";
-            const loaded = state.rowsRaw.length;
-            const total = state.totalRows || loaded;
-            const sortNote = state.sortKey && data.has_more ? " · 排序只针对已加载的行" : "";
-            const extra = data.has_more
-              ? pageRemainClause(data.elapsed_ms || 0, data.rows_count || incoming.length, Math.max(0, total - loaded))
-              : "";
-            hint.textContent = data.has_more
-              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒${extra} · 往下滚继续加载${sortNote}${bad}`
-              : `已加载全部 ${loaded} 只 · 用时 ${sec} 秒${bad}`;
-          }
+          finishStreamStatus(data, state.rowsRaw.length, data.rows_count || incoming.length);
           return;
         }
         state.listOnly = (state.rowsRaw || []).every((r) => r.price == null || r.price === "");
@@ -2848,23 +2922,7 @@
         state.tablePage = 1;
         renderTable(state.fields, state.rowsRaw, state.streamKeepRows ? { all: true } : undefined);
         showQueryIssues(data.issues || []);
-        if (hint) {
-          const sec = ((data.elapsed_ms || 0) / 1000).toFixed(1);
-          const bad = (data.issues || []).length ? " · 有失败，见表格上方" : "";
-          const loaded = state.rowsRaw.length;
-          const total = state.totalRows || loaded;
-          if (state.streamKeepRows) {
-            hint.textContent = `${loaded} 只 · 现价已更新 · 用时 ${sec} 秒${bad}`;
-          } else {
-            const sortNote = state.sortKey && data.has_more ? " · 排序只针对已加载的行" : "";
-            const extra = data.has_more
-              ? pageRemainClause(data.elapsed_ms || 0, data.rows_count || loaded, Math.max(0, total - loaded))
-              : "";
-            hint.textContent = data.has_more
-              ? `已加载 ${loaded} / ${total} 只 · 用时 ${sec} 秒${extra} · 往下滚继续加载${sortNote}${bad}`
-              : `${loaded} 只 · 用时 ${sec} 秒${bad}`;
-          }
-        }
+        finishStreamStatus(data, state.rowsRaw.length, data.rows_count || state.rowsRaw.length);
         return;
       }
       if (event === "error") {
@@ -2925,7 +2983,7 @@
     async function loadWatch() {
       const items = await api("/watchlist");
       renderWatch(items);
-      document.getElementById("queryHint").textContent = `自选 ${items.length} 只`;
+      patchStatus({ table: `自选 ${items.length} 只` });
     }
 
     function listQueryCurrent(gen) {
@@ -2942,11 +3000,74 @@
       return !!(err && err.name === "AbortError");
     }
 
+    function renderStatusLines() {
+      const map = [
+        ["table", "queryHint"],
+        ["pool", "queryHintPool"],
+        ["sort", "queryHintSort"],
+        ["extra", "queryHintExtra"],
+        ["export", "queryHintExport"],
+      ];
+      const lines = state.statusLines || {};
+      map.forEach(([key, id]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const text = lines[key] || "";
+        el.textContent = text;
+        el.hidden = !text;
+      });
+    }
+
+    function patchStatus(partial) {
+      if (!state.statusLines) {
+        state.statusLines = { table: "", pool: "", sort: "", extra: "", export: "" };
+      }
+      Object.keys(partial || {}).forEach((key) => {
+        state.statusLines[key] = partial[key] || "";
+      });
+      renderStatusLines();
+    }
+
     function setQueryHint(gen, text) {
       if (gen != null && !listQueryCurrent(gen)) return false;
-      const hint = document.getElementById("queryHint");
-      if (hint) hint.textContent = text;
+      const key = state.statusRole === "extra" ? "extra" : "table";
+      patchStatus({ [key]: text || "" });
       return true;
+    }
+
+    function syncSortLine() {
+      const loaded = (state.rowsRaw || []).length;
+      const total = state.totalRows || loaded;
+      const partial = Boolean(state.sortKey && state.paged && loaded < total);
+      patchStatus({ sort: partial ? "排序只排已经加载的这些" : "" });
+    }
+
+    function applyEmptyNote() {
+      if (!state.tableMostlyEmpty) return;
+      const note = "除名称和代码外是空的";
+      const cur = (state.statusLines && state.statusLines.table) || "";
+      if (!cur.includes(note)) patchStatus({ table: cur ? `${cur} · ${note}` : note });
+      if (state.emptyWarned) return;
+      state.emptyWarned = true;
+      const el = document.getElementById("queryAlert");
+      if (!el || (el.style.display === "block" && (el.textContent || "").trim())) return;
+      el.className = "query-alert warn";
+      el.style.display = "block";
+      el.textContent = "除名称和代码外没有取到内容";
+    }
+
+    function beginStatus(opts, refreshMode) {
+      const appending = Boolean(opts && opts.append);
+      const extra = Boolean(opts && opts.statusRole === "extra");
+      state.statusRole = extra ? "extra" : "table";
+      state.statusPool = state.poolLabel || "自选";
+      if (extra) state.statusAction = "补资料";
+      else if (appending) state.statusAction = "加载下一页";
+      else if (refreshMode === "full") state.statusAction = "全量更新";
+      else if (refreshMode === "quote") state.statusAction = "刷新行情";
+      else if (refreshMode === "snapshot") state.statusAction = "本机快照";
+      else state.statusAction = "查询";
+      if (!extra && !appending) patchStatus({ pool: "", sort: "", extra: "" });
     }
 
     // 新的一轮开始：旧流式请求断开，旧后台任务取消。之后只有这一轮可以改进度提示。
@@ -2993,14 +3114,10 @@
       return data;
     }
 
-    function paintQueryHint(text) {
-      const hint = document.getElementById("queryHint");
-      if (hint) hint.textContent = text;
-    }
-
     async function waitJob(jobId, gen) {
-      // 不带代数的是导出。列表查询只有当前轮次能写，避免两池进度来回跳。
+      // 不带代数的是导出，写在自己那一行。列表查询只改表的那一行。
       const exporting = gen == null;
+      const exportLabel = state.exportHintLabel ? `${state.exportHintLabel} ` : "";
       for (;;) {
         if (gen != null && !listQueryCurrent(gen)) throw querySupersededError();
         const data = await api("/query/jobs/" + jobId);
@@ -3009,18 +3126,19 @@
           if (exporting) {
             const total = data.total || data.progress || 0;
             const done = data.progress || total;
-            paintQueryHint(`Excel表格导出完成：${done}/${total}`);
+            patchStatus({ export: `Excel表格导出完成：${exportLabel}${done}/${total}` });
           }
           return data;
         }
         if (data.status === "cancelled") throw querySupersededError();
         if (data.status === "error") throw new Error(data.error || "任务失败");
-        if (exporting || listQueryCurrent(gen)) {
-          const done = data.progress || 0;
-          const total = data.total || "?";
-          paintQueryHint(exporting
-            ? `Excel表格导出进度：${done}/${total}`
-            : `任务进行中 · ${done}/${total}`);
+        const done = data.progress || 0;
+        const total = data.total || "?";
+        if (exporting) {
+          patchStatus({ export: `Excel表格导出进度：${exportLabel}${done}/${total}` });
+        } else if (listQueryCurrent(gen)) {
+          const key = state.statusRole === "extra" ? "extra" : "table";
+          patchStatus({ [key]: `${statusHead()} · ${done}/${total}` });
         }
         await new Promise((resolve) => setTimeout(resolve, 400));
       }
@@ -3264,13 +3382,19 @@
         if (codes && codes.length) state.lastQueryCodes = codes;
         else state.lastQueryCodes = null;
       }
-      if (!appending && !setQueryHint(gen, "查询中…")) throw querySupersededError();
-      if (!appending) showQueryIssues([]);
-      // 顶部指数先走：请求轻、返回快，让小板块先于大表刷新出来
-      if (!appending) loadBoard().catch(() => {});
       const refreshMode = o.refreshMode || "quote";
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       state.lastRefreshMode = refreshMode;
+      beginStatus(o, refreshMode);
+      if (!appending && state.statusRole !== "extra") {
+        if (!setQueryHint(gen, `${statusHead()} · 正在开始`)) throw querySupersededError();
+        showQueryIssues([]);
+        state.emptyWarned = false;
+      } else if (state.statusRole === "extra") {
+        patchStatus({ extra: "正在补行业、股东和财务" });
+      }
+      // 顶部指数先走：请求轻、返回快，让小板块先于大表刷新出来
+      if (!appending) loadBoard().catch(() => {});
       const payload = queryPayload(codes, {
         refreshMode,
         forceLive,
@@ -3316,6 +3440,7 @@
             state.tablePage = 1;
             renderTable(fields, data.rows || []);
           } else {
+            state.statusRole = "table";
             return; // 流式路径已自行渲染完成
           }
         } else {
@@ -3328,7 +3453,9 @@
         if (isQueryAbort(err) || !listQueryCurrent(gen)) {
           throw isQueryAbort(err) ? err : querySupersededError();
         }
-        setQueryHint(gen, "查询失败");
+        if (state.statusRole === "extra") patchStatus({ extra: "补资料没有完成" });
+        else setQueryHint(gen, `${state.statusAction || "查询"} · 没有完成`);
+        state.statusRole = "table";
         toast(err.message || "查询失败");
         throw err;
       }
@@ -3398,7 +3525,13 @@
       const qsrc = clock.source ? ` · 现价来自${quoteSourceLabel(clock.source)}` : "";
       const fetchIssue = quoteFetchIssue(data);
       const warn = fetchIssue ? ` · ${fetchIssue}` : "";
+      state.statusRole = "table";
       if (!setQueryHint(gen, `${data.rows.length} 只 · ${scope} · ${mode}${note}${qsrc}${asOf}${warn}`)) return;
+      if (state.paged && (data.rows || []).length < (state.totalRows || 0)) {
+        patchStatus({ pool: poolProgressLine(0, data.rows.length, "") });
+      }
+      syncSortLine();
+      applyEmptyNote();
       saDebug.lastResult = {
         pool: data.pool,
         refresh_mode: data.refresh_mode || refreshMode,
@@ -3621,9 +3754,9 @@
     });
 
     const EXPORT_FRESH = [
-      { id: "snapshot", label: "用上次快照", sub: "不消耗额度，几秒就好" },
-      { id: "cache", label: "缓存补全（推荐）", sub: "本机缓存直接用，只补缺的字段" },
-      { id: "full", label: "全部重拉", sub: "最准，也最费额度" },
+      { id: "snapshot", label: "用上次保存的表", sub: "不再重新查询，几秒就能下载" },
+      { id: "cache", label: "用已有的，缺的再补（推荐）", sub: "以前查过的直接用，只补还没有的" },
+      { id: "full", label: "全部重新查一遍", sub: "数字最新，但最慢，也最费查询次数" },
     ];
 
     function expOptHtml(name, item, checked, disabled, why) {
@@ -3651,26 +3784,39 @@
       return (pool && pool.count) || 0;
     }
 
-    function expEstimate(n, mode, hasSnapshot, cacheWarm) {
+    function exportFieldGroups(cols) {
+      const catalog = state.fieldCatalog || [];
+      if (cols === "watch" || cols === "research") {
+        const def = (state.colPresetDefs || []).find((p) => p.id === cols);
+        const keys = new Set((def && def.fields) || []);
+        if (keys.size && catalog.length) {
+          return new Set(catalog.filter((f) => keys.has(f.key)).map((f) => f.group));
+        }
+      }
+      return new Set((state.fields || []).map((f) => f.group));
+    }
+
+    function expEstimate(n, mode, hasSnapshot, cacheWarm, cols) {
       if (mode === "snapshot") {
-        return { level: "不消耗额度", text: "直接读本机上次的表快照，不向数据方发请求，几秒完成。" };
+        return { level: "马上就能下", text: "直接用上次保存的表格，不用再查询，几秒钟就能下载。" };
       }
       if (mode === "cache") {
         if (hasSnapshot || cacheWarm) {
-          return { level: "少量", text: "本机已缓存的字段直接用，只补缺的几项。" };
+          return { level: "只补缺少的", text: "以前查过的内容直接用，只补还没有的。" };
         }
-        return { level: "较多", text: "本机还没有缓存，这次实际会按全量拉取一遍。" };
+        return { level: "这次会查很多", text: "电脑里还没有这批数据，这次会把要导出的内容都查一遍。" };
       }
-      const groups = new Set((state.fields || []).map((f) => f.group));
+      const groups = exportFieldGroups(cols);
       const slow = ["profile", "holders", "finance", "flow", "bottom"].filter((g) => groups.has(g)).length;
-      let level = "很少";
-      if (slow >= 3) level = "大量";
-      else if (slow === 2) level = "较多";
-      else if (slow === 1) level = "中等";
-      const extra = n > 40 ? "　只数超过 40，会自动转成后台任务，导出中不要关窗口。" : "";
+      let level = "查得很少";
+      if (slow >= 3) level = "查得很多";
+      else if (slow === 2) level = "查得比较多";
+      else if (slow === 1) level = "查得不算少";
+      const extra = n > 40 ? "超过 40 只时会在后台慢慢做，完成前请不要关掉这个页面。" : "";
+      const what = slow ? "财务、股东、公司业务这些比较慢的内容" : "现价、涨跌和估值";
       return {
         level,
-        text: `会重新拉取每只票的${slow ? "财务 / 股东 / 主营 / 日线等慢字段" : "行情"}，大致是「${level}」这个量级；额度有限，不要反复点。${extra}`,
+        text: `每只股票都会重新查${what}。查询次数有限，不要反复点。${extra}`,
       };
     }
 
@@ -3691,6 +3837,7 @@
         health = h.market || h;
         prefs = p;
         state.colPresetDefs = p.presets || state.colPresetDefs || [];
+        if (p.all) state.fieldCatalog = p.all;
       } catch (err) {
         toast(err.message);
       }
@@ -3702,9 +3849,9 @@
       const pageCount = displayedQueryRows().length;
 
       const scopeOpts = [
-        { id: "pool", label: `当前池（${state.poolLabel || "自选"}）`, sub: searchCount ? "" : `共 ${n} 只` },
-        { id: "search", label: "搜索结果（筛选一次）", sub: searchCount ? `${searchCount} 只` : "", disabled: !searchCount },
-        { id: "page", label: "仅当前已显示的", sub: `${pageCount} 只`, disabled: !pageCount || n <= pageCount, why: pageCount && n <= pageCount ? "已经是整池，和「当前池」相同" : "当前没有可导的范围" },
+        { id: "pool", label: `整份名单（${state.poolLabel || "自选"}）`, sub: searchCount ? "左侧现在选中的全部股票" : `左侧现在选中的全部股票，一共 ${n} 只` },
+        { id: "search", label: "刚才查出来的", sub: searchCount ? `只含这次查到的 ${searchCount} 只` : "", disabled: !searchCount, why: "现在没有单独查出来的结果" },
+        { id: "page", label: "屏幕上已经出来的", sub: `还没往下加载的不算，一共 ${pageCount} 只`, disabled: !pageCount || n <= pageCount, why: pageCount && n <= pageCount ? "已经全部显示了，和第一项是同一批" : "屏幕上还没有股票" },
       ];
       document.getElementById("expScopeOpts").innerHTML = scopeOpts.map((it, i) =>
         expOptHtml("expScope", it, i === 0, it.disabled, it.why || "当前没有可导的范围")
@@ -3713,19 +3860,19 @@
 
       document.getElementById("expFreshOpts").innerHTML = EXPORT_FRESH.map((it) => {
         const disabled = it.id === "snapshot" && !hasSnapshot;
-        const why = "还没有快照，请先点一次「查询」生成";
+        const why = "还没有保存过。先点一次「查询」，这项才能用";
         return expOptHtml("expFresh", it, it.id === "cache", disabled, why);
       }).join("");
 
       const colOpts = [
-        { id: "current", label: "用当前列设置", sub: `${(state.fields || []).length} 列` },
-        { id: "watch", label: "看盘预设", sub: "只行情列" },
-        { id: "research", label: "研究预设", sub: "行业、主营、流通股东、财务" },
+        { id: "current", label: "和屏幕上一样", sub: `就用你现在勾选的栏目，共 ${(state.fields || []).length} 项` },
+        { id: "watch", label: "只要价格", sub: "名称、代码、现价、涨跌、市盈率、市净率" },
+        { id: "research", label: "要详细资料", sub: "再加上行业、概念、公司做什么、股东和财务" },
       ];
       document.getElementById("expColOpts").innerHTML = colOpts.map((it, i) =>
         expOptHtml("expCols", it, i === 0, false, "")
       ).join("");
-      document.getElementById("exportTitleMount").innerHTML = helpTip("导出会按你选的范围与新鲜度取数，并写入档案库（每人保留最近 20 份）。列越多、只数越多，向数据方发的请求越多。");
+      document.getElementById("exportTitleMount").innerHTML = helpTip("按下面三项做一张表，并留在档案库里（每人最多留最近 20 份）。股票越多、栏目越多，越慢。");
 
       ["expScope", "expFresh", "expCols"].forEach((name) => {
         document.querySelectorAll(`input[name="${name}"]`).forEach((el) => {
@@ -3747,7 +3894,7 @@
       if (health && health.status === "probe-failed") notes.push("行情探针失败（可能是证书额度用尽或网络不通），导出的表会大片空白。");
       if (health && (health.sample_only || health.status === "demo-licence")) notes.push("当前只能用演示样本，导出的是样本数据。");
       if (notes.length) {
-        const tip = hasSnapshot ? "　建议改选「用上次快照」。" : "";
+        const tip = hasSnapshot ? "　建议改选「用上次保存的表」。" : "";
         warn.innerHTML = notes.join("<br />") + tip;
         warn.style.display = "block";
       }
@@ -3756,16 +3903,17 @@
     function exportDescribe() {
       const o = state.exportOpts || { scope: "pool", fresh: "cache", cols: "current" };
       const pool = state.poolLabel || "自选";
-      const content = o.cols === "watch" ? "看盘" : (o.cols === "research" ? "研究" : "当前列");
-      const fresh = o.fresh === "snapshot" ? "上次快照" : (o.fresh === "full" ? "全部重拉" : "缓存补全");
-      let sentence = `是否确认导出「${pool}」的「${content}」信息？`;
-      let fileParts = [pool, content];
+      const content = o.cols === "watch" ? "只要价格" : (o.cols === "research" ? "要详细资料" : "和屏幕上一样");
+      const fileContent = o.cols === "watch" ? "只要价格" : (o.cols === "research" ? "详细资料" : "当前栏目");
+      const fresh = o.fresh === "snapshot" ? "上次保存的表" : (o.fresh === "full" ? "全部重新查一遍" : "已有的，缺的再补");
+      let sentence = `要导出「${pool}」里的全部股票吗？`;
+      let fileParts = [pool, fileContent];
       if (o.scope === "search") {
-        sentence = `是否确认导出「${pool}」搜索结果的「${content}」信息？`;
-        fileParts = [pool, "搜索结果", content];
+        sentence = `要导出刚才在「${pool}」里查出来的股票吗？`;
+        fileParts = [pool, "查询结果", fileContent];
       } else if (o.scope === "page") {
-        sentence = `是否确认导出「${pool}」里当前已显示的「${content}」信息？`;
-        fileParts = [pool, "当前已显示", content];
+        sentence = `要导出「${pool}」里屏幕上已经出来的股票吗？`;
+        fileParts = [pool, "已显示", fileContent];
       }
       return { sentence, fresh, content, fileStem: fileParts.join("_") };
     }
@@ -3783,7 +3931,7 @@
       })();
       box.innerHTML =
         `<div class="ask">${escHtml(desc.sentence)}</div>` +
-        `<div>共 ${n || 0} 只，按「${escHtml(desc.fresh)}」取「${escHtml(desc.content)}」列。</div>` +
+        `<div>一共 ${n || 0} 只。数字用「${escHtml(desc.fresh)}」，表格放「${escHtml(desc.content)}」。</div>` +
         `<div class="file">文件名：导出时间_${escHtml(desc.fileStem)}.xlsx</div>`;
     }
 
@@ -3796,13 +3944,13 @@
       const count = o.scope === "search" ? (state.lastQueryCodes || []).length
         : (o.scope === "page" ? displayedQueryRows().length : n);
       const snap = state.exportSnapshot || {};
-      const info = expEstimate(count, o.fresh, hasSnapshot, Boolean(snap && snap.has_snapshot));
+      const info = expEstimate(count, o.fresh, hasSnapshot, Boolean(snap && snap.has_snapshot), o.cols);
       let text = `<b>${escHtml(info.level)}</b> · 约 ${count} 只<br />${escHtml(info.text)}`;
       if (o.fresh === "snapshot" && hasSnapshot) {
-        text += `<br />快照时间：${escHtml(snap.saved_at || "—")}${snap.count ? `，${snap.count} 行` : ""}`;
+        text += `<br />上次保存：${escHtml(snap.saved_at || "—")}${snap.count ? `，${snap.count} 行` : ""}`;
       }
       if (o.scope === "page" && n > count) {
-        text += `<br /><b>只导当前显示的 ${count} 只</b>（共 ${n} 只）；要导全部请改选「当前池」。`;
+        text += `<br /><b>只导出屏幕上这 ${count} 只</b>（这一批一共 ${n} 只）。要全部导出，请改选「整份名单」。`;
       }
       est.innerHTML = text;
     }
@@ -3825,6 +3973,7 @@
       if (!payload.codes || !payload.codes.length) delete payload.codes;
       const xDate = (document.getElementById("xDate").value || "").trim();
       if (xDate) payload.x_date = xDate.replace(/-/g, "");
+      state.exportHintLabel = exportDescribe().fileStem || state.poolLabel || "";
       payload.refresh_mode = o.fresh;
       payload.force_live = o.fresh === "full";
       payload.export_label = exportDescribe().fileStem;
@@ -3840,6 +3989,7 @@
     }
 
     async function exportXlsx() {
+      state.exportHintLabel = state.poolLabel || "";
       const payload = queryPayload(
         state.lastQueryCodes && state.lastQueryCodes.length ? state.lastQueryCodes : null,
         { refreshMode: "full", forceLive: true }
@@ -4335,9 +4485,7 @@
         return;
       }
       if (!wantsSlow) return;
-      const hint = document.getElementById("queryHint");
-      if (hint) hint.textContent = "已显示行情列，正在后台补齐行业、股东和财务…";
-      runQuery(null, { refreshMode: "cache", forceLive: false, stream: true })
+      runQuery(null, { refreshMode: "cache", forceLive: false, stream: true, statusRole: "extra" })
         .then(() => toast("行业、股东和财务已补齐"))
         .catch(() => {});
     }
@@ -4439,7 +4587,7 @@
         return;
       }
       try {
-        await runQuery(codes, { refreshMode: "cache", forceLive: false, stream: true, limit: PAGE_LIMIT, gen });
+        await runQuery(codes, { refreshMode: "cache", forceLive: false, stream: true, limit: PAGE_LIMIT, gen, statusRole: "extra" });
       } catch (e) {
         if (stopped(e)) return;
         toastQueryError(quoteErr || e);
@@ -4451,6 +4599,7 @@
       try {
         await doExport();
       } catch (err) {
+        patchStatus({ export: "Excel表格导出没有完成" });
         toast(err.message || "导出失败");
       }
     });
@@ -4624,10 +4773,22 @@
       if ((follows || removed) && state.totalRows) state.totalRows = Math.max(0, state.totalRows - 1);
       if (removed) renderTable(state.fields, next);
       else if (state.paged || state.vscroll) renderPagedHint((state.rowsRaw || []).length);
-      const hint = document.getElementById("queryHint");
-      if (hint && (follows || removed)) {
+      if (follows || removed) {
         const n = state.totalRows || (state.rowsRaw || []).length;
-        hint.textContent = follows ? `${n} 只 · 自选` : `${(state.rowsRaw || []).length} 只 · 筛选一次`;
+        const cur = (state.statusLines && state.statusLines.table) || "";
+        let nextText = follows ? `${n} 只 · 自选` : `${(state.rowsRaw || []).length} 只 · 筛选一次`;
+        if (cur && /只/.test(cur)) {
+          if (/(\d+)\s*\/\s*(\d+)\s*只/.test(cur)) {
+            nextText = cur.replace(/(\d+)\s*\/\s*(\d+)(?=\s*只)/, (m, a, b) => {
+              const loaded = Math.max(0, Number(a) - 1);
+              const total = Math.max(loaded, Number(b) - 1);
+              return `${loaded}/${total}`;
+            });
+          } else {
+            nextText = cur.replace(/\d+(?=\s*只)/, String(n));
+          }
+        }
+        patchStatus({ table: nextText });
       }
     }
 

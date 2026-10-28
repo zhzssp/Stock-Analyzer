@@ -153,11 +153,14 @@ def test_workbench_pct_column_sorts_index_constituents():
     # 导出选项弹窗：范围 / 新鲜度 / 列 + 预估与警告
     assert 'id="exportMask"' in html
     assert 'id="expConfirm"' in html
-    assert "是否确认导出" in html
+    assert "要导出" in html
     assert "export_label" in html
     assert 'id="expFreshOpts"' in html
-    assert "用上次快照" in html
-    assert "全部重拉" in html
+    assert "用上次保存的表" in html
+    assert "全部重新查一遍" in html
+    assert "要导出哪些股票" in html
+    assert "数字从哪里来" in html
+    assert "表格里放什么" in html
     assert "function renderExportHint" in html
     assert 'id="colPresets"' in html
     assert "预设「看盘」" in html
@@ -191,16 +194,18 @@ def test_query_hint_estimates_remaining_time():
     assert "function formatRemain" in html
     assert "function etaSuffix" in html
     assert "正在估算剩余时间" in html
-    assert "若按这一页的速度继续，剩下" in html
-    assert "正在更新现价 ${done}/${total}${suffix}" in html
-    assert "已出 ${done}/${total} 只${suffix}" in html
+    assert "若后面每页也按这个速度，" in html
+    assert "现价 ${done}/${total}${suffix}" in html
+    assert '"本页资料"} ${done}/${total}${suffix}' in html
+    assert 'id="queryHintExport"' in html
+    assert "function renderStatusLines" in html
 
 
 def test_export_job_hint_names_excel_progress():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert "Excel表格导出进度：" in html
     assert "Excel表格导出完成：" in html
-    assert "任务进行中 ·" in html
+    assert "任务进行中" not in html
 
 
 def test_decision_card_overlay_sits_above_sticky_table_headers():
