@@ -183,9 +183,12 @@ class QueryEngine:
                 force_live=force_live,
                 extra_codes=quote_extra,
                 on_quote_progress=on_quote_progress,
+                cancel=cancel,
             )
         self.last_clock_meta = clock_meta
-        self._note_quote_gap(instruments, quotes, clock_meta, "quote" in need, on_issue)
+        cancelled = cancel is not None and getattr(cancel, "is_set", lambda: False)()
+        if not cancelled:
+            self._note_quote_gap(instruments, quotes, clock_meta, "quote" in need, on_issue)
 
         if on_quotes is not None:
             # 现价是批量取的（1~3 次请求），这里就已经有全部行的行情；
@@ -224,6 +227,41 @@ class QueryEngine:
                     on_quotes(fast_rows)
                 except Exception:
                     pass
+
+        def rows_with_price() -> list[dict]:
+            priced: list[dict] = []
+            for inst in instruments:
+                quote = quotes.get(inst.code6) or {}
+                if quote.get("p") in (None, ""):
+                    continue
+                bag = {
+                    "quote": quote,
+                    "profile": {},
+                    "holders": {},
+                    "finance": {},
+                    "flow": {},
+                    "bottom": {},
+                    "indicators": {},
+                    "x_price": None,
+                    "card": derive_card_metrics(quote.get("p"), (cards or {}).get(inst.code6), None),
+                }
+                row = {
+                    "code6": inst.code6,
+                    "code_full": inst.code_full,
+                    "name": inst.name,
+                    "market": inst.market,
+                    "as_of": quote.get("as_of") or clock_meta.get("as_of") or "",
+                    "quote_source": quote.get("source") or clock_meta.get("source") or "",
+                }
+                for spec in specs:
+                    row[spec.key] = self._value(spec.key, inst, bag)
+                priced.append(row)
+            return priced
+
+        if cancel is not None and getattr(cancel, "is_set", lambda: False)():
+            # 现价被换掉或页面断开：已有价格留下，没取到的不写进行，慢字段不再打。
+            self.last_slow_cache = {}
+            return rows_with_price()
 
         def new_bag(inst: Instrument) -> dict[str, Any]:
             return {

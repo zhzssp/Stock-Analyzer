@@ -208,6 +208,39 @@ def test_export_job_hint_names_excel_progress():
     assert "任务进行中" not in html
 
 
+def test_query_buttons_peek_selected_columns():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert 'data-action-peek="cache"' in html
+    assert 'data-action-peek="quote"' in html
+    assert 'data-action-peek="full"' in html
+    assert "function rememberColumnChoice" in html
+    assert "function chosenFieldList" in html
+    assert "function actionPeekBlocks" in html
+    assert "QUOTE_REFRESH_KEYS" in html
+    assert "这些列会重做一遍。本机已有的直接用，缺的才去要。" in html
+    assert "不换名单，只更新这些行情列。" in html
+    assert "这些列全部重新向数据源要，不用本机已经存好的。" in html
+    assert "本机今天已经有的就直接用" not in html
+    assert html.count('tag.className = "peek-tag"') >= 2
+
+
+def test_repeat_click_does_not_start_another_round():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert "function sameListFlight" in html
+    assert "exportBusy" in html
+    assert "这一轮还在进行" in html
+    assert "导出还在进行" in html
+    assert "等上一轮结束" in html
+    assert "导出排队，等当前刷新结束" in html
+    assert "已经有一份导出在进行" in html
+    refresh = html.split('getElementById("refreshBtn")', 1)[1].split("exportBtn", 1)[0]
+    assert refresh.index("sameListFlight") < refresh.index("supersedeListQuery")
+    query = html.split("async function runQuery", 1)[1].split("async function downloadArtifact", 1)[0]
+    assert query.index("sameListFlight") < query.index("supersedeListQuery")
+    start = html.split('getElementById("expStart").addEventListener', 1)[1][:900]
+    assert start.index("exportBusy") < start.index("closeExport")
+
+
 def test_decision_card_overlay_sits_above_sticky_table_headers():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert "isolation: isolate;" in html

@@ -20,6 +20,8 @@ class QueryJob:
     result: dict[str, Any] = field(default_factory=dict)
     # 换池或再点刷新时由接口置位。取数循环看到它就停，不再给已经离开的那一池打行情。
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    # queued：还在等这一用户上一轮查询结束。running：已经在取数或写表。
+    phase: str = "running"
 
 
 class JobStore:
@@ -62,6 +64,12 @@ class JobStore:
             job.status = "error"
             job.error = error
 
+    def set_phase(self, job_id: str, phase: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job and job.status == "running":
+                job.phase = phase
+
     def advance(self, job_id: str, step: int = 1) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -97,6 +105,7 @@ def job_payload(job: QueryJob) -> dict:
         "total": job.total,
         "error": job.error,
         "created_at": job.created_at,
+        "phase": job.phase,
     }
     if job.status == "done":
         body.update(job.result)

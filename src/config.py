@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     probe_budget_sec: float = 20.0
     # 查询时并发取数的线程数（逐只并行拉慢字段）。保守值 4：够快又不撞数据方限频。
     query_workers: int = 4
+    # 现价从逐只升回按批之前，要连续成功这么多只。失败后再升级，间隔会加倍，最多 240。
+    quote_batch_upgrade_after: int = 60
     # 取数调度方式：True = 按「字段块」粒度并发（一只票的多个字段同时拉，长尾更短）；
     # False = 退回按只并发。开关只是调度粒度，在飞请求数都不超过 query_workers。
     query_task_pool: bool = True

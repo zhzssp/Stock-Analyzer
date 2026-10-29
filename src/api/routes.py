@@ -47,6 +47,16 @@ from src.market.clock import (
 from src.market.normalize import infer_market
 from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, MonitorPref, User, UserRule, WatchItem
 from src.platform.export_xlsx import write_query_xlsx
+from src.platform.flight import (
+    FlightBusy,
+    FlightSuperseded,
+    claim_export,
+    export_slot,
+    finish,
+    needs_wait,
+    query_slot,
+    wake,
+)
 from src.platform.jobs import job_payload as bg_job_payload, jobs
 from src.platform.runtime_profile import LITE_DETAIL, agents_enabled, apply as apply_runtime, public as runtime_public
 from src.platform.monitor_prefs import pref_payload, save_pref
@@ -122,6 +132,9 @@ class QueryIn(BaseModel):
     sort_dir: str = "desc"
     # 导出确认句对应的文件名说明，如「沪市全部_看盘」。只影响文件名，不改变取数范围。
     export_label: str = ""
+    # 列表上的查询、刷新、全量更新带上它：换掉这一用户正在跑的查询。
+    # 看一只股票的详情不带，只排队，不把整板刷新掐掉。
+    replace_running: bool = False
 
 
 class DiffIn(BaseModel):
@@ -863,11 +876,8 @@ def _execute_query(
     # 整池查完才整份替换。只查到一页、或中途停下时，把已组装完的行并进未完成快照。
     # 临时代码（详情、只看这一只）不写。整批失败不覆盖已有的完整快照。
     fatal = any(item.get("level") == "error" for item in out["issues"])
-    stopped_early = bool(
-        cancel is not None
-        and getattr(cancel, "is_set", lambda: False)()
-        and (not pool_total or len(ordered) < int(pool_total))
-    )
+    # 取消时一律按提前停下合并，哪怕行数已经凑满。空的最新价不能整表盖掉上一份快照。
+    stopped_early = bool(cancel is not None and getattr(cancel, "is_set", lambda: False)())
     if mode in ("cache", "full") and persist_snapshot and pool_id != "codes" and ordered and not fatal:
         if snapshot_partial or stopped_early:
             from src.query.snapshot import merge_partial_snapshot
@@ -916,55 +926,63 @@ def _execute_query(
     return out
 
 
+def _decorate_query_result(result: dict, body: QueryIn, meta: dict) -> dict:
+    mode = (body.refresh_mode or "full").strip().lower()
+    result["sample"] = meta.get("sample", False)
+    result["note"] = meta.get("note") or ""
+    result["pool_id"] = meta.get("id")
+    result["force_live"] = body.force_live
+    result["refresh_mode"] = mode
+    return result
+
+
 def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
     from src.platform.concepts import extra_for
 
     insts, fields, pool_name, meta, cards = _prepare_query(body, user, db)
     extra = extra_for(db, user)
+    mode = (body.refresh_mode or "full").strip().lower()
+    market_work = mode != "snapshot"
     use_job = body.async_mode or len(insts) > settings.query_sync_limit
-    if not use_job:
-        result = _execute_query(
-            insts,
-            fields,
-            do_export,
-            pool_name,
-            user.id,
-            cards,
-            writer=user.username,
-            concept_extra=extra,
-            x_date=body.x_date,
-            force_live=body.force_live,
-            refresh_mode=body.refresh_mode,
-            offset=body.offset,
-            limit=body.limit,
-            sort_key=body.sort_key,
-            sort_dir=body.sort_dir,
-            file_label=body.export_label,
-            pool_id=meta.get("id") or "watch",
-        )
-        result["sample"] = meta.get("sample", False)
-        result["note"] = meta.get("note") or ""
-        result["pool_id"] = meta.get("id")
-        result["force_live"] = body.force_live
-        result["refresh_mode"] = (body.refresh_mode or "full").strip().lower()
-        return result
-    snapshot = list(insts)
-    job_offset = max(0, int(body.offset or 0))
-    job_limit = int(body.limit or 0)
-    page = snapshot
-    if job_limit > 0:
-        page = snapshot[job_offset : job_offset + job_limit]
-    # 只算请求的这一页。整池有几千只时，不能在返回前把全部财务、股东都拉完，进度才会一直停在 0。
-    covers_pool = job_limit <= 0 or (job_offset == 0 and len(snapshot) <= job_limit)
-    job = jobs.create("export" if do_export else "query", meta.get("id") or body.pool, len(page))
-
-    def worker():
+    replace = bool(body.replace_running) and int(body.offset or 0) <= 0
+    pool_id = meta.get("id") or "watch"
+    export_token = None
+    if do_export and market_work:
         try:
-            def on_row(_row: dict) -> None:
-                jobs.advance(job.id)
+            export_token = claim_export(user.id)
+        except FlightBusy as exc:
+            raise HTTPException(status_code=409, detail="已经有一份导出在进行") from exc
+        if not use_job and not needs_wait(user.id):
+            try:
+                with export_slot(export_token):
+                    result = _execute_query(
+                        insts,
+                        fields,
+                        True,
+                        pool_name,
+                        user.id,
+                        cards,
+                        writer=user.username,
+                        concept_extra=extra,
+                        x_date=body.x_date,
+                        force_live=body.force_live,
+                        refresh_mode=body.refresh_mode,
+                        offset=body.offset,
+                        limit=body.limit,
+                        sort_key=body.sort_key,
+                        sort_dir=body.sort_dir,
+                        file_label=body.export_label,
+                        pool_id=pool_id,
+                        cancel=export_token.cancel,
+                    )
+                return _decorate_query_result(result, body, meta)
+            except FlightSuperseded as exc:
+                raise HTTPException(status_code=409, detail="这一轮已被替换") from exc
 
+    if not use_job and export_token is None:
+        if not market_work:
             result = _execute_query(
-                page,
+                insts,
                 fields,
                 do_export,
                 pool_name,
@@ -975,32 +993,117 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                 x_date=body.x_date,
                 force_live=body.force_live,
                 refresh_mode=body.refresh_mode,
-                on_row=on_row,
+                offset=body.offset,
+                limit=body.limit,
                 sort_key=body.sort_key,
                 sort_dir=body.sort_dir,
                 file_label=body.export_label,
-                pool_id=meta.get("id") or "watch",
-                persist_snapshot=(meta.get("id") or "") != "codes" and covers_pool,
-                snapshot_partial=not covers_pool,
-                pool_total=len(snapshot),
-                cancel=job.cancel_event,
+                pool_id=pool_id,
             )
-            result["total"] = len(snapshot)
-            result["offset"] = job_offset
-            result["limit"] = job_limit or len(snapshot)
-            result["has_more"] = job_offset + len(page) < len(snapshot)
-            result["count"] = len(result.get("rows") or [])
-            result["sample"] = meta.get("sample", False)
-            result["note"] = meta.get("note") or ""
-            result["pool_id"] = meta.get("id")
-            result["refresh_mode"] = (body.refresh_mode or "full").strip().lower()
+            return _decorate_query_result(result, body, meta)
+        try:
+            with query_slot(user.id, replace=replace) as token:
+                result = _execute_query(
+                    insts,
+                    fields,
+                    False,
+                    pool_name,
+                    user.id,
+                    cards,
+                    writer=user.username,
+                    concept_extra=extra,
+                    x_date=body.x_date,
+                    force_live=body.force_live,
+                    refresh_mode=body.refresh_mode,
+                    offset=body.offset,
+                    limit=body.limit,
+                    sort_key=body.sort_key,
+                    sort_dir=body.sort_dir,
+                    file_label=body.export_label,
+                    pool_id=pool_id,
+                    cancel=token.cancel,
+                )
+            return _decorate_query_result(result, body, meta)
+        except FlightSuperseded as exc:
+            raise HTTPException(status_code=409, detail="这一轮已被替换") from exc
+
+    snapshot_rows = list(insts)
+    job_offset = max(0, int(body.offset or 0))
+    job_limit = int(body.limit or 0)
+    page = snapshot_rows
+    if job_limit > 0:
+        page = snapshot_rows[job_offset : job_offset + job_limit]
+    # 只算请求的这一页。整池有几千只时，不能在返回前把全部财务、股东都拉完，进度才会一直停在 0。
+    covers_pool = job_limit <= 0 or (job_offset == 0 and len(snapshot_rows) <= job_limit)
+    job = jobs.create("export" if do_export else "query", meta.get("id") or body.pool, len(page))
+    if export_token is not None:
+        export_token.cancel = job.cancel_event
+    if needs_wait(user.id):
+        jobs.set_phase(job.id, "queued")
+
+    def worker() -> None:
+        try:
+            def on_row(_row: dict) -> None:
+                jobs.advance(job.id)
+
+            def queued() -> None:
+                jobs.set_phase(job.id, "queued")
+
+            def run(active_cancel: Any) -> dict:
+                result = _execute_query(
+                    page,
+                    fields,
+                    do_export,
+                    pool_name,
+                    user.id,
+                    cards,
+                    writer=user.username,
+                    concept_extra=extra,
+                    x_date=body.x_date,
+                    force_live=body.force_live,
+                    refresh_mode=body.refresh_mode,
+                    on_row=on_row,
+                    sort_key=body.sort_key,
+                    sort_dir=body.sort_dir,
+                    file_label=body.export_label,
+                    pool_id=pool_id,
+                    persist_snapshot=pool_id != "codes" and covers_pool,
+                    snapshot_partial=not covers_pool,
+                    pool_total=len(snapshot_rows),
+                    cancel=active_cancel,
+                )
+                result["total"] = len(snapshot_rows)
+                result["offset"] = job_offset
+                result["limit"] = job_limit or len(snapshot_rows)
+                result["has_more"] = job_offset + len(page) < len(snapshot_rows)
+                result["count"] = len(result.get("rows") or [])
+                return _decorate_query_result(result, body, meta)
+
+            if export_token is not None:
+                with export_slot(export_token, on_queued=queued):
+                    jobs.set_phase(job.id, "running")
+                    result = run(export_token.cancel)
+            elif market_work:
+                with query_slot(user.id, job.cancel_event, on_queued=queued, replace=replace) as token:
+                    jobs.set_phase(job.id, "running")
+                    result = run(token.cancel)
+            else:
+                result = run(job.cancel_event)
             jobs.finish(job.id, result)
+        except FlightSuperseded:
+            current = jobs.get(job.id)
+            if current is not None and current.status == "running":
+                jobs.request_cancel(job.id)
         except Exception as exc:
             from src.query.issues import friendly_failure
 
             jobs.fail(job.id, friendly_failure(exc))
 
-    jobs.spawn(worker)
+    try:
+        jobs.spawn(worker)
+    except BaseException:
+        finish(export_token)
+        raise
     return bg_job_payload(job)
 
 
@@ -1037,6 +1140,8 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     pool_id = meta.get("id") or "watch"
     start = max(0, int(body.offset or 0))
     page_limit = int(body.limit or 0)
+    stream_mode = (body.refresh_mode or "full").strip().lower()
+    replace = bool(body.replace_running) and start == 0
     # 一页刚好装下整池（自选通常远小于页大小）仍是整表，整份替换快照。
     # 大池只算了一段时不覆盖：把这页已经组装完的行并进未完成快照。
     covers_pool = page_limit <= 0 or (start == 0 and total_insts <= page_limit)
@@ -1063,8 +1168,11 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
         def on_quote_progress(done: int, total: int) -> None:
             out.put(("progress", {"done": done, "total": total, "stage": "quote"}))
 
-        try:
-            result = _execute_query(
+        def on_queued() -> None:
+            out.put(("progress", {"done": 0, "total": max(len(insts), 1), "stage": "queued"}))
+
+        def run(active_cancel: Any) -> dict:
+            return _execute_query(
                 insts,
                 fields,
                 False,
@@ -1084,8 +1192,15 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 pool_id=pool_id,
                 snapshot_partial=not covers_pool,
                 pool_total=total_insts,
-                cancel=cancel,
+                cancel=active_cancel,
             )
+
+        try:
+            if stream_mode == "snapshot":
+                result = run(cancel)
+            else:
+                with query_slot(user.id, cancel, on_queued=on_queued, replace=replace):
+                    result = run(cancel)
             out.put((
                 "done",
                 {
@@ -1096,6 +1211,8 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                     "issues": result.get("issues") or [],
                 },
             ))
+        except FlightSuperseded:
+            pass
         except Exception as exc:  # noqa: BLE001 - 流式中途出错也要让前端收尾
             from src.query.issues import friendly_failure
 
@@ -1111,6 +1228,7 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
         finally:
             # 页面断开或改去查别的池时，不再为还没开始的股票请求麦蕊。
             cancel.set()
+            wake(user.id)
 
     def _stream_frames():
         yield frame(

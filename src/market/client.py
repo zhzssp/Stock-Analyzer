@@ -34,6 +34,18 @@ class LicenceExhaustedError(MarketError):
     """池里还有证，但今天一张都派不出来。与「没配证书 / 网络不通」要分开报。"""
 
 
+class QuoteBatchDowngrade(MarketError):
+    """这一批不适合继续按批取，调用方改逐只。"""
+
+
+# 按批一次最多 20 只，和麦蕊 ssjy_more 的上限一致。
+QUOTE_BATCH_SIZE = 20
+# 升回按批所需的连续成功只数，加倍到这里为止，避免同一轮里来回切。
+QUOTE_UPGRADE_CAP = 240
+# 逐只也连续被限频这么多次，就停下，不再把后面的请求打完。
+_SINGLE_RATE_LIMIT_STOP = 3
+
+
 # 单次请求的默认超时（秒）；共享连接池按次覆盖，探针的短超时照旧生效。
 DEFAULT_HTTP_TIMEOUT = 30.0
 
@@ -114,6 +126,9 @@ class MarketClient:
         self.licence_switches = 0
         self.query_refresh_mode: str = "full"
         self.slow_cache_stats: dict[str, int] = {"hits": 0, "misses": 0}
+        self.last_quote_error: str = ""
+        self._quotes_partial: dict[str, dict] = {}
+        self._quote_stop: bool = False
         self._issue_lock = threading.Lock()
         self._issues_open = False
         self._query_issues: list[dict] = []
@@ -901,47 +916,165 @@ class MarketClient:
             out["ysltag"] = crow.get("ysltag")
         return out
 
-    def quotes_many(self, insts: list[Instrument]) -> dict[str, dict]:
+    def quotes_many(self, insts: list[Instrument], cancel: Any = None) -> dict[str, dict]:
+        """按批拉现价。批量失败就改逐只，连续成功够多只再升回按批。
+
+        已经拿到的价格留在返回值里。额度用尽或逐只也连续被限频时停下。
+        cancel 置位后，当前这一次请求会走完，下一批或下一只不再发。
+        这一轮的降级、升级只活在这次调用里，下一次刷新重新从按批开始。
+        """
+        self.last_quote_error = ""
+        self._quote_stop = False
+
+        def halted() -> bool:
+            return cancel is not None and cancel.is_set()
+
         if self.offline:
+            if halted():
+                return {}
             return {i.code6: self.quote(i) for i in insts}
         out: dict[str, dict] = {}
-        batch: list[Instrument] = []
-        # 刷新整表时，界面要在每一批回来后估算剩余时间。没挂回调时行为和以前一样。
+        self._quotes_partial = out
         hook = getattr(self, "_quote_batch_progress", None)
+        mode = "batch"
+        streak = 0
+        upgrade_after = _quote_upgrade_after()
+        armed = False
+        rate_streak = 0
+        pending = list(insts)
+        index = 0
 
-        def flush() -> None:
-            nonlocal batch
-            if not batch:
-                return
-            done = list(batch)
-            out.update(self._quotes_batch(done))
-            batch = []
-            if hook:
-                hook(done)
+        def emit(group: list[Instrument]) -> None:
+            if hook and group:
+                hook(group)
 
-        for inst in insts:
-            batch.append(inst)
-            if len(batch) == 20:
-                flush()
-        flush()
+        def pull_one(inst: Instrument) -> str:
+            """ok：这一只要到了。fail：这一只失败，继续。stop：整轮停下。"""
+            nonlocal streak, rate_streak
+            try:
+                out[inst.code6] = self.quote(inst)
+            except LicenceExhaustedError as exc:
+                self.last_quote_error = str(exc) or self.last_quote_error
+                emit([inst])
+                return "stop"
+            except MarketError as exc:
+                text = str(exc)
+                self.last_quote_error = text or self.last_quote_error
+                streak = 0
+                if text == RATE_LIMIT_MESSAGE or RATE_LIMIT_MESSAGE in text:
+                    rate_streak += 1
+                    emit([inst])
+                    if rate_streak >= _SINGLE_RATE_LIMIT_STOP:
+                        return "stop"
+                else:
+                    rate_streak = 0
+                    emit([inst])
+                return "fail"
+            streak += 1
+            rate_streak = 0
+            emit([inst])
+            return "ok"
+
+        def promote_if_ready() -> None:
+            nonlocal mode, streak, armed
+            if mode == "single" and streak >= upgrade_after:
+                mode = "batch"
+                streak = 0
+                armed = True
+
+        while index < len(pending):
+            if halted():
+                break
+            if mode != "batch":
+                kind = pull_one(pending[index])
+                index += 1
+                if kind == "stop":
+                    break
+                promote_if_ready()
+                continue
+            chunk = pending[index : index + QUOTE_BATCH_SIZE]
+            try:
+                mapped = self._quotes_batch(chunk)
+            except LicenceExhaustedError as exc:
+                self.last_quote_error = str(exc) or self.last_quote_error
+                break
+            except QuoteBatchDowngrade as exc:
+                self.last_quote_error = str(exc) or self.last_quote_error
+                if armed:
+                    upgrade_after = min(upgrade_after * 2, QUOTE_UPGRADE_CAP)
+                    armed = False
+                mode = "single"
+                streak = 0
+                stopped = False
+                for inst in chunk:
+                    if halted():
+                        stopped = True
+                        break
+                    kind = pull_one(inst)
+                    index += 1
+                    if kind == "stop":
+                        stopped = True
+                        break
+                if stopped:
+                    break
+                promote_if_ready()
+                continue
+            out.update(mapped)
+            emit(chunk)
+            index += len(chunk)
+            if self._quote_stop:
+                break
         return out
 
     def _quotes_batch(self, insts: list[Instrument]) -> dict[str, dict]:
+        """按批取这一组。整批失败或过半没有现价时抛 QuoteBatchDowngrade，调用方改逐只。
+
+        只缺少数几只时补那几只，仍算按批成功。价格为 0 视为有效。
+        """
+        if not insts:
+            return {}
         codes = ",".join(i.code6 for i in insts)
         try:
             data = self._get(f"/hsrl/ssjy_more/{codes}")
-            rows = data if isinstance(data, list) else [data]
-            mapped = {}
-            by_code = {str(r.get("dm") or r.get("code") or "").split(".")[0]: r for r in rows if isinstance(r, dict)}
-            for inst in insts:
-                row = by_code.get(inst.code6)
-                if row:
-                    mapped[inst.code6] = _ssjy_quote(row, "live")
-                else:
-                    mapped[inst.code6] = self.quote(inst)
-            return mapped
-        except MarketError:
-            return {i.code6: self.quote(i) for i in insts}
+        except LicenceExhaustedError:
+            raise
+        except MarketError as exc:
+            raise QuoteBatchDowngrade(str(exc) or "批量现价失败") from exc
+        if isinstance(data, list):
+            rows = data
+        elif isinstance(data, dict):
+            rows = [data]
+        else:
+            raise QuoteBatchDowngrade("批量现价没有返回列表")
+        by_code = {
+            str(r.get("dm") or r.get("code") or "").split(".")[0]: r
+            for r in rows
+            if isinstance(r, dict)
+        }
+        mapped: dict[str, dict] = {}
+        thin: list[Instrument] = []
+        for inst in insts:
+            row = by_code.get(inst.code6)
+            if not row:
+                thin.append(inst)
+                continue
+            quote = _ssjy_quote(row, "live")
+            if _quote_price_missing(quote):
+                thin.append(inst)
+            else:
+                mapped[inst.code6] = quote
+        if thin and len(thin) * 2 > len(insts):
+            raise QuoteBatchDowngrade("批量现价过半没有价格")
+        for inst in thin:
+            try:
+                mapped[inst.code6] = self.quote(inst)
+            except LicenceExhaustedError as exc:
+                self.last_quote_error = str(exc) or self.last_quote_error
+                self._quote_stop = True
+                return mapped
+            except MarketError as exc:
+                self.last_quote_error = str(exc) or self.last_quote_error
+        return mapped
 
     def history(
         self,
@@ -1299,6 +1432,26 @@ def _as_float(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _quote_price_missing(row: Any) -> bool:
+    """现价和涨跌幅都空才算没有行情。0 是有效价格。"""
+    if not isinstance(row, dict):
+        return True
+    return row.get("p") in (None, "") and row.get("pc") in (None, "")
+
+
+def _quote_upgrade_after() -> int:
+    raw = getattr(settings, "quote_batch_upgrade_after", 60)
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = 60
+    if n < 1:
+        n = 1
+    if n > QUOTE_UPGRADE_CAP:
+        n = QUOTE_UPGRADE_CAP
+    return n
 
 
 def _ssjy_quote(row: Any, source: str) -> dict:

@@ -220,8 +220,8 @@ def apply_friday(live: dict | None, bar: dict | None, allow_live: bool) -> tuple
 def install_friday_quotes(market: MarketClient) -> None:
     original = market.quotes_many
 
-    def quotes_many(insts):
-        live = original(insts) or {}
+    def quotes_many(insts, cancel=None):
+        live = original(insts, cancel=cancel) or {}
         allow_live = before_nine()
 
         def one(inst):

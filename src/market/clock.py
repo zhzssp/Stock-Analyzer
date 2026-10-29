@@ -509,6 +509,7 @@ def align_quotes(
     at: datetime | None = None,
     force_live: bool = False,
     on_quote_progress: Any = None,
+    cancel: Any = None,
 ) -> tuple[dict[str, dict], dict]:
     """Return live quotes keyed by code6, preferring the current wall-clock slot file.
 
@@ -577,10 +578,11 @@ def align_quotes(
         prev_hook = getattr(market, "_quote_batch_progress", None)
         market._quote_batch_progress = _on_batch
         try:
-            live = market.quotes_many(fetch_list) or {}
+            live = market.quotes_many(fetch_list, cancel=cancel) or {}
         except Exception as exc:
             meta["reason"] = str(exc)
-            live = {}
+            # 中途抛错时，已经取到的现价还在客户端上，不能整表丢掉。
+            live = dict(getattr(market, "_quotes_partial", {}) or {})
         finally:
             market._quote_batch_progress = prev_hook
 
@@ -607,4 +609,7 @@ def align_quotes(
         meta["source"] = "mixed" if any(row.get("source") != "clock" for row in out.values()) else "clock"
     else:
         meta["source"] = "live"
+    quote_err = str(getattr(market, "last_quote_error", "") or "").strip()
+    if quote_err and any(row.get("source") == "missing" for row in out.values()):
+        meta["reason"] = quote_err
     return out, meta

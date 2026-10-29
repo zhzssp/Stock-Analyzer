@@ -25,7 +25,7 @@ class FakeMarket:
         self.calls = 0
         self.prices = prices or {"600038": 26.86, "000001": 11.2}
 
-    def quotes_many(self, insts):
+    def quotes_many(self, insts, cancel=None):
         self.calls += 1
         return {i.code6: {"p": self.prices.get(i.code6, 1.0), "pc": 0.5, "pe": 8, "sjl": 1.2, "source": "live"} for i in insts}
 
@@ -120,11 +120,11 @@ def test_quote_progress_counts_requested_names_only(tmp_path: Path):
     seen: list[tuple[int, int]] = []
 
     class Reporting(FakeMarket):
-        def quotes_many(self, insts):
+        def quotes_many(self, insts, cancel=None):
             hook = getattr(self, "_quote_batch_progress", None)
             if hook:
                 hook(list(insts))
-            return super().quotes_many(insts)
+            return super().quotes_many(insts, cancel=cancel)
 
     align_quotes(
         Reporting(),

@@ -375,6 +375,13 @@
       line-height: 1.6;
     }
     .cell-peek .peek-text { white-space: normal; word-break: break-word; }
+    .cell-peek.peek-actions {
+      width: min(460px, calc(100vw - 24px));
+      max-height: min(320px, calc(100vh - 24px));
+    }
+    .cell-peek .peek-lead { color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .cell-peek .peek-lead + .peek-tags { margin-top: 8px; }
+    .cell-peek .peek-block { margin-top: 10px; }
     #queryTable tbody td { padding-top: 6px; padding-bottom: 6px; }
     #queryTable tr.vspacer, #queryTable tr.vspacer td {
       height: auto; padding: 0; border: 0; background: transparent;
@@ -974,9 +981,9 @@
             <div class="gs-results" id="gsResults" style="display:none;"></div>
           </div>
           <div class="toolbar">
-            <button class="btn primary" id="queryBtn" type="button"><span data-help-tip="按当前选中的池子，把中间这张表按你勾选的列重新做一遍。股票多时先出前 100 只，往下滚再出后面的。现价、行业、股东、财务，本机今天已经有的就直接用，缺的才去要。">查询</span></button>
-            <button class="btn" id="refreshBtn" type="button"><span data-help-tip="不换名单，只更新中间这张表上这些股票的行情，包括现价、涨跌幅等。沪市、深市这种大表不会顺便补行业和财务。自选这种不到 100 只、而且这些列还是空的，才会用本机已有的结果补上。没点开的池子不会被刷到。">刷新行情</span></button>
-            <button class="btn" id="fullQueryBtn" type="button"><span data-help-tip="和「查询」一样，先做前 100 只，不是把整个板块一次拉完。差别是现价、行业、股东、财务都重新向数据源要，不用本机已经存好的，所以最费次数。">全量更新</span></button>
+            <button class="btn primary" id="queryBtn" type="button" data-action-peek="cache">查询</button>
+            <button class="btn" id="refreshBtn" type="button" data-action-peek="quote">刷新行情</button>
+            <button class="btn" id="fullQueryBtn" type="button" data-action-peek="full">全量更新</button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
@@ -1607,6 +1614,8 @@
     const state = {
       token: sessionStorage.getItem("sa_token") || "",
       fields: [],
+      chosenKeys: [],
+      fieldCatalog: [],
       colWidths: loadColWidths(),
       watch: [],
       quoteItems: [],
@@ -1655,6 +1664,10 @@
       // 中间列表同一时间只认一轮刷新。换池或再点刷新会把代数加一，旧轮次不得再改进度或表格。
       queryGen: 0,
       activeJobId: "",
+      listFlightOn: false,
+      listFlightKey: "",
+      listFlightGen: 0,
+      exportBusy: false,
       // 同时成立的提示各占一行：表的进度、整池、排序、补资料、Excel 导出。
       statusLines: { table: "尚未查询", pool: "", sort: "", extra: "", export: "" },
       statusAction: "查询",
@@ -2785,8 +2798,9 @@
           pool: data.has_more ? poolProgressLine(pageCount, loaded, remain) : "",
         });
       } else if (state.streamKeepRows) {
+        const priceNote = state.listOnly && loaded ? "现价没有取到" : "现价已更新";
         patchStatus({
-          table: `${head} · ${loaded} 只 · 现价已更新 · 用时 ${sec} 秒`,
+          table: `${head} · ${loaded} 只 · ${priceNote} · 用时 ${sec} 秒`,
           pool: "",
           extra: "",
         });
@@ -2875,6 +2889,12 @@
         return;
       }
       if (event === "progress") {
+        if ((data.stage || "") === "queued") {
+          const line = `${statusHead()} · 等上一轮结束`;
+          if (state.statusRole === "extra") patchStatus({ extra: line });
+          else patchStatus({ table: line });
+          return;
+        }
         const done = data.done || 0;
         const total = data.total || 0;
         const suffix = etaSuffix(done, total, data.stage || "full");
@@ -2943,6 +2963,7 @@
           forceLive: opts ? opts.forceLive : undefined,
           limit: (opts && opts.limit) || PAGE_LIMIT,
           offset: opts && opts.append ? opts.offset : 0,
+          replaceRunning: !!(opts && opts.replaceRunning),
         });
         const headers = { "Content-Type": "application/json" };
         if (state.token) headers.Authorization = "Bearer " + state.token;
@@ -2988,6 +3009,35 @@
 
     function listQueryCurrent(gen) {
       return gen === state.queryGen;
+    }
+
+    function listFlightKeyFor(refreshMode, codes) {
+      const pool = state.pool || "";
+      const codeKey = codes && codes.length ? codes.join(",") : "";
+      return [refreshMode || "quote", pool, codeKey].join("|");
+    }
+
+    function sameListFlight(key) {
+      return !!(state.listFlightOn && state.listFlightKey === key);
+    }
+
+    function armListFlight(key, gen) {
+      state.listFlightOn = true;
+      state.listFlightKey = key;
+      state.listFlightGen = gen;
+    }
+
+    function releaseListFlight(gen) {
+      if (state.listFlightGen === gen) {
+        state.listFlightOn = false;
+        state.listFlightKey = "";
+      }
+    }
+
+    function markExportBusy(on) {
+      state.exportBusy = !!on;
+      const btn = document.getElementById("expStart");
+      if (btn) btn.disabled = !!on;
     }
 
     function querySupersededError() {
@@ -3122,6 +3172,15 @@
         if (gen != null && !listQueryCurrent(gen)) throw querySupersededError();
         const data = await api("/query/jobs/" + jobId);
         if (gen != null && !listQueryCurrent(gen)) throw querySupersededError();
+        if (data.phase === "queued") {
+          if (exporting) patchStatus({ export: "导出排队，等当前刷新结束" });
+          else if (listQueryCurrent(gen)) {
+            const key = state.statusRole === "extra" ? "extra" : "table";
+            patchStatus({ [key]: `${statusHead()} · 等上一轮结束` });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          continue;
+        }
         if (data.status === "done") {
           if (exporting) {
             const total = data.total || data.progress || 0;
@@ -3134,7 +3193,9 @@
         if (data.status === "error") throw new Error(data.error || "任务失败");
         const done = data.progress || 0;
         const total = data.total || "?";
-        if (exporting) {
+        if (exporting && data.phase === "queued") {
+          patchStatus({ export: "导出排队，等当前刷新结束" });
+        } else if (exporting) {
           patchStatus({ export: `Excel表格导出进度：${exportLabel}${done}/${total}` });
         } else if (listQueryCurrent(gen)) {
           const key = state.statusRole === "extra" ? "extra" : "table";
@@ -3148,6 +3209,9 @@
       "price", "pct", "pe", "pb", "turnover", "mcap", "fcap", "pct60", "pct_ytd",
       "vs_cost", "dist_buy", "dist_reduce", "as_of", "quote_source",
     ]);
+    const QUOTE_REFRESH_KEYS = new Set(
+      [...QUOTE_FIELD_KEYS].filter((k) => k !== "as_of" && k !== "quote_source")
+    );
 
     function mergeKeepRows(incoming, stage) {
       const prev = state.rowsRaw || [];
@@ -3227,6 +3291,7 @@
       const forceLive = o.forceLive != null ? o.forceLive : refreshMode === "full";
       if (forceLive) base.force_live = true;
       else if (refreshMode === "cache") base.force_live = false;
+      if (o.replaceRunning) base.replace_running = true;
       return base;
     }
 
@@ -3370,14 +3435,25 @@
       const o = opts && typeof opts === "object" ? opts : { forceLive: !!opts, refreshMode: opts ? "full" : "quote" };
       const appending = Boolean(o.append); // 滚动加载下一页，不重置已有内容
       let gen;
+      let armedHere = false;
       if (appending) {
         gen = state.queryGen || 0;
       } else if (o.gen != null) {
         gen = o.gen;
         if (!listQueryCurrent(gen)) throw querySupersededError();
       } else {
+        const refreshModeEarly = o.refreshMode || "quote";
+        const key = listFlightKeyFor(refreshModeEarly, codes);
+        if (sameListFlight(key)) {
+          toast("这一轮还在进行");
+          return;
+        }
         gen = supersedeListQuery();
+        armListFlight(key, gen);
+        armedHere = true;
       }
+      try {
+      if (!appending) o.replaceRunning = true;
       if (!appending) {
         if (codes && codes.length) state.lastQueryCodes = codes;
         else state.lastQueryCodes = null;
@@ -3403,6 +3479,7 @@
         offset: appending ? o.offset : 0,
         sortKey: state.sortKey || "",
         sortDir: state.sortDir || "desc",
+        replaceRunning: !appending,
       });
       if (refreshMode === "cache" && !forceLive) payload.force_live = false;
       saDebug.lastPayload = payload;
@@ -3545,6 +3622,9 @@
       dbg("查询返回", saDebug.lastResult);
       if (state.lastQueryCodes) updateExportScope("筛选一次");
       else updateExportScope(data.pool || scope);
+      } finally {
+        if (armedHere) releaseListFlight(gen);
+      }
     }
 
     async function downloadArtifact(id, filename) {
@@ -3827,6 +3907,7 @@
       if (est) est.textContent = "正在读取本机状态…";
       if (warn) { warn.style.display = "none"; warn.innerHTML = ""; }
       document.getElementById("exportMask").style.display = "flex";
+      markExportBusy(state.exportBusy);
 
       let snap = null;
       let health = null;
@@ -3837,7 +3918,7 @@
         health = h.market || h;
         prefs = p;
         state.colPresetDefs = p.presets || state.colPresetDefs || [];
-        if (p.all) state.fieldCatalog = p.all;
+        rememberColumnChoice(p.fields, p.all);
       } catch (err) {
         toast(err.message);
       }
@@ -3898,6 +3979,7 @@
         warn.innerHTML = notes.join("<br />") + tip;
         warn.style.display = "block";
       }
+      markExportBusy(state.exportBusy);
     }
 
     function exportDescribe() {
@@ -3989,16 +4071,25 @@
     }
 
     async function exportXlsx() {
-      state.exportHintLabel = state.poolLabel || "";
-      const payload = queryPayload(
-        state.lastQueryCodes && state.lastQueryCodes.length ? state.lastQueryCodes : null,
-        { refreshMode: "full", forceLive: true }
-      );
-      if (!payload.codes) payload.pool = currentExportPool();
-      let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
-      if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
-      await downloadArtifact(data.id, data.filename);
-      toast("已写入档案库，并下载 " + data.filename + "（" + (data.pool || payload.pool || "筛选一次") + "）");
+      if (state.exportBusy) {
+        toast("导出还在进行");
+        return;
+      }
+      markExportBusy(true);
+      try {
+        state.exportHintLabel = state.poolLabel || "";
+        const payload = queryPayload(
+          state.lastQueryCodes && state.lastQueryCodes.length ? state.lastQueryCodes : null,
+          { refreshMode: "full", forceLive: true }
+        );
+        if (!payload.codes) payload.pool = currentExportPool();
+        let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
+        if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
+        await downloadArtifact(data.id, data.filename);
+        toast("已写入档案库，并下载 " + data.filename + "（" + (data.pool || payload.pool || "筛选一次") + "）");
+      } finally {
+        markExportBusy(false);
+      }
     }
 
     const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", flow: "资金", bottom: "底/顶", card: "决策卡" };
@@ -4023,6 +4114,7 @@
       const data = await api("/query/prefs");
       state.colPreset = data.preset || "watch";
       state.colPresetDefs = data.presets || [];
+      rememberColumnChoice(data.fields, data.all);
       const chosen = new Set(data.fields || []);
       const groups = {};
       (data.all || []).forEach((f) => {
@@ -4051,7 +4143,8 @@
       const preset = state.colPreset || "custom";
       const fields = [...document.querySelectorAll("#colList input[type=checkbox]:checked")].map((el) => el.value);
       if (preset === "custom" && !fields.length) return toast("至少保留一列");
-      await api("/query/prefs", { method: "PUT", body: JSON.stringify({ fields, preset }) });
+      const saved = await api("/query/prefs", { method: "PUT", body: JSON.stringify({ fields, preset }) });
+      rememberColumnChoice((saved && saved.fields) || fields);
       closeCols();
       try {
         await runQuery(null, { refreshMode: "cache", forceLive: false });
@@ -4458,6 +4551,7 @@
         const prefs = await api("/query/prefs");
         wanted = prefs.fields || [];
         if (prefs.preset) state.colPreset = prefs.preset;
+        rememberColumnChoice(wanted, prefs.all);
       } catch {
         /* 列设置读不到时，查询本身仍走服务端默认的十七列 */
       }
@@ -4546,14 +4640,21 @@
       runQuery(null, { refreshMode: "full", forceLive: true, stream: true }).catch(toastQueryError)
     );
     document.getElementById("refreshBtn").addEventListener("click", async () => {
-      const gen = supersedeListQuery();
       const codes = state.lastQueryCodes;
+      const key = listFlightKeyFor("quote", codes);
+      if (sameListFlight(key)) {
+        toast("这一轮还在进行");
+        return;
+      }
+      const gen = supersedeListQuery();
+      armListFlight(key, gen);
       const shown = (state.rowsRaw || []).length;
       // 池查询按整张表更新现价。上一轮如果只留下了第一页，totalRows 仍是整板，这次把现价补全。
       const poolTotal = !(codes && codes.length) ? Math.max(state.totalRows || 0, shown) : shown;
       const limit = Math.max(poolTotal, 1);
       const stopped = (err) => !listQueryCurrent(gen) || isQueryAbort(err);
       let quoteErr = null;
+      try {
       try {
         await runQuery(codes, {
           refreshMode: "quote",
@@ -4592,15 +4693,28 @@
         if (stopped(e)) return;
         toastQueryError(quoteErr || e);
       }
+      } finally {
+        releaseListFlight(gen);
+      }
     });
     document.getElementById("exportBtn").addEventListener("click", () => openExport().catch((e) => toast(e.message)));
     document.getElementById("expStart").addEventListener("click", async () => {
+      if (state.exportBusy) {
+        toast("导出还在进行");
+        return;
+      }
+      markExportBusy(true);
       closeExport();
       try {
         await doExport();
       } catch (err) {
-        patchStatus({ export: "Excel表格导出没有完成" });
-        toast(err.message || "导出失败");
+        const msg = (err && err.message) || "导出失败";
+        patchStatus({
+          export: msg.indexOf("已经有一份导出在进行") >= 0 ? "已经有一份导出在进行" : "Excel表格导出没有完成",
+        });
+        toast(msg);
+      } finally {
+        markExportBusy(false);
       }
     });
     document.getElementById("expCancel").addEventListener("click", closeExport);
@@ -6324,6 +6438,63 @@
       }
     });
 
+    function rememberColumnChoice(keys, catalog) {
+      if (catalog && catalog.length) state.fieldCatalog = catalog;
+      const list = (keys || []).map((k) => (typeof k === "string" ? k : (k && k.key) || "")).filter(Boolean);
+      if (list.length) state.chosenKeys = list;
+    }
+
+    function chosenFieldList() {
+      const byKey = new Map();
+      (state.fieldCatalog || []).forEach((f) => {
+        if (f && f.key) byKey.set(f.key, f);
+      });
+      (state.fields || []).forEach((f) => {
+        if (f && f.key && f.label && !byKey.has(f.key)) byKey.set(f.key, f);
+      });
+      const keys = (state.chosenKeys && state.chosenKeys.length)
+        ? state.chosenKeys
+        : (state.fields || []).map((f) => f.key);
+      return keys.map((k) => byKey.get(k) || { key: k, label: k }).filter((f) => f.key);
+    }
+
+    function quoteRefreshAlsoFills(wantedKeys) {
+      const codes = state.lastQueryCodes;
+      const codeList = Boolean(codes && codes.length);
+      const shown = (state.rowsRaw || []).length;
+      if (!shown) return false;
+      const after = codeList ? shown : Math.max(state.totalRows || 0, shown);
+      if (!codeList && after > PAGE_LIMIT) return false;
+      return slowFieldsMostlyEmpty(wantedKeys);
+    }
+
+    function actionPeekBlocks(mode) {
+      const chosen = chosenFieldList();
+      const labelOf = (f) => f.label || f.key;
+      if (!chosen.length) {
+        return [{ lead: "还没有读到列设置。登录后，这里会列出这个按钮会动到的列。", tags: [] }];
+      }
+      if (mode === "quote") {
+        const quote = chosen.filter((f) => QUOTE_REFRESH_KEYS.has(f.key));
+        const rest = chosen.filter((f) => !QUOTE_REFRESH_KEYS.has(f.key) && f.key !== "name" && f.key !== "code");
+        const blocks = [];
+        if (quote.length) blocks.push({ lead: "不换名单，只更新这些行情列。", tags: quote.map(labelOf) });
+        else blocks.push({ lead: "当前勾选里没有行情列。", tags: [] });
+        if (rest.length && quoteRefreshAlsoFills(chosen.map((f) => f.key))) {
+          blocks.push({
+            lead: "这张表不满 100 只，而且其余列大多还是空的，会用本机已有的结果补上。",
+            tags: rest.map(labelOf),
+          });
+        }
+        return blocks;
+      }
+      const tags = chosen.map(labelOf);
+      if (mode === "full") {
+        return [{ lead: "这些列全部重新向数据源要，不用本机已经存好的。", tags }];
+      }
+      return [{ lead: "这些列会重做一遍。本机已有的直接用，缺的才去要。", tags }];
+    }
+
     function bindCellPeek() {
       const card = document.createElement("div");
       card.className = "cell-peek";
@@ -6344,6 +6515,7 @@
       }
 
       function fill(key, text) {
+        card.classList.remove("peek-actions");
         card.replaceChildren();
         if (PEEK_TAGS.has(key)) {
           const box = document.createElement("div");
@@ -6394,10 +6566,72 @@
         if (next && card.contains(next)) return;
         scheduleHide();
       });
+      function fillAction(mode) {
+        card.classList.add("peek-actions");
+        card.replaceChildren();
+        actionPeekBlocks(mode).forEach((block, i) => {
+          const wrap = document.createElement("div");
+          if (i) wrap.className = "peek-block";
+          if (block.lead) {
+            const lead = document.createElement("div");
+            lead.className = "peek-lead";
+            lead.textContent = block.lead;
+            wrap.appendChild(lead);
+          }
+          if (block.tags && block.tags.length) {
+            const box = document.createElement("div");
+            box.className = "peek-tags";
+            block.tags.forEach((name) => {
+              const tag = document.createElement("span");
+              tag.className = "peek-tag";
+              tag.textContent = name;
+              box.appendChild(tag);
+            });
+            wrap.appendChild(box);
+          }
+          card.appendChild(wrap);
+        });
+      }
+
+      function showAction(btn) {
+        clearTimeout(hideTimer);
+        current = btn;
+        fillAction(btn.getAttribute("data-action-peek") || "cache");
+        card.style.display = "block";
+        place(btn);
+      }
+
       card.addEventListener("mouseenter", () => clearTimeout(hideTimer));
       card.addEventListener("mouseleave", scheduleHide);
       const wrap = document.querySelector(".table-wrap");
       if (wrap) wrap.addEventListener("scroll", () => { current = null; card.style.display = "none"; }, { passive: true });
+      document.addEventListener("mouseover", (e) => {
+        const btn = e.target.closest ? e.target.closest("[data-action-peek]") : null;
+        if (btn) showAction(btn);
+      });
+      document.addEventListener("mouseout", (e) => {
+        const btn = e.target.closest ? e.target.closest("[data-action-peek]") : null;
+        if (!btn || btn !== current) return;
+        const next = e.relatedTarget;
+        if (next && (btn.contains(next) || card.contains(next))) return;
+        scheduleHide();
+      });
+      document.addEventListener("focusin", (e) => {
+        const btn = e.target.closest ? e.target.closest("[data-action-peek]") : null;
+        if (btn) showAction(btn);
+      });
+      document.addEventListener("focusout", (e) => {
+        const btn = e.target.closest ? e.target.closest("[data-action-peek]") : null;
+        if (!btn || btn !== current) return;
+        scheduleHide();
+      });
+      window.addEventListener("scroll", (e) => {
+        if (e.target === card) return;
+        if (current && current.hasAttribute && current.hasAttribute("data-action-peek")) {
+          current = null;
+          card.style.display = "none";
+        }
+      }, true);
     }
 
     mountHelpTips();
