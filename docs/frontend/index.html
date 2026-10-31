@@ -658,6 +658,18 @@
     .login-card .pick-list label { display: flex; margin: 0; color: inherit; }
     .login-error { color: var(--danger); min-height: 18px; font-size: 13px; }
     .login-card.col-card { width: min(640px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
+    .login-card.page-card { width: min(560px, calc(100vw - 48px)); }
+    .page-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-height: 420px;
+      overflow: auto;
+      margin: 12px 0 4px;
+    }
+    .page-grid .btn { min-width: 64px; }
+    .page-grid .btn.on { background: var(--teal); color: #fff; border-color: var(--teal); }
+    .page-grid .btn:disabled { opacity: 0.4; cursor: default; }
     .login-card.art-card { width: min(860px, calc(100vw - 48px)); max-height: 86vh; overflow: auto; }
     .side-modes { display: flex; gap: 6px; flex-wrap: wrap; }
     .side-modes .chip-btn { flex: 1; min-width: 0; }
@@ -984,6 +996,7 @@
             <button class="btn primary" id="queryBtn" type="button" data-action-peek="cache">查询</button>
             <button class="btn" id="refreshBtn" type="button" data-action-peek="quote">刷新行情</button>
             <button class="btn" id="fullQueryBtn" type="button" data-action-peek="full">全量更新</button>
+            <button class="btn ghost" id="pagePickBtn" type="button" style="display:none" data-help-tip="打开页码。已经取完的页可以点开看，正在取的页会继续，不会停。">页码</button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
@@ -1443,6 +1456,16 @@
       </div>
     </div>
   </div>
+  <div class="login-mask" id="pagePickMask" style="display:none;">
+    <div class="login-card page-card">
+      <h2>选择页码</h2>
+      <p class="hint" id="pagePickHint"></p>
+      <div class="page-grid" id="pagePickGrid"></div>
+      <div class="pick-actions" style="margin-top:12px;">
+        <button class="btn ghost" id="pagePickClose" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
   <div class="login-mask" id="loginMask">
     <form class="login-card" id="loginForm">
       <h2><span data-help-tip="默认账号 hanish / change-me，仅绑定 127.0.0.1。">登录本机工作台</span></h2>
@@ -1663,6 +1686,11 @@
       queryIssueSig: "",
       // 中间列表同一时间只认一轮刷新。换池或再点刷新会把代数加一，旧轮次不得再改进度或表格。
       queryGen: 0,
+      pageBook: null,
+      pageCapture: false,
+      pageCaptureMap: null,
+      pageCaptureResult: null,
+      pageCaptureFields: null,
       activeJobId: "",
       listFlightOn: false,
       listFlightKey: "",
@@ -2175,7 +2203,7 @@
         }
         // 只排已经在表里的行。大池的下一页是按名单顺序切的，再向后端要一页也排不出整池名次，
         // 而且会把已经加载的后面几页丢掉。
-        renderTable(state.fields, state.rowsRaw);
+        renderTable(state.fields, state.rowsRaw, state.pageBook ? { all: true } : undefined);
         syncSortLine();
       });
     }
@@ -2358,6 +2386,7 @@
       // 进行中的查询还在写表时，先作废那一轮，避免它随后把刚打开的历史表盖掉。
       supersedeListQuery();
       if (state.listFlightOn) releaseListFlight(state.listFlightGen);
+      clearPageBook();
       showSnapshotPool(data.pool_id, data.pool);
       const rows = data.rows || [];
       state.totalRows = rows.length;
@@ -2429,7 +2458,8 @@
 
     async function selectPool(poolId) {
       // 换到另一池时，上一池的刷新还在写右上角进度，先作废那一轮。
-      if (poolId !== state.pool) supersedeListQuery();
+      if (poolId !== state.pool || state.pageBook) supersedeListQuery();
+      clearPageBook();
       state.pool = poolId;
       state.poolPage = 1;
       if (poolId !== "watch") {
@@ -2652,6 +2682,10 @@
     function renderPagedHint(loadedCount) {
       const el = ensureTableMore();
       if (!el) return;
+      if (state.pageBook) {
+        el.style.display = "none";
+        return;
+      }
       if (!state.paged && (state.rowsRaw || []).length >= (state.totalRows || (state.rowsRaw || []).length)) {
         el.style.display = "none";
         return;
@@ -2929,6 +2963,22 @@
       });
       dbg("流式事件", event, data);
       if (event === "meta") {
+        if (state.pageCapture) {
+          resetEtaClock();
+          const incomingTotal = Number(data.total) || 0;
+          const quoting = Boolean(state.pageBook && state.pageBook.quoting);
+          const shown = state.pageBook && state.pageBook.pages && state.pageBook.pages[state.pageBook.view];
+          const showing = Boolean(shown && shown.length);
+          if (!quoting && !showing) state.totalRows = incomingTotal || state.totalRows || 0;
+          state.pageCaptureFields = data.fields || [];
+          state.pageCaptureMap = { order: [], by: {} };
+          if (state.pageBook && !quoting) {
+            if (incomingTotal) state.pageBook.total = incomingTotal;
+            if (data.fields && data.fields.length) state.pageBook.fields = data.fields;
+          }
+          updateFullPoolStatus();
+          return;
+        }
         // meta.total 是整池行数（不是本页），据此决定是否启用虚拟滚动
         resetEtaClock();
         state.totalRows = data.total || state.totalRows || 0;
@@ -2967,6 +3017,10 @@
         return;
       }
       if (event === "batch") {
+        if (state.pageCapture) {
+          capturePageRows(data.rows || []);
+          return;
+        }
         if (state.streamAppend) {
           const map = state.streamAppendMap || {};
           (data.rows || []).forEach((row) => {
@@ -2984,6 +3038,14 @@
         return;
       }
       if (event === "progress") {
+        if (state.pageCapture) {
+          if ((data.stage || "") === "queued") {
+            patchStatus({ table: `${statusHead()} · 等上一轮结束` });
+            return;
+          }
+          updateFullPoolStatus(data);
+          return;
+        }
         if ((data.stage || "") === "queued") {
           const line = `${statusHead()} · 等上一轮结束`;
           if (state.statusRole === "extra") patchStatus({ extra: line });
@@ -3012,6 +3074,17 @@
         return;
       }
       if (event === "done") {
+        if (state.pageCapture) {
+          state.pageCaptureResult = {
+            rows: takeCaptureRows(),
+            hasMore: Boolean(data.has_more),
+            total: (state.pageBook && state.pageBook.total) || state.totalRows || 0,
+            fields: state.pageCaptureFields || [],
+            elapsed_ms: data.elapsed_ms || 0,
+          };
+          showQueryIssues(data.issues || []);
+          return;
+        }
         if (state.streamAppend) {
           const have = new Set((state.rowsRaw || []).map((r) => r.code6));
           const incoming = Object.values(state.streamAppendMap || {}).filter((r) => r.code6 && !have.has(r.code6));
@@ -3057,7 +3130,7 @@
           refreshMode: (opts && opts.refreshMode) || "quote",
           forceLive: opts ? opts.forceLive : undefined,
           limit: (opts && opts.limit) || PAGE_LIMIT,
-          offset: opts && opts.append ? opts.offset : 0,
+          offset: opts && (opts.append || opts.pageCapture) ? (opts.offset || 0) : 0,
           replaceRunning: !!(opts && opts.replaceRunning),
         });
         const headers = { "Content-Type": "application/json" };
@@ -3181,6 +3254,12 @@
     }
 
     function syncSortLine() {
+      const book = state.pageBook;
+      const bookOn = book && (book.pages || []).some((p) => p && p.length);
+      if (bookOn && state.sortKey) {
+        patchStatus({ sort: "排序只排这一页" });
+        return;
+      }
       const loaded = (state.rowsRaw || []).length;
       const total = state.totalRows || loaded;
       const partial = Boolean(state.sortKey && state.paged && loaded < total);
@@ -3371,7 +3450,7 @@
       const refreshMode = o.refreshMode || "quote";
       base.refresh_mode = refreshMode;
       if (o.fields && o.fields.length) base.fields = o.fields;
-      // 后端分页：让后端只回这一段（total / has_more 由后端算好）
+      // 带了 limit 就按页取。全量更新自己一页一页走完，不在这里一次要整池。
       if (o.limit) {
         base.limit = o.limit;
         base.offset = o.offset || 0;
@@ -3545,10 +3624,11 @@
         gen = supersedeListQuery();
         armListFlight(key, gen);
         armedHere = true;
+        clearPageBook();
       }
       try {
-      if (!appending) o.replaceRunning = true;
-      if (!appending) {
+      if (!appending && !(o.pageCapture && o.offset)) o.replaceRunning = true;
+      if (!appending && !o.pageCapture) {
         if (codes && codes.length) state.lastQueryCodes = codes;
         else state.lastQueryCodes = null;
       }
@@ -3564,16 +3644,16 @@
         patchStatus({ extra: "正在补行业、股东和财务" });
       }
       // 顶部指数先走：请求轻、返回快，让小板块先于大表刷新出来
-      if (!appending) loadBoard().catch(() => {});
+      if (!appending && !(o.pageCapture && o.offset)) loadBoard().catch(() => {});
       const payload = queryPayload(codes, {
         refreshMode,
         forceLive,
         // 默认只拉一页。刷新当前整表时会带上已显示的行数，避免只更新第一页、剩下的还是旧名单。
         limit: o.limit || PAGE_LIMIT,
-        offset: appending ? o.offset : 0,
+        offset: appending || o.pageCapture ? (o.offset || 0) : 0,
         sortKey: state.sortKey || "",
         sortDir: state.sortDir || "desc",
-        replaceRunning: !appending,
+        replaceRunning: Boolean(o.replaceRunning) && !appending,
       });
       if (refreshMode === "cache" && !forceLive) payload.force_live = false;
       saDebug.lastPayload = payload;
@@ -3585,6 +3665,11 @@
           // 流式：先出骨架与行情，再逐只补齐。刷新失败就直接报错，不要退回后台任务（进度会停在 0）。
           state.streamKeepRows = Boolean(o.keepRows);
           state.streamAppend = appending;
+          state.pageCapture = Boolean(o.pageCapture);
+          if (o.pageCapture) {
+            state.pageCaptureResult = null;
+            state.pageCaptureMap = null;
+          }
           try {
             await runQueryStream(codes, o, gen);
           } catch (streamErr) {
@@ -3600,6 +3685,7 @@
             state.streamKeepRows = false;
             state.streamAppend = false;
             state.streamAppendMap = null;
+            state.pageCapture = false;
           }
           if (!listQueryCurrent(gen)) throw querySupersededError();
           if (data) {
@@ -3951,6 +4037,8 @@
     function expCount() {
       // 当前池（或搜索批次）一共有多少只
       if (state.lastQueryCodes && state.lastQueryCodes.length) return state.lastQueryCodes.length;
+      // 全量更新按页查看时，表上只有当前页，整池行数记在页册上。
+      if (state.pageBook && state.pageBook.total) return state.pageBook.total;
       // 分页模式下 rowsRaw 只是已加载的那几页，整池行数看 total
       if (state.totalRows) return state.totalRows;
       if (state.rowsRaw && state.rowsRaw.length) return state.rowsRaw.length;
@@ -4725,15 +4813,351 @@
       if (isQueryAbort(err)) return;
       toast((err && err.message) || "查询失败");
     }
+    function capturePageRows(rows) {
+      const map = state.pageCaptureMap || { order: [], by: {} };
+      (rows || []).forEach((row) => {
+        if (!row || row.code6 == null || row.code6 === "") return;
+        const key = row.code6;
+        if (!map.by[key]) map.order.push(key);
+        map.by[key] = map.by[key] ? Object.assign({}, map.by[key], row) : row;
+      });
+      state.pageCaptureMap = map;
+    }
+
+    function takeCaptureRows() {
+      const map = state.pageCaptureMap || { order: [], by: {} };
+      state.pageCaptureMap = null;
+      return map.order.map((code) => map.by[code]).filter(Boolean);
+    }
+
+    function bookPageCount(book) {
+      const total = book && Number(book.total) || 0;
+      if (total > 0) return Math.max(1, Math.ceil(total / PAGE_LIMIT));
+      return (book && book.pages && book.pages.length) || 0;
+    }
+
+    function renderPagePickerButton() {
+      const btn = document.getElementById("pagePickBtn");
+      if (!btn) return;
+      const book = state.pageBook;
+      const pages = bookPageCount(book);
+      if (!book || pages <= 1) {
+        btn.style.display = "none";
+        return;
+      }
+      const done = (book.pages || []).filter((page) => page && page.length).length;
+      btn.style.display = "";
+      btn.textContent = `页码 ${done}/${pages}`;
+    }
+
+    function updateFullPoolStatus(progress) {
+      const book = state.pageBook;
+      if (book && book.quoting) {
+        let bit = "";
+        if (progress && progress.total) {
+          const suffix = etaSuffix(progress.done || 0, progress.total, progress.stage || "quote");
+          bit = ` ${progress.done || 0}/${progress.total}${suffix}`;
+        }
+        patchStatus({ table: `${statusHead()} · 正在更新已取到的现价${bit}`, pool: "" });
+        if (book && state.sortKey) syncSortLine();
+        return;
+      }
+      const total = (book && book.total) || 0;
+      const pages = Math.max(1, total ? Math.ceil(total / PAGE_LIMIT) : 1);
+      const pageNo = book && book.fetching >= 0 ? book.fetching + 1 : 1;
+      let detail = `正在取第 ${pageNo} 页`;
+      if (pages > 1) detail += ` · 共 ${pages} 页`;
+      if (progress && (progress.stage || "") === "queued") {
+        detail = "等上一轮结束";
+      } else if (progress && progress.total) {
+        const stage = progress.stage === "quote" ? "本页现价" : "本页资料";
+        const suffix = etaSuffix(progress.done || 0, progress.total, progress.stage || "full");
+        detail += ` · ${stage} ${progress.done || 0}/${progress.total}${suffix}`;
+      }
+      if (book && book.pages && book.pages[book.view] && book.view !== book.fetching) {
+        detail += ` · 正在看第 ${book.view + 1} 页`;
+      }
+      patchStatus({ table: `${statusHead()} · ${detail}`, pool: "" });
+      if (book && state.sortKey && book.pages && book.pages[book.view]) syncSortLine();
+      renderPagePickerButton();
+    }
+
+    function showBookPage(book, idx) {
+      if (!book || state.pageBook !== book) return;
+      const rows = book.pages[idx];
+      if (!rows || !rows.length) return;
+      book.view = idx;
+      state.paged = false;
+      state.loadingMore = false;
+      state.vscroll = false;
+      state.totalRows = rows.length;
+      state.streamRows = null;
+      state.lastQueryCodes = null;
+      state.listOnly = rows.every((row) => row.price == null || row.price === "");
+      renderTable(book.fields || state.fields || [], rows, { all: true });
+      syncSortLine();
+      renderPagePickerButton();
+    }
+
+    function chooseBookPage(idx) {
+      const book = state.pageBook;
+      if (!book || !book.pages || !book.pages[idx] || !book.pages[idx].length) return;
+      book.viewManual = true;
+      showBookPage(book, idx);
+      if (book.fetching >= 0) updateFullPoolStatus();
+      else {
+        const pages = bookPageCount(book);
+        patchStatus({
+          table: `全量更新 · ${state.poolLabel || ""} · 正在看第 ${idx + 1} 页 · 共 ${pages} 页`,
+          pool: "",
+        });
+        syncSortLine();
+      }
+    }
+
+    function fillPagePicker() {
+      const book = state.pageBook;
+      const grid = document.getElementById("pagePickGrid");
+      const hint = document.getElementById("pagePickHint");
+      if (!book || !grid) return;
+      const pages = bookPageCount(book);
+      const done = (book.pages || []).filter((page) => page && page.length).length;
+      if (hint) {
+        if (book.fetching >= 0) {
+          hint.textContent = `已完成 ${done} 页，正在取第 ${book.fetching + 1} 页，共 ${pages} 页。点已完成的页查看。`;
+        } else if (book.failed) {
+          hint.textContent = `已完成 ${done} 页。${book.failed}`;
+        } else {
+          hint.textContent = `共 ${pages} 页，点一页查看。`;
+        }
+      }
+      const html = [];
+      for (let i = 0; i < pages; i += 1) {
+        const ready = book.pages[i] && book.pages[i].length;
+        const on = ready && i === book.view;
+        const busy = i === book.fetching && !ready;
+        const label = busy ? `${i + 1} · 取数中` : String(i + 1);
+        html.push(
+          `<button class="btn sm${on ? " on" : ""}" type="button" data-page="${i}"${ready ? "" : " disabled"}>${label}</button>`
+        );
+      }
+      grid.innerHTML = html.join("");
+    }
+
+    function openPagePicker() {
+      if (!state.pageBook) return;
+      fillPagePicker();
+      const mask = document.getElementById("pagePickMask");
+      if (mask) mask.style.display = "flex";
+    }
+
+    function closePagePicker() {
+      const mask = document.getElementById("pagePickMask");
+      if (mask) mask.style.display = "none";
+    }
+
+    function clearPageBook() {
+      state.pageBook = null;
+      closePagePicker();
+      renderPagePickerButton();
+    }
+
+    async function refreshBookQuotes(book) {
+      const codes = [];
+      (book.pages || []).forEach((page) => {
+        (page || []).forEach((row) => {
+          const code = row.code || row.code_full;
+          if (code) codes.push(code);
+        });
+      });
+      if (!codes.length) return;
+      const key = listFlightKeyFor("quote", codes);
+      if (sameListFlight(key)) {
+        toast("这一轮还在进行");
+        return;
+      }
+      const gen = supersedeListQuery();
+      book.fetching = -1;
+      book.quoting = true;
+      book.gen = gen;
+      armListFlight(key, gen);
+      renderPagePickerButton();
+      const mask = document.getElementById("pagePickMask");
+      if (mask && mask.style.display === "flex") fillPagePicker();
+      try {
+        await runQuery(codes, {
+          refreshMode: "quote",
+          forceLive: false,
+          stream: true,
+          limit: Math.max(codes.length, 1),
+          gen,
+          pageCapture: true,
+          replaceRunning: true,
+          noJobFallback: true,
+        });
+        if (!listQueryCurrent(gen) || state.pageBook !== book) return;
+        const got = state.pageCaptureResult || { rows: [] };
+        const by = new Map((got.rows || []).map((row) => [row.code6, row]));
+        (book.pages || []).forEach((page) => {
+          if (!page) return;
+          for (let i = 0; i < page.length; i += 1) {
+            const neu = by.get(page[i].code6);
+            if (!neu) continue;
+            const out = Object.assign({}, page[i]);
+            Object.entries(neu).forEach(([k, v]) => {
+              if (v === null || v === undefined || v === "") return;
+              if (QUOTE_FIELD_KEYS.has(k) || k === "code6" || k === "code" || k === "name") out[k] = v;
+            });
+            page[i] = out;
+          }
+        });
+        showBookPage(book, book.view);
+        const priced = (got.rows || []).some((row) => row.price != null && row.price !== "" && row.price !== "—");
+        patchStatus({
+          table: priced
+            ? `刷新行情 · ${state.poolLabel || ""} · 已更新已取到各页的现价`
+            : `刷新行情 · ${state.poolLabel || ""} · 已取到的页没有拿到现价`,
+          pool: "",
+        });
+        syncSortLine();
+      } catch (err) {
+        if (isQueryAbort(err) || !listQueryCurrent(gen)) return;
+        patchStatus({ table: `刷新行情 · ${state.poolLabel || ""} · 现价没有更新完` });
+      } finally {
+        book.quoting = false;
+        releaseListFlight(gen);
+        renderPagePickerButton();
+        if (mask && mask.style.display === "flex" && state.pageBook === book) fillPagePicker();
+      }
+    }
+
+    async function runFullPool() {
+      clearDateBox();
+      const key = listFlightKeyFor("full", null);
+      if (sameListFlight(key)) {
+        toast("这一轮还在进行");
+        return;
+      }
+      const gen = supersedeListQuery();
+      armListFlight(key, gen);
+      const book = {
+        gen,
+        pool: state.pool,
+        total: 0,
+        pages: [],
+        view: 0,
+        fetching: 0,
+        failed: "",
+        quoting: false,
+        viewManual: false,
+        fields: null,
+      };
+      state.pageBook = book;
+      state.paged = false;
+      state.loadingMore = false;
+      state.rowsRaw = [];
+      state.totalRows = 0;
+      const freshBody = document.getElementById("tableBody");
+      if (freshBody) freshBody.innerHTML = "";
+      renderPagedHint();
+      closePagePicker();
+      renderPagePickerButton();
+      let offset = 0;
+      try {
+        while (listQueryCurrent(gen) && state.pageBook === book) {
+          const idx = Math.floor(offset / PAGE_LIMIT);
+          if (idx > 99) {
+            book.failed = "页数过多，已停在这里";
+            book.fetching = -1;
+            patchStatus({ table: `${statusHead()} · ${book.failed}` });
+            break;
+          }
+          book.fetching = idx;
+          book.quoting = false;
+          renderPagePickerButton();
+          const mask = document.getElementById("pagePickMask");
+          if (mask && mask.style.display === "flex") fillPagePicker();
+          try {
+            await runQuery(null, {
+              refreshMode: "full",
+              forceLive: true,
+              stream: true,
+              limit: PAGE_LIMIT,
+              offset,
+              gen,
+              pageCapture: true,
+              replaceRunning: offset === 0,
+              noJobFallback: true,
+            });
+          } catch (err) {
+            if (!listQueryCurrent(gen) || isQueryAbort(err) || state.pageBook !== book) return;
+            const partial = takeCaptureRows();
+            if (partial.length) {
+              book.pages[idx] = partial;
+              if (idx === 0) showBookPage(book, 0);
+            }
+            book.failed = (err && err.message) || "这一页没有完成";
+            book.fetching = -1;
+            patchStatus({ table: `${statusHead()} · 停在第 ${idx + 1} 页 · ${book.failed}` });
+            break;
+          }
+          if (!listQueryCurrent(gen) || state.pageBook !== book) return;
+          const got = state.pageCaptureResult || { rows: [] };
+          if (got.fields && got.fields.length) book.fields = got.fields;
+          if (got.total && (!book.total || got.total > book.total)) book.total = got.total;
+          const rows = got.rows || [];
+          if (!rows.length) {
+            book.failed = "这一页没有取到股票";
+            book.fetching = -1;
+            patchStatus({ table: `${statusHead()} · 第 ${idx + 1} 页没有取到股票` });
+            break;
+          }
+          book.pages[idx] = rows;
+          if (idx === 0) showBookPage(book, 0);
+          renderPagePickerButton();
+          if (mask && mask.style.display === "flex") fillPagePicker();
+          const poolTotal = book.total || offset + rows.length;
+          const hasMore = Boolean(got.hasMore) && offset + PAGE_LIMIT < poolTotal;
+          if (!hasMore) {
+            book.fetching = -1;
+            book.failed = "";
+            const pages = Math.max(1, Math.ceil(poolTotal / PAGE_LIMIT));
+            let doneLine = `${statusHead()} · ${pages} 页全部完成 · ${poolTotal} 只`;
+            if (book.view > 0) doneLine += ` · 正在看第 ${book.view + 1} 页`;
+            patchStatus({
+              table: doneLine,
+              pool: "",
+              sort: state.sortKey ? "排序只排这一页" : "",
+            });
+            break;
+          }
+          offset += PAGE_LIMIT;
+        }
+      } finally {
+        if (state.pageBook === book && book.gen === gen && book.fetching >= 0 && !listQueryCurrent(gen)) {
+          book.fetching = -1;
+        }
+        releaseListFlight(gen);
+        renderPagePickerButton();
+        const mask = document.getElementById("pagePickMask");
+        if (mask && mask.style.display === "flex" && state.pageBook === book) fillPagePicker();
+      }
+    }
+
     document.getElementById("queryBtn").addEventListener("click", () =>
       runQuery(null, { refreshMode: "cache", forceLive: false, stream: true }).catch(toastQueryError)
     );
     document.getElementById("fullQueryBtn").addEventListener("click", () =>
-      runQuery(null, { refreshMode: "full", forceLive: true, stream: true }).catch(toastQueryError)
+      runFullPool().catch(toastQueryError)
     );
     document.getElementById("xDate").addEventListener("change", onDateBoxChange);
     document.getElementById("refreshBtn").addEventListener("click", async () => {
       clearDateBox();
+      const book = state.pageBook;
+      if (book && (book.pages || []).some((page) => page && page.length)) {
+        await refreshBookQuotes(book);
+        return;
+      }
       const codes = state.lastQueryCodes;
       const key = listFlightKeyFor("quote", codes);
       if (sameListFlight(key)) {
@@ -4814,6 +5238,17 @@
     document.getElementById("expCancel").addEventListener("click", closeExport);
     document.getElementById("exportMask").addEventListener("click", (e) => {
       if (e.target.id === "exportMask") closeExport();
+    });
+    document.getElementById("pagePickBtn").addEventListener("click", openPagePicker);
+    document.getElementById("pagePickClose").addEventListener("click", closePagePicker);
+    document.getElementById("pagePickMask").addEventListener("click", (e) => {
+      if (e.target.id === "pagePickMask") closePagePicker();
+    });
+    document.getElementById("pagePickGrid").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-page]");
+      if (!btn || btn.disabled) return;
+      chooseBookPage(Number(btn.dataset.page));
+      closePagePicker();
     });
     document.getElementById("colBtn").addEventListener("click", () => openCols().catch((e) => toast(e.message)));
     document.getElementById("archiveBtn").addEventListener("click", () => openArchive().catch((e) => toast(e.message)));
@@ -4915,7 +5350,8 @@
       const switchingAway = side !== state.side;
       setSide(side);
       if (side === "watch") {
-        if (switchingAway) supersedeListQuery();
+        if (switchingAway || state.pageBook) supersedeListQuery();
+        clearPageBook();
         showCenterList(state.watch || [], "自选");
         return;
       }
@@ -6584,7 +7020,7 @@
       }
       const tags = chosen.map(labelOf);
       if (mode === "full") {
-        return [{ lead: "这些列全部重新向数据源要，不用本机已经存好的。", tags }];
+        return [{ lead: "这些列全部重新向数据源要，不用本机已经存好的。按每页 100 只自动取完，取完的页可以从页码里打开。", tags }];
       }
       return [{ lead: "这些列会重做一遍。本机已有的直接用，缺的才去要。", tags }];
     }

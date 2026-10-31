@@ -93,7 +93,7 @@ def test_list_refresh_ignores_stale_progress():
     assert "function listQueryCurrent" in html
     assert "activeJobId" in html
     assert 'api("/query/jobs/" + jobId + "/cancel"' in html
-    assert "if (poolId !== state.pool) supersedeListQuery();" in html
+    assert "if (poolId !== state.pool || state.pageBook) supersedeListQuery();" in html
     assert 'if (gen != null && !listQueryCurrent(gen)) return;' in html
 
 
@@ -267,3 +267,32 @@ def test_date_box_opens_the_saved_table():
     shown = html.split("function showSnapshotPool", 1)[1].split("\n    function ", 1)[0]
     assert "selectPool(" not in shown
     assert 'getElementById("xDate").addEventListener("change"' in html
+
+
+def test_full_update_walks_pages_from_a_popup():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert 'id="pagePickBtn"' in html
+    assert 'id="pagePickMask"' in html
+    assert "function runFullPool" in html
+    assert "function chooseBookPage" in html
+    assert "正在取第" in html
+    assert "页全部完成" in html
+    assert "排序只排这一页" in html
+    full = html.split('getElementById("fullQueryBtn")', 1)[1].split("xDate", 1)[0]
+    assert "runFullPool" in full
+    query_btn = html.split('getElementById("queryBtn")', 1)[1].split("fullQueryBtn", 1)[0]
+    assert "runQuery(" in query_btn
+    assert "runFullPool" not in query_btn
+    walk = html.split("async function runFullPool()", 1)[1].split('getElementById("queryBtn")', 1)[0]
+    assert "PAGE_LIMIT" in walk
+    assert "pageCapture: true" in walk
+    assert "这一页没有取到股票" in walk
+    choose = html.split("function chooseBookPage(", 1)[1].split("function fillPagePicker(", 1)[0]
+    assert "runQuery(" not in choose
+    assert "supersedeListQuery" not in choose
+    done = html.split('if (event === "done")', 1)[1].split("if (state.streamAppend)", 1)[0]
+    assert "pageCapture" in done
+    assert "没有新的股票" not in done
+    refresh = html.split('getElementById("refreshBtn")', 1)[1].split("exportBtn", 1)[0]
+    assert "refreshBookQuotes" in refresh
+    assert refresh.index("sameListFlight") < refresh.index("supersedeListQuery")
