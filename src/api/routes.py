@@ -1107,6 +1107,36 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
     return bg_job_payload(job)
 
 
+@router.get("/query/snapshot-day")
+def query_snapshot_day(date: str = "", user: User = Depends(current_user)):
+    """打开某一天保存过的查询表。只读本地文件，不占查询槽，也不打麦蕊。"""
+    from src.query.snapshot import load_day_for_view
+
+    snap = load_day_for_view(user.id, date)
+    if not snap:
+        return {
+            "found": False,
+            "date": (date or "").strip(),
+            "message": "这一天没有可打开的查询表",
+        }
+    rows = [row for row in (snap.get("rows") or []) if isinstance(row, dict)]
+    keys = [str(key) for key in (snap.get("field_keys") or [])]
+    return {
+        "found": True,
+        "date": (date or "").strip(),
+        "fields": _field_view(keys),
+        "rows": rows,
+        "pool": snap.get("pool") or "",
+        "pool_id": snap.get("pool_id") or "",
+        "saved_at": snap.get("saved_at") or "",
+        "complete": bool(snap.get("complete", True)),
+        "covered": int(snap.get("covered") or len(rows)),
+        "total": int(snap.get("total") or len(rows)),
+        "count": len(rows),
+        "refresh_mode": "snapshot",
+    }
+
+
 @router.post("/query/run")
 def query_run(body: QueryIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     return _run_or_enqueue(body, user, db, do_export=False)

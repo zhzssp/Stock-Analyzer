@@ -81,7 +81,6 @@ PCT5 = registry.register(FieldSpec("pct5", "5日涨跌幅", "quote", ("indicator
 PCT10 = registry.register(FieldSpec("pct10", "10日涨跌幅", "quote", ("indicators",), default=False, alertable="threshold"))
 PCT60 = registry.register(FieldSpec("pct60", "60日涨跌幅", "quote", ("quote",), default=False, alertable="threshold"))
 PCT_YTD = registry.register(FieldSpec("pct_ytd", "年初至今涨幅", "quote", ("quote",), default=False, alertable="threshold"))
-X_PRICE = registry.register(FieldSpec("x_price", "X日价", "quote", ("bars",), default=False))
 LOW1Y = registry.register(FieldSpec("low1y", "近1年底", "bottom", ("quote", "bars"), default=False))
 LOW_LONG = registry.register(FieldSpec("low_long", "长窗底", "bottom", ("quote", "bars"), default=False))
 HIGH = registry.register(FieldSpec("high", "顶", "bottom", ("quote", "bars"), default=False))

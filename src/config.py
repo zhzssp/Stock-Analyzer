@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     query_sync_limit: int = 40
     cache_max_mb: float = 300
     artifact_keep: int = 20
+    # 按日期留下的查询表，每个用户最多这么多份。同一天同一池只占一份，超出时丢掉最久没打开的那份。
+    snapshot_day_keep: int = 30
     bars_max: int = 500
     alerts_log_max_mb: float = 2
     # 问答日志（data/agent.log）的体积上限（MB）。每轮问答一行，到点保留尾部 1/4。

@@ -21,19 +21,17 @@ def test_clean_concept_drops_section_label():
     assert _clean_concept("券商重仓,国防军工") == "券商重仓,国防军工"
 
 
-def test_indicators_and_x_price():
+def test_indicators():
     market = MarketClient()
     engine = QueryEngine(market)
     insts = resolve_instruments(["600038.SH", "002230.SZ"], market)
     rows = engine.run(
         insts,
-        field_keys=["name", "pct3", "pct5", "pct10", "x_price"],
-        x_date="2026-09-12",
+        field_keys=["name", "pct3", "pct5", "pct10"],
     )
     by = {r["code6"]: r for r in rows}
     assert by["600038"]["pct3"] == 2.4
     assert by["002230"]["pct10"] == 8.2
-    assert by["600038"]["x_price"] is not None
 
 
 def test_limit_pool_offline():

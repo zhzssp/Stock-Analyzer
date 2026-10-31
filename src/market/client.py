@@ -309,18 +309,6 @@ class MarketClient:
                 {"level": item[0], "block": item[1], "code6": item[2], "message": msg}
             )
 
-    def _has_block_issue(self, block: str, code6: str = "") -> bool:
-        """这次查询里，这个数据块是否已经记过失败。避免 X日价再重复说一遍接口错误。"""
-        want = str(code6 or "")
-        with self._issue_lock:
-            for item in self._query_issues:
-                if item.get("block") != block:
-                    continue
-                noted = str(item.get("code6") or "")
-                if not want or not noted or noted == want:
-                    return True
-        return False
-
     def _get_quiet(self, path: str) -> tuple[Any | None, str]:
         try:
             return self._get(path), ""
@@ -772,44 +760,6 @@ class MarketClient:
         }
         self._slow_store(key, out)
         return out
-
-    def close_on_date(self, inst: Instrument, target: str) -> float | None:
-        from src.market.calendar import nearest_trading_day_on_or_before
-
-        raw = _norm_day(target)
-        if not raw.isdigit() or len(raw) < 8:
-            self.note_issue("x_price", "日期无法识别，取不到收盘价", inst.code6)
-            return None
-        day = nearest_trading_day_on_or_before(raw, self) or raw
-        if not str(day).isdigit():
-            self.note_issue("x_price", "日期无法识别，取不到收盘价", inst.code6)
-            return None
-        series = self.history(inst)
-        if not series:
-            if not self._has_block_issue("bars", inst.code6):
-                self.note_issue("x_price", "没有日线，取不到该日收盘价", inst.code6)
-            return None
-        target_int = int(day)
-        best_day = 0
-        best_close = None
-        earliest = 0
-        for row in series:
-            bd_text = _bar_day(row)
-            if not bd_text.isdigit():
-                continue
-            bd = int(bd_text)
-            if earliest == 0 or bd < earliest:
-                earliest = bd
-            if bd <= target_int and bd >= best_day:
-                best_day = bd
-                best_close = row.get("c")
-        if best_close not in (None, ""):
-            return best_close
-        if earliest and earliest > target_int:
-            self.note_issue("x_price", "所选日期早于现有日线，没有这天的收盘价", inst.code6)
-        else:
-            self.note_issue("x_price", "该日日线没有收盘价", inst.code6)
-        return None
 
     def limit_pool_codes(self, kind: str = "up", day: str | None = None) -> set[str]:
         key = (kind or "up").lower()

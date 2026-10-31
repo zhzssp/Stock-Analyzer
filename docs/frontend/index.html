@@ -987,7 +987,7 @@
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
             <button class="btn ghost" id="archiveBtn" type="button">档案库</button>
-            <label class="hint x-date" for="xDate"><span data-help-tip="列设置勾选「X日价」时生效。">X日</span><input id="xDate" type="date" /></label>
+            <label class="hint x-date" for="xDate"><span data-help-tip="打开这一天保存过的查询表。同一天有多张表时，打开最晚保存的那张完整表。">日期</span><input id="xDate" type="date" /></label>
             <span class="export-scope" id="exportScope">当前导出：自选</span>
             <div class="hint-stack" id="hintStack">
               <span class="hint" id="queryHint">尚未查询</span>
@@ -2278,6 +2278,101 @@
       if (el) el.textContent = "当前导出：" + state.poolLabel;
     }
 
+    function sideForPool(poolId) {
+      const id = String(poolId || "");
+      if (id === "watch") return "watch";
+      if (id.indexOf("index:") === 0) return "quote";
+      return "exchange";
+    }
+
+    function showSnapshotPool(poolId, label) {
+      const id = String(poolId || "watch");
+      const side = sideForPool(id);
+      setSide(side);
+      if (side !== "watch") {
+        state.pool = id;
+        updateExportScope(label || id);
+        setPoolHint("");
+      } else if (label) {
+        updateExportScope(label);
+      }
+      if (state.pools && state.pools.length) renderPoolChips(state.pools);
+      state.shownPool = state.pool;
+      state.lastQueryCodes = null;
+    }
+
+    function clearDateBox() {
+      state.dayReq = (state.dayReq || 0) + 1;
+      state.viewingDay = false;
+      state.dayHint = false;
+      const el = document.getElementById("xDate");
+      if (!el || !el.value) return;
+      state.suppressDateChange = true;
+      el.value = "";
+      state.suppressDateChange = false;
+    }
+
+    function onDateBoxChange() {
+      if (state.suppressDateChange) return;
+      const el = document.getElementById("xDate");
+      const day = ((el && el.value) || "").trim();
+      if (!day) {
+        state.dayReq = (state.dayReq || 0) + 1;
+        if (state.viewingDay || state.dayHint) {
+          state.viewingDay = false;
+          state.dayHint = false;
+          patchStatus({ table: state.tableBeforeDay || "" });
+        }
+        return;
+      }
+      openSnapshotDay(day).catch((err) => toast((err && err.message) || "这一天的查询表没有打开"));
+    }
+
+    async function openSnapshotDay(day) {
+      state.dayReq = (state.dayReq || 0) + 1;
+      const req = state.dayReq;
+      let data;
+      try {
+        data = await api("/query/snapshot-day?date=" + encodeURIComponent(day));
+      } catch (err) {
+        if (req !== state.dayReq) return;
+        throw err;
+      }
+      if (req !== state.dayReq) return;
+      const box = document.getElementById("xDate");
+      if (!box || box.value !== day) return;
+      if (!data || data.found === false) {
+        if (!state.viewingDay && !state.dayHint) {
+          state.tableBeforeDay = (state.statusLines && state.statusLines.table) || "";
+        }
+        state.dayHint = true;
+        state.viewingDay = false;
+        patchStatus({ table: (data && data.message) || "这一天没有可打开的查询表" });
+        return;
+      }
+      if (!state.viewingDay && !state.dayHint) {
+        state.tableBeforeDay = (state.statusLines && state.statusLines.table) || "";
+      }
+      state.dayHint = false;
+      state.viewingDay = true;
+      // 进行中的查询还在写表时，先作废那一轮，避免它随后把刚打开的历史表盖掉。
+      supersedeListQuery();
+      if (state.listFlightOn) releaseListFlight(state.listFlightGen);
+      showSnapshotPool(data.pool_id, data.pool);
+      const rows = data.rows || [];
+      state.totalRows = rows.length;
+      state.paged = false;
+      state.loadingMore = false;
+      state.tablePage = 1;
+      state.streamRows = null;
+      state.listOnly = false;
+      renderTable(data.fields || [], rows, { all: true });
+      const when = formatShanghaiMinute(data.saved_at);
+      let line = "正在查看 " + (when || day) + " 的" + (data.pool || data.pool_id || "");
+      if (!data.complete) line += "，已保存 " + (data.covered || 0) + "/" + (data.total || 0) + " 只";
+      patchStatus({ table: line, pool: "", sort: "", extra: "" });
+    }
+
     function currentExportPool() {
       return state.side === "watch" ? "watch" : state.pool;
     }
@@ -3272,9 +3367,7 @@
 
     function queryPayload(codes, opts) {
       const o = opts && typeof opts === "object" ? opts : { forceLive: !!opts };
-      const xDate = (document.getElementById("xDate").value || "").trim();
       const base = codes && codes.length ? { codes } : { pool: state.pool };
-      if (xDate) base.x_date = xDate.replace(/-/g, "");
       const refreshMode = o.refreshMode || "quote";
       base.refresh_mode = refreshMode;
       if (o.fields && o.fields.length) base.fields = o.fields;
@@ -3434,6 +3527,7 @@
     async function runQuery(codes, opts) {
       const o = opts && typeof opts === "object" ? opts : { forceLive: !!opts, refreshMode: opts ? "full" : "quote" };
       const appending = Boolean(o.append); // 滚动加载下一页，不重置已有内容
+      if (!appending) clearDateBox();
       let gen;
       let armedHere = false;
       if (appending) {
@@ -4053,8 +4147,6 @@
         payload.pool = currentExportPool();
       }
       if (!payload.codes || !payload.codes.length) delete payload.codes;
-      const xDate = (document.getElementById("xDate").value || "").trim();
-      if (xDate) payload.x_date = xDate.replace(/-/g, "");
       state.exportHintLabel = exportDescribe().fileStem || state.poolLabel || "";
       payload.refresh_mode = o.fresh;
       payload.force_live = o.fresh === "full";
@@ -4639,7 +4731,9 @@
     document.getElementById("fullQueryBtn").addEventListener("click", () =>
       runQuery(null, { refreshMode: "full", forceLive: true, stream: true }).catch(toastQueryError)
     );
+    document.getElementById("xDate").addEventListener("change", onDateBoxChange);
     document.getElementById("refreshBtn").addEventListener("click", async () => {
+      clearDateBox();
       const codes = state.lastQueryCodes;
       const key = listFlightKeyFor("quote", codes);
       if (sameListFlight(key)) {

@@ -4,6 +4,9 @@
 已经组装完的行并进同一份未完成快照，不把没查到的股票删掉。
 按快照显示时，若有更晚且盖住当前这批的完整快照，或未完成大池里已有的股票，
 就抽出这些更新的行；空格子仍留原来的值。
+
+查询和全量更新还会按上海日历日期另存一份，给日期框打开。
+当前这份 user_{id}_{pool}.json 仍是实时表，按日副本不写回它，刷新行情也不另存。
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from typing import Any
 
 from src.config import settings
 from src.market.client import _clean_concept
+from src.market.clock import SHANGHAI
 from src.market.normalize import Instrument
 from src.platform.storage import atomic_write_text
 from src.query.cards import derive_card_metrics
@@ -82,6 +86,170 @@ def _stamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _shanghai_day(stamp: str) -> str:
+    text = (stamp or "").strip()
+    now = datetime.now(SHANGHAI)
+    if not text:
+        return now.date().isoformat()
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return now.date().isoformat()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(SHANGHAI).date().isoformat()
+
+
+def _normalize_day(text: str) -> str | None:
+    raw = (text or "").strip()
+    if len(raw) == 8 and raw.isdigit():
+        raw = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return raw
+
+
+def _user_days_dir(user_id: int) -> Path:
+    return _dir() / "days" / f"user_{user_id}"
+
+
+def _day_file(user_id: int, day: str, pool_id: str) -> Path:
+    return _user_days_dir(user_id) / day / f"{_safe_pool(pool_id)}.json"
+
+
+def _index_path(user_id: int) -> Path:
+    return _user_days_dir(user_id) / "index.json"
+
+
+def _load_index(user_id: int) -> list[dict]:
+    data = _read_snapshot(_index_path(user_id)) or {}
+    entries = data.get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return []
+    return [dict(item) for item in entries if isinstance(item, dict)]
+
+
+def _save_index(user_id: int, entries: list[dict]) -> None:
+    path = _index_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps({"entries": entries}, ensure_ascii=False))
+
+
+def _entry_key(entry: dict) -> tuple[str, str]:
+    return (str(entry.get("date") or ""), str(entry.get("pool_id") or ""))
+
+
+def _index_row(payload: dict, day: str, last_used: str) -> dict:
+    rows = payload.get("rows") or []
+    return {
+        "date": day,
+        "pool_id": str(payload.get("pool_id") or ""),
+        "pool": str(payload.get("pool") or ""),
+        "saved_at": str(payload.get("saved_at") or ""),
+        "last_used": last_used,
+        "complete": bool(payload.get("complete")),
+        "covered": int(payload.get("covered") or len(rows)),
+        "total": int(payload.get("total") or len(rows)),
+    }
+
+
+def _drop_day_file(user_id: int, day: str, pool_id: str) -> None:
+    path = _day_file(user_id, day, pool_id)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+
+
+def _keep_limit() -> int:
+    return max(int(getattr(settings, "snapshot_day_keep", 30) or 30), 1)
+
+
+def _evict_days_locked(user_id: int, entries: list[dict], protected: tuple[str, str]) -> list[dict]:
+    """只在名册新增加一条、并且超过上限时丢掉最久没打开的。刚写入的那条不参与。"""
+    keep = _keep_limit()
+    while len(entries) > keep:
+        victims = [item for item in entries if _entry_key(item) != protected]
+        if not victims:
+            break
+        victim = min(
+            victims,
+            key=lambda item: (str(item.get("last_used") or ""), str(item.get("saved_at") or "")),
+        )
+        _drop_day_file(user_id, str(victim.get("date") or ""), str(victim.get("pool_id") or ""))
+        gone = _entry_key(victim)
+        entries = [item for item in entries if _entry_key(item) != gone]
+    return entries
+
+
+def _archive_day_locked(user_id: int, payload: dict) -> None:
+    """调用方已持有写锁。按上海日期另存，同一天同一池覆盖，不另占名额。"""
+    day = _shanghai_day(str(payload.get("saved_at") or ""))
+    pid = str(payload.get("pool_id") or "")
+    if not day or not pid:
+        return
+    path = _day_file(user_id, day, pid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False))
+    now = _stamp()
+    key = (day, pid)
+    entries = _load_index(user_id)
+    row = _index_row(payload, day, now)
+    found = False
+    for idx, entry in enumerate(entries):
+        if _entry_key(entry) == key:
+            entries[idx] = row
+            found = True
+            break
+    if not found:
+        entries.append(row)
+        entries = _evict_days_locked(user_id, entries, key)
+    _save_index(user_id, entries)
+
+
+def _touch_day_locked(user_id: int, day: str, pool_id: str) -> None:
+    key = (day, pool_id)
+    entries = _load_index(user_id)
+    now = _stamp()
+    changed = False
+    for entry in entries:
+        if _entry_key(entry) == key:
+            entry["last_used"] = now
+            changed = True
+            break
+    if changed:
+        _save_index(user_id, entries)
+
+
+def load_day_for_view(user_id: int, day: str) -> dict | None:
+    """打开某一天要显示的那份：优先最晚的完整表，没有完整表再用最晚的未完成表。
+
+    打开成功会把这份的 last_used 拨到现在，使它在淘汰时排到最后。不改实时表。
+    """
+    norm = _normalize_day(day)
+    if not norm:
+        return None
+    with _write_lock:
+        entries = [item for item in _load_index(user_id) if str(item.get("date") or "") == norm]
+        ranked = sorted(entries, key=lambda item: str(item.get("saved_at") or ""), reverse=True)
+        complete = [item for item in ranked if item.get("complete")]
+        rest = [item for item in ranked if not item.get("complete")]
+        for entry in complete + rest:
+            pid = str(entry.get("pool_id") or "")
+            data = _read_snapshot(_day_file(user_id, norm, pid))
+            if not data:
+                continue
+            _touch_day_locked(user_id, norm, pid)
+            return data
+    return None
+
+
 def _filled(value: Any) -> bool:
     return value is not None and value != "" and value != "—"
 
@@ -134,8 +302,10 @@ def save_table_snapshot(
         "refresh_mode": mode,
     }
     # 快照是整表，写的时候可能正有人在读：原子替换，别让人读到半张表。
+    # 同一把锁里再按上海日期留一份，供日期框打开。实时文件仍被这次结果覆盖。
     with _write_lock:
         atomic_write_text(_path(user_id, pid), json.dumps(payload, ensure_ascii=False))
+        _archive_day_locked(user_id, payload)
 
 
 def merge_partial_snapshot(
@@ -209,6 +379,7 @@ def merge_partial_snapshot(
             "refresh_mode": mode,
         }
         atomic_write_text(_path(user_id, pid), json.dumps(payload, ensure_ascii=False))
+        _archive_day_locked(user_id, payload)
 
 
 def load_table_snapshot(user_id: int, pool_id: str = "watch") -> dict | None:

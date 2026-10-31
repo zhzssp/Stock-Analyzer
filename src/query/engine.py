@@ -35,7 +35,7 @@ REFRESH_CACHE = "cache"
 REFRESH_SNAPSHOT = "snapshot"
 REFRESH_FULL = "full"
 SLOW_DEPS = frozenset({"profile", "holders", "finance", "flow", "bars", "indicators"})
-# 取数任务的调度顺序。bars 最重（一次 500 根日线 + 底顶 + x 日收盘），排在最前面投出去，
+# 取数任务的调度顺序。bars 最重（一次 500 根日线 + 底顶），排在最前面投出去，
 # 否则最长的任务拖在队尾，整轮的尾延迟就是它决定的。
 SLOW_FETCH_ORDER = ("bars", "profile", "holders", "finance", "flow", "indicators")
 
@@ -96,13 +96,14 @@ class QueryEngine:
         两者都在 worker 线程里被调用（取数已并发），调用方要自己做线程安全。
         on_quote_progress(done, total) 在每一批现价回来时调用，供刷新估算剩余时间。
         """
-        keys = field_keys or registry.default_keys()
+        del x_date  # 日期框改为打开当天保存的表，不再参与取数。
+        known = {spec.key for spec in registry.all()}
+        requested = list(field_keys) if field_keys else registry.default_keys()
+        keys = [k for k in requested if k in known] or registry.default_keys()
         specs = [registry.get(k) for k in keys]
         column_need = {dep for spec in specs for dep in spec.requires}
         if any(s.group == "card" for s in specs):
             column_need.add("quote")
-        if "x_price" in keys and x_date:
-            column_need.add("bars")
         need = fetch_need(column_need, refresh_mode)
         mode = (refresh_mode or REFRESH_FULL).strip().lower()
         prev_mode = getattr(self.market, "query_refresh_mode", REFRESH_FULL)
@@ -113,7 +114,6 @@ class QueryEngine:
         if opener:
             opener()
         try:
-            self._note_x_price_gap(keys, x_date, mode)
             return self._run_rows(
                 instruments,
                 keys,
@@ -123,7 +123,6 @@ class QueryEngine:
                 cards,
                 writer,
                 concept_extra,
-                x_date,
                 force_live,
                 on_quotes=on_quotes,
                 on_row=on_row,
@@ -142,16 +141,6 @@ class QueryEngine:
             self.last_issues = combine_issues(notes, early)
             self.market.query_refresh_mode = prev_mode
 
-    def _note_x_price_gap(self, keys: list[str], x_date: str | None, mode: str) -> None:
-        """没去取收盘价时说明原因。接口报错由日线那一条单独带回来。"""
-        note = getattr(self.market, "note_issue", None)
-        if not note or "x_price" not in (keys or []):
-            return
-        if not x_date:
-            note("x_price", "没有选择日期，X日价为空。选好日期后再点「查询」。")
-        elif (mode or "").strip().lower() == REFRESH_QUOTE:
-            note("x_price", "刷新只更新现价，不会取历史收盘。要看 X日价请点「查询」。")
-
     def _run_rows(
         self,
         instruments: list[Instrument],
@@ -162,7 +151,6 @@ class QueryEngine:
         cards: dict[str, dict] | None,
         writer: str,
         concept_extra: dict | None,
-        x_date: str | None,
         force_live: bool,
         on_quotes: Any = None,
         on_row: Any = None,
@@ -242,7 +230,6 @@ class QueryEngine:
                     "flow": {},
                     "bottom": {},
                     "indicators": {},
-                    "x_price": None,
                     "card": derive_card_metrics(quote.get("p"), (cards or {}).get(inst.code6), None),
                 }
                 row = {
@@ -272,7 +259,6 @@ class QueryEngine:
                 "flow": {},
                 "bottom": {},
                 "indicators": {},
-                "x_price": None,
             }
 
         def fetch_slow(kind: str, inst: Instrument) -> Any:
@@ -288,17 +274,15 @@ class QueryEngine:
                 return series[-1] if series else {}
             if kind == "indicators":
                 return self.market.indicators(inst)
-            # bars：日线最重（一次 500 根），底顶和 x 日收盘都基于它，合成一个任务。
+            # bars：日线最重（一次 500 根），底顶基于它，合成一个任务。
             bars = self.market.history(inst)
             return {
                 "bottom": compute_bottom(bars, (quotes.get(inst.code6) or {}).get("p")),
-                "x_price": self.market.close_on_date(inst, x_date) if (x_date and "x_price" in keys) else None,
             }
 
         def apply_slow(bag: dict, kind: str, value: Any) -> None:
             if kind == "bars":
                 bag["bottom"] = (value or {}).get("bottom") or {}
-                bag["x_price"] = (value or {}).get("x_price")
             elif isinstance(value, dict):
                 bag[kind] = value
 
@@ -443,7 +427,6 @@ class QueryEngine:
             "pct10": ind.get("pct10"),
             "pct60": q.get("zdf60"),
             "pct_ytd": q.get("zdfnc"),
-            "x_price": bag.get("x_price"),
             "industry": p.get("industry"),
             "sector": p.get("sector"),
             "sw_l1": p.get("sw_l1"),

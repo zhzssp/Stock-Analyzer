@@ -235,7 +235,7 @@ def test_repeat_click_does_not_start_another_round():
     assert "已经有一份导出在进行" in html
     refresh = html.split('getElementById("refreshBtn")', 1)[1].split("exportBtn", 1)[0]
     assert refresh.index("sameListFlight") < refresh.index("supersedeListQuery")
-    query = html.split("async function runQuery", 1)[1].split("async function downloadArtifact", 1)[0]
+    query = html.split("async function runQuery(", 1)[1].split("async function downloadArtifact", 1)[0]
     assert query.index("sameListFlight") < query.index("supersedeListQuery")
     start = html.split('getElementById("expStart").addEventListener', 1)[1][:900]
     assert start.index("exportBusy") < start.index("closeExport")
@@ -249,3 +249,21 @@ def test_decision_card_overlay_sits_above_sticky_table_headers():
     assert html.split(".login-mask {", 1)[1].split("}", 1)[0].count("z-index: 40") == 1
     assert "#queryTable th" in html
     assert "z-index: 1;" in html.split("#queryTable th {", 1)[1].split("}", 1)[0]
+
+
+def test_date_box_opens_the_saved_table():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert "X日价" not in html
+    assert "x_date" not in html
+    assert "打开这一天保存过的查询表" in html
+    assert "/query/snapshot-day?date=" in html
+    assert "这一天没有可打开的查询表" in html
+    assert '正在查看 " + (when || day) + " 的"' in html
+    assert "已保存 " in html
+    query = html.split("async function runQuery(", 1)[1].split("async function downloadArtifact", 1)[0]
+    assert query.index("clearDateBox") < query.index("supersedeListQuery")
+    payload = html.split("function queryPayload", 1)[1].split("function formatShanghaiMinute", 1)[0]
+    assert "xDate" not in payload
+    shown = html.split("function showSnapshotPool", 1)[1].split("\n    function ", 1)[0]
+    assert "selectPool(" not in shown
+    assert 'getElementById("xDate").addEventListener("change"' in html
