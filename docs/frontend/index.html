@@ -2928,9 +2928,10 @@
         });
       } else if (state.streamKeepRows) {
         const priceNote = state.listOnly && loaded ? "现价没有取到" : "现价已更新";
+        const resumeNote = data.resume && data.resume.reason ? data.resume.reason : "";
         patchStatus({
           table: `${head} · ${loaded} 只 · ${priceNote} · 用时 ${sec} 秒`,
-          pool: "",
+          pool: resumeNote,
           extra: "",
         });
       } else if (state.streamAppend && !data.has_more) {
@@ -3076,11 +3077,12 @@
       if (event === "done") {
         if (state.pageCapture) {
           state.pageCaptureResult = {
-            rows: takeCaptureRows(),
+            rows: rowsInCodeOrder(takeCaptureRows(), data.code_order),
             hasMore: Boolean(data.has_more),
             total: (state.pageBook && state.pageBook.total) || state.totalRows || 0,
             fields: state.pageCaptureFields || [],
             elapsed_ms: data.elapsed_ms || 0,
+            resume: data.resume || null,
           };
           showQueryIssues(data.issues || []);
           return;
@@ -3132,6 +3134,8 @@
           limit: (opts && opts.limit) || PAGE_LIMIT,
           offset: opts && (opts.append || opts.pageCapture) ? (opts.offset || 0) : 0,
           replaceRunning: !!(opts && opts.replaceRunning),
+          resume: Boolean(opts && opts.resume),
+          pool: (opts && opts.pool) || "",
         });
         const headers = { "Content-Type": "application/json" };
         if (state.token) headers.Authorization = "Bearer " + state.token;
@@ -3464,6 +3468,13 @@
       if (forceLive) base.force_live = true;
       else if (refreshMode === "cache") base.force_live = false;
       if (o.replaceRunning) base.replace_running = true;
+      if (o.resume) {
+        base.resume = true;
+        if (codes && codes.length) {
+          const poolId = o.pool || state.pool;
+          if (poolId) base.pool = poolId;
+        }
+      }
       return base;
     }
 
@@ -3654,6 +3665,8 @@
         sortKey: state.sortKey || "",
         sortDir: state.sortDir || "desc",
         replaceRunning: Boolean(o.replaceRunning) && !appending,
+        resume: Boolean(o.resume),
+        pool: o.pool || "",
       });
       if (refreshMode === "cache" && !forceLive) payload.force_live = false;
       saDebug.lastPayload = payload;
@@ -4818,12 +4831,42 @@
       (rows || []).forEach((row) => {
         if (!row || row.code6 == null || row.code6 === "") return;
         const key = row.code6;
-        if (!map.by[key]) map.order.push(key);
-        map.by[key] = map.by[key] ? Object.assign({}, map.by[key], row) : row;
+        if (!map.by[key]) {
+          map.order.push(key);
+          map.by[key] = row;
+          return;
+        }
+        const merged = Object.assign({}, map.by[key]);
+        Object.entries(row).forEach(([k, v]) => {
+          if (v === null || v === undefined || v === "") return;
+          merged[k] = v;
+        });
+        map.by[key] = merged;
       });
       state.pageCaptureMap = map;
     }
 
+    function rowsInCodeOrder(rows, order) {
+      if (!order || !order.length) return rows || [];
+      const by = new Map();
+      (rows || []).forEach((row) => {
+        if (row && row.code6) by.set(row.code6, row);
+      });
+      const seen = new Set();
+      const out = [];
+      order.forEach((code) => {
+        const row = by.get(code);
+        if (!row || seen.has(code)) return;
+        seen.add(code);
+        out.push(row);
+      });
+      (rows || []).forEach((row) => {
+        if (!row || !row.code6 || seen.has(row.code6)) return;
+        seen.add(row.code6);
+        out.push(row);
+      });
+      return out;
+    }
     function takeCaptureRows() {
       const map = state.pageCaptureMap || { order: [], by: {} };
       state.pageCaptureMap = null;
@@ -4858,7 +4901,7 @@
           const suffix = etaSuffix(progress.done || 0, progress.total, progress.stage || "quote");
           bit = ` ${progress.done || 0}/${progress.total}${suffix}`;
         }
-        patchStatus({ table: `${statusHead()} · 正在更新已取到的现价${bit}`, pool: "" });
+        patchStatus({ table: `${statusHead()} · 正在更新已取到的现价${bit}`, pool: (book && book.resumeNote) || "" });
         if (book && state.sortKey) syncSortLine();
         return;
       }
@@ -4877,7 +4920,7 @@
       if (book && book.pages && book.pages[book.view] && book.view !== book.fetching) {
         detail += ` · 正在看第 ${book.view + 1} 页`;
       }
-      patchStatus({ table: `${statusHead()} · ${detail}`, pool: "" });
+      patchStatus({ table: `${statusHead()} · ${detail}`, pool: (book && book.resumeNote) || "" });
       if (book && state.sortKey && book.pages && book.pages[book.view]) syncSortLine();
       renderPagePickerButton();
     }
@@ -4994,6 +5037,8 @@
           pageCapture: true,
           replaceRunning: true,
           noJobFallback: true,
+          resume: true,
+          pool: book.pool || state.pool,
         });
         if (!listQueryCurrent(gen) || state.pageBook !== book) return;
         const got = state.pageCaptureResult || { rows: [] };
@@ -5013,11 +5058,12 @@
         });
         showBookPage(book, book.view);
         const priced = (got.rows || []).some((row) => row.price != null && row.price !== "" && row.price !== "—");
+        const resumeNote = got.resume && got.resume.reason ? got.resume.reason : "";
         patchStatus({
           table: priced
             ? `刷新行情 · ${state.poolLabel || ""} · 已更新已取到各页的现价`
             : `刷新行情 · ${state.poolLabel || ""} · 已取到的页没有拿到现价`,
-          pool: "",
+          pool: resumeNote,
         });
         syncSortLine();
       } catch (err) {
@@ -5040,10 +5086,26 @@
       }
       const gen = supersedeListQuery();
       armListFlight(key, gen);
+      state.statusAction = "全量更新";
+      state.statusPool = state.poolLabel || "自选";
+      state.statusRole = "table";
+      let prior = null;
+      try {
+        prior = await api(
+          "/query/resume?mode=full&pool=" + encodeURIComponent(state.pool) + "&page_size=" + PAGE_LIMIT
+        );
+      } catch (err) {
+        prior = null;
+      }
+      if (!listQueryCurrent(gen)) {
+        releaseListFlight(gen);
+        return;
+      }
+      const resuming = Boolean(prior && prior.status === "open");
       const book = {
         gen,
         pool: state.pool,
-        total: 0,
+        total: resuming ? (prior.total || 0) : 0,
         pages: [],
         view: 0,
         fetching: 0,
@@ -5051,18 +5113,32 @@
         quoting: false,
         viewManual: false,
         fields: null,
+        resumeNote: (prior && prior.reason) || "",
       };
+      if (resuming) {
+        (prior.pages || []).forEach((page) => {
+          if (page && page.rows && page.rows.length) book.pages[page.index] = page.rows;
+        });
+      }
       state.pageBook = book;
       state.paged = false;
       state.loadingMore = false;
-      state.rowsRaw = [];
-      state.totalRows = 0;
-      const freshBody = document.getElementById("tableBody");
-      if (freshBody) freshBody.innerHTML = "";
+      let offset = resuming ? Number(prior.resume_from || 0) : 0;
+      if (resuming && prior.total && offset >= prior.total) offset = 0;
+      const startOffset = offset;
+      if (resuming && book.pages[0] && book.pages[0].length) {
+        showBookPage(book, 0);
+        if (book.resumeNote) patchStatus({ table: `${statusHead()} · ${book.resumeNote}`, pool: "" });
+      } else {
+        state.rowsRaw = [];
+        state.totalRows = resuming ? (prior.total || 0) : 0;
+        const freshBody = document.getElementById("tableBody");
+        if (freshBody) freshBody.innerHTML = "";
+        if (book.resumeNote) patchStatus({ table: `${statusHead()} · ${book.resumeNote}`, pool: "" });
+      }
       renderPagedHint();
       closePagePicker();
       renderPagePickerButton();
-      let offset = 0;
       try {
         while (listQueryCurrent(gen) && state.pageBook === book) {
           const idx = Math.floor(offset / PAGE_LIMIT);
@@ -5086,23 +5162,41 @@
               offset,
               gen,
               pageCapture: true,
-              replaceRunning: offset === 0,
+              replaceRunning: offset === startOffset,
               noJobFallback: true,
+              resume: true,
             });
           } catch (err) {
-            if (!listQueryCurrent(gen) || isQueryAbort(err) || state.pageBook !== book) return;
-            const partial = takeCaptureRows();
-            if (partial.length) {
-              book.pages[idx] = partial;
-              if (idx === 0) showBookPage(book, 0);
+            const ownBook = state.pageBook === book;
+            if (ownBook) {
+              const partial = takeCaptureRows();
+              if (partial.length) {
+                book.pages[idx] = partial;
+                const showing = book.pages[book.view] && book.pages[book.view].length;
+                if (book.view === idx || !showing) showBookPage(book, book.view === idx ? idx : 0);
+              }
+            }
+            if (!listQueryCurrent(gen) || isQueryAbort(err) || !ownBook) {
+              if (ownBook) {
+                book.fetching = -1;
+                book.failed = "";
+                patchStatus({ table: `${statusHead()} · 已停下，再点全量更新会从这里继续` });
+              }
+              return;
             }
             book.failed = (err && err.message) || "这一页没有完成";
             book.fetching = -1;
             patchStatus({ table: `${statusHead()} · 停在第 ${idx + 1} 页 · ${book.failed}` });
             break;
           }
-          if (!listQueryCurrent(gen) || state.pageBook !== book) return;
+          if (!listQueryCurrent(gen) || state.pageBook !== book) {
+            if (state.pageBook === book && state.pageCaptureResult && (state.pageCaptureResult.rows || []).length) {
+              book.pages[idx] = state.pageCaptureResult.rows;
+            }
+            return;
+          }
           const got = state.pageCaptureResult || { rows: [] };
+          if (got.resume && got.resume.reason) book.resumeNote = got.resume.reason;
           if (got.fields && got.fields.length) book.fields = got.fields;
           if (got.total && (!book.total || got.total > book.total)) book.total = got.total;
           const rows = got.rows || [];
@@ -5121,6 +5215,7 @@
           if (!hasMore) {
             book.fetching = -1;
             book.failed = "";
+            book.resumeNote = "";
             const pages = Math.max(1, Math.ceil(poolTotal / PAGE_LIMIT));
             let doneLine = `${statusHead()} · ${pages} 页全部完成 · ${poolTotal} 只`;
             if (book.view > 0) doneLine += ` · 正在看第 ${book.view + 1} 页`;
@@ -5182,6 +5277,7 @@
           gen,
           keepRows: true,
           noJobFallback: true,
+          resume: !(codes && codes.length),
         });
       } catch (e) {
         if (stopped(e)) return;

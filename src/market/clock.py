@@ -510,6 +510,7 @@ def align_quotes(
     force_live: bool = False,
     on_quote_progress: Any = None,
     cancel: Any = None,
+    on_quote_flush: Any = None,
 ) -> tuple[dict[str, dict], dict]:
     """Return live quotes keyed by code6, preferring the current wall-clock slot file.
 
@@ -574,6 +575,13 @@ def align_quotes(
                     progress_done += 1
             if on_quote_progress and need:
                 on_quote_progress(min(progress_done, len(need)), len(need))
+            if on_quote_flush:
+                partial = dict(getattr(market, "_quotes_partial", {}) or {})
+                if partial:
+                    try:
+                        on_quote_flush(partial)
+                    except Exception:
+                        pass
 
         prev_hook = getattr(market, "_quote_batch_progress", None)
         market._quote_batch_progress = _on_batch
@@ -612,4 +620,11 @@ def align_quotes(
     quote_err = str(getattr(market, "last_quote_error", "") or "").strip()
     if quote_err and any(row.get("source") == "missing" for row in out.values()):
         meta["reason"] = quote_err
+    if on_quote_flush and out:
+        priced = {code: row for code, row in out.items() if row.get("p") not in (None, "")}
+        if priced:
+            try:
+                on_quote_flush(priced)
+            except Exception:
+                pass
     return out, meta

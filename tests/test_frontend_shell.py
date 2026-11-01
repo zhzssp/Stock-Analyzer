@@ -296,3 +296,20 @@ def test_full_update_walks_pages_from_a_popup():
     refresh = html.split('getElementById("refreshBtn")', 1)[1].split("exportBtn", 1)[0]
     assert "refreshBookQuotes" in refresh
     assert refresh.index("sameListFlight") < refresh.index("supersedeListQuery")
+
+
+def test_refresh_buttons_resume_an_open_run():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    walk = html.split("async function runFullPool()", 1)[1].split('getElementById("queryBtn")', 1)[0]
+    assert "/query/resume?mode=full" in walk
+    assert "resume: true" in walk
+    assert "已停下，再点全量更新会从这里继续" in walk
+    assert "code_order" in html
+    book = html.split("async function refreshBookQuotes(", 1)[1].split("async function runFullPool()", 1)[0]
+    assert "resume: true" in book
+    refresh = html.split('getElementById("refreshBtn")', 1)[1].split("exportBtn", 1)[0]
+    assert "resume:" in refresh
+    slow = refresh.split("slowFieldsMostlyEmpty", 1)[1]
+    assert "resume:" not in slow
+    query = html.split('getElementById("queryBtn")', 1)[1].split("fullQueryBtn", 1)[0]
+    assert "resume:" not in query

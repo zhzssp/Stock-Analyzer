@@ -40,6 +40,12 @@ SLOW_DEPS = frozenset({"profile", "holders", "finance", "flow", "bars", "indicat
 SLOW_FETCH_ORDER = ("bars", "profile", "holders", "finance", "flow", "indicators")
 
 
+def _skip_kind(skip_blocks: dict | None, code: str, kind: str) -> bool:
+    if not skip_blocks:
+        return False
+    return kind in (skip_blocks.get(code) or ())
+
+
 def fetch_need(column_need: set[str], refresh_mode: str) -> set[str]:
     """P0 快刷只拉现价；P2 cache/full 按列需要拉慢字段（cache 走 TTL 分项缓存）。"""
     mode = (refresh_mode or REFRESH_FULL).strip().lower()
@@ -90,6 +96,9 @@ class QueryEngine:
         on_issue: Any = None,
         on_quote_progress: Any = None,
         cancel: Any = None,
+        skip_blocks: dict | None = None,
+        seed_quotes: dict | None = None,
+        on_quote_flush: Any = None,
     ) -> list[dict]:
         """on_quotes / on_row 用于流式查询：先送一批只有行情的行，再逐只送完整行。
 
@@ -129,6 +138,9 @@ class QueryEngine:
                 on_issue=on_issue,
                 on_quote_progress=on_quote_progress,
                 cancel=cancel,
+                skip_blocks=skip_blocks,
+                seed_quotes=seed_quotes,
+                on_quote_flush=on_quote_flush,
             )
         finally:
             notes: list[dict] = []
@@ -157,22 +169,32 @@ class QueryEngine:
         on_issue: Any = None,
         on_quote_progress: Any = None,
         cancel: Any = None,
+        skip_blocks: dict | None = None,
+        seed_quotes: dict | None = None,
+        on_quote_flush: Any = None,
     ) -> list[dict]:
         quotes: dict[str, dict] = {}
         clock_meta = {"as_of": "", "source": "", "enabled": False, "reason": ""}
+        quote_insts: list = []
         if "quote" in need:
             from src.market.clock import align_quotes
 
-            quote_extra = [] if (refresh_mode or "").strip().lower() == REFRESH_QUOTE else None
-            quotes, clock_meta = align_quotes(
-                self.market,
-                instruments,
-                writer=writer,
-                force_live=force_live,
-                extra_codes=quote_extra,
-                on_quote_progress=on_quote_progress,
-                cancel=cancel,
-            )
+            quote_insts = [inst for inst in instruments if not _skip_kind(skip_blocks, inst.code6, "quote")]
+            if quote_insts:
+                quote_extra = [] if (refresh_mode or "").strip().lower() == REFRESH_QUOTE else None
+                quotes, clock_meta = align_quotes(
+                    self.market,
+                    quote_insts,
+                    writer=writer,
+                    force_live=force_live,
+                    extra_codes=quote_extra,
+                    on_quote_progress=on_quote_progress,
+                    cancel=cancel,
+                    on_quote_flush=on_quote_flush,
+                )
+            for code, seed in (seed_quotes or {}).items():
+                if seed and code not in quotes:
+                    quotes[code] = seed
         self.last_clock_meta = clock_meta
         cancelled = cancel is not None and getattr(cancel, "is_set", lambda: False)()
         if not cancelled:
@@ -183,9 +205,10 @@ class QueryEngine:
             # 先把只有行情的行送出去，界面立刻有东西可看，慢字段随后逐只补。
             FAST_KEYS = ("name", "code", "price", "pct", "pe", "pb")
             fast_specs = [s for s in specs if s.key in FAST_KEYS]
-            if fast_specs:
+            fast_insts = quote_insts if skip_blocks is not None else instruments
+            if fast_specs and fast_insts:
                 fast_rows = []
-                for inst in instruments:
+                for inst in fast_insts:
                     q = quotes.get(inst.code6) or {}
                     row = {
                         "code6": inst.code6,
@@ -314,7 +337,7 @@ class QueryEngine:
             """旧路径：一只票内部串行取完再组装（QUERY_TASK_POOL=0 时走这条）。"""
             bag = new_bag(inst)
             for kind in SLOW_FETCH_ORDER:
-                if kind in need:
+                if kind in need and not _skip_kind(skip_blocks, inst.code6, kind):
                     apply_slow(bag, kind, fetch_slow(kind, inst))
             return assemble(inst, bag)
 
@@ -353,13 +376,23 @@ class QueryEngine:
 
             # 按 kind 外层铺开：同一种接口一起打，最重的 bars 排在前面先投出去，
             # 否则最长的那个任务会拖在队尾，尾延迟就是它决定的。
-            tasks = [(kind, inst) for kind in kinds for inst in instruments]
-            with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
-                list(pool.map(lambda item: run_task(*item), tasks))
-            required = set(kinds)
+            tasks = [
+                (kind, inst)
+                for kind in kinds
+                for inst in instruments
+                if not _skip_kind(skip_blocks, inst.code6, kind)
+            ]
+            if tasks:
+                with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
+                    list(pool.map(lambda item: run_task(*item), tasks))
             cancelled = cancel is not None and cancel.is_set()
             if cancelled:
-                ready = [inst for inst in instruments if required <= done_kinds[inst.code6]]
+                ready = [
+                    inst
+                    for inst in instruments
+                    if {kind for kind in kinds if not _skip_kind(skip_blocks, inst.code6, kind)}
+                    <= done_kinds[inst.code6]
+                ]
                 rows = [assemble(inst, bags[inst.code6]) for inst in ready]
                 if not rows and errors:
                     raise errors[0]

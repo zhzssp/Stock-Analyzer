@@ -135,6 +135,8 @@ class QueryIn(BaseModel):
     # 列表上的查询、刷新、全量更新带上它：换掉这一用户正在跑的查询。
     # 看一只股票的详情不带，只排队，不把整板刷新掐掉。
     replace_running: bool = False
+    # 刷新行情、全量更新才带。服务端按时间窗跳过还有效的股票，并在每一批现价后落账。
+    resume: bool = False
 
 
 class DiffIn(BaseModel):
@@ -723,6 +725,34 @@ def _sort_rows(rows: list[dict], key: str, direction: str) -> list[dict]:
     return filled + empty
 
 
+def _resume_trading_day(day) -> bool:
+    try:
+        from src.market.calendar import is_trading_day
+
+        return bool(is_trading_day(day.strftime("%Y%m%d"), market))
+    except Exception:
+        return day.weekday() < 5
+
+
+def _resume_scope(body: QueryIn, user: User, db: Session, insts, meta) -> tuple[bool, str, list[str]]:
+    """返回 (是否续传, 账本池 id, 整池代码顺序)。临时代码和查询按钮不写账本。"""
+    mode = (body.refresh_mode or "full").strip().lower()
+    pool_id = meta.get("id") or "watch"
+    order = [inst.code6 for inst in insts]
+    if not body.resume or mode not in ("quote", "full"):
+        return False, pool_id, order
+    if body.codes and (body.pool or "") not in ("", "codes"):
+        try:
+            full, pool_meta = resolve_pool(body.pool, market, user, db)
+        except HTTPException:
+            return False, pool_id, order
+        pool_id = pool_meta.get("id") or body.pool
+        order = [inst.code6 for inst in full]
+    if pool_id == "codes":
+        return False, pool_id, order
+    return True, pool_id, order
+
+
 def _prepare_query(body: QueryIn, user: User, db: Session):
     fields = body.fields or _user_fields(user, db)
     if body.codes:
@@ -762,6 +792,9 @@ def _execute_query(
     snapshot_partial: bool = False,
     pool_total: int = 0,
     cancel: Any = None,
+    resume: bool = False,
+    pool_order: list | None = None,
+    ledger_pool_id: str = "",
 ) -> dict:
     ensure_market()
     file_label = (file_label or "").strip()[:80]
@@ -829,21 +862,88 @@ def _execute_query(
             finally:
                 db.close()
         return out
-    rows = engine.run(
-        insts,
-        fields,
-        cards=cards,
-        writer=writer,
-        concept_extra=concept_extra,
-        x_date=x_date,
-        force_live=force_live,
-        refresh_mode=mode,
-        on_quotes=on_quotes,
-        on_row=on_row,
-        on_issue=on_issue,
-        on_quote_progress=on_quote_progress,
-        cancel=cancel,
-    )
+    reported_offset = max(0, int(offset or 0))
+    reported_limit = int(limit or 0)
+    page_insts = list(insts)
+    resume_session = None
+    if resume and mode in ("quote", "full") and (ledger_pool_id or pool_id) != "codes":
+        from src.query.resume_ledger import ResumeSession
+
+        if reported_limit > 0 and len(insts) > reported_limit:
+            page_insts = list(insts)[reported_offset : reported_offset + reported_limit]
+            offset = 0
+            limit = 0
+        resume_session = ResumeSession.open(
+            user_id=user_id,
+            pool_id=ledger_pool_id or pool_id,
+            mode=mode,
+            order=list(pool_order or [inst.code6 for inst in insts]),
+            field_keys=fields,
+            is_trading=_resume_trading_day,
+        )
+    fetch_insts = insts
+    wrapped_row = on_row
+    quote_flush = None
+    skip_blocks = None
+    seed_quotes = None
+    if resume_session is not None:
+        plan = resume_session.plan_page(page_insts)
+        fetch_insts = plan.todo
+        skip_blocks = plan.skip
+        seed_quotes = plan.seed
+
+        def quote_flush(got, _session=resume_session):
+            _session.note_quotes(got)
+
+        def wrapped_row(row, _session=resume_session, _user=on_row):
+            merged = _session.overlay(row)
+            _session.note_row(merged, _session.blocks_for(row.get("code6") or ""))
+            if _user is not None:
+                _user(merged)
+
+        if on_row is not None:
+            for inst in page_insts:
+                code = str(inst.code6)
+                if code not in plan.refetched and code in plan.kept:
+                    try:
+                        on_row(plan.kept[code])
+                    except Exception:
+                        pass
+    try:
+        if resume_session is not None and not fetch_insts:
+            rows = []
+            engine.last_issues = []
+            kept_as_of = ""
+            for inst in page_insts:
+                kept_row = (resume_session.plan.kept.get(str(inst.code6)) or {})
+                if kept_row.get("as_of"):
+                    kept_as_of = kept_row.get("as_of") or ""
+                    break
+            engine.last_clock_meta = {"as_of": kept_as_of, "source": "resume", "enabled": False, "reason": ""}
+        else:
+            rows = engine.run(
+                fetch_insts,
+                fields,
+                cards=cards,
+                writer=writer,
+                concept_extra=concept_extra,
+                x_date=x_date,
+                force_live=force_live,
+                refresh_mode=mode,
+                on_quotes=on_quotes,
+                on_row=wrapped_row,
+                on_issue=on_issue,
+                on_quote_progress=on_quote_progress,
+                cancel=cancel,
+                skip_blocks=skip_blocks,
+                seed_quotes=seed_quotes,
+                on_quote_flush=quote_flush,
+            )
+        if resume_session is not None:
+            rows = resume_session.stitch(page_insts, rows)
+    finally:
+        if resume_session is not None:
+            resume_session.close()
     codes = [i.code_full for i in insts]
     clock_meta = engine.last_clock_meta or {}
     # 排序 + 分页：字段值先算出来才排得准，切片只影响返回给前端的那一段。
@@ -871,6 +971,17 @@ def _execute_query(
         "refresh_mode": mode,
         "issues": list(engine.last_issues or []),
     }
+    if resume_session is not None:
+        out["resume"] = resume_session.public()
+        out["code_order"] = [str(inst.code6) for inst in page_insts]
+        if pool_order:
+            out["total"] = len(pool_order)
+            out["offset"] = reported_offset
+            out["limit"] = reported_limit or len(out["rows"])
+            out["count"] = len(out["rows"])
+            out["has_more"] = reported_offset + len(out["rows"]) < len(pool_order)
+        if pool_order and len(ordered) < len(pool_order):
+            snapshot_partial = True
     if mode == "cache":
         out["slow_cache"] = engine.last_slow_cache or {}
     # 整池查完才整份替换。只查到一页、或中途停下时，把已组装完的行并进未完成快照。
@@ -944,8 +1055,11 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
     mode = (body.refresh_mode or "full").strip().lower()
     market_work = mode != "snapshot"
     use_job = body.async_mode or len(insts) > settings.query_sync_limit
-    replace = bool(body.replace_running) and int(body.offset or 0) <= 0
+    replace = bool(body.replace_running) and (int(body.offset or 0) <= 0 or bool(body.resume))
     pool_id = meta.get("id") or "watch"
+    resume_on, ledger_pool, pool_order = _resume_scope(body, user, db, insts, meta)
+    if do_export:
+        resume_on = False
     export_token = None
     if do_export and market_work:
         try:
@@ -974,6 +1088,9 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                         file_label=body.export_label,
                         pool_id=pool_id,
                         cancel=export_token.cancel,
+                        resume=resume_on,
+                        pool_order=pool_order,
+                        ledger_pool_id=ledger_pool,
                     )
                 return _decorate_query_result(result, body, meta)
             except FlightSuperseded as exc:
@@ -999,6 +1116,9 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                 sort_dir=body.sort_dir,
                 file_label=body.export_label,
                 pool_id=pool_id,
+                resume=resume_on,
+                pool_order=pool_order,
+                ledger_pool_id=ledger_pool,
             )
             return _decorate_query_result(result, body, meta)
         try:
@@ -1022,6 +1142,9 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                     file_label=body.export_label,
                     pool_id=pool_id,
                     cancel=token.cancel,
+                    resume=resume_on,
+                    pool_order=pool_order,
+                    ledger_pool_id=ledger_pool,
                 )
             return _decorate_query_result(result, body, meta)
         except FlightSuperseded as exc:
@@ -1071,6 +1194,9 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                     snapshot_partial=not covers_pool,
                     pool_total=len(snapshot_rows),
                     cancel=active_cancel,
+                    resume=resume_on,
+                    pool_order=pool_order,
+                    ledger_pool_id=ledger_pool,
                 )
                 result["total"] = len(snapshot_rows)
                 result["offset"] = job_offset
@@ -1147,6 +1273,42 @@ def query_export(body: QueryIn, user: User = Depends(current_user), db: Session 
     return _run_or_enqueue(body, user, db, do_export=True)
 
 
+@router.get("/query/resume")
+def query_resume(
+    mode: str = "full",
+    pool: str = "watch",
+    page_size: int = 100,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """给全量更新恢复页码。只读账本，不打行情。"""
+    from src.query.resume_ledger import peek_resume
+
+    mode_name = "quote" if (mode or "").strip().lower() == "quote" else "full"
+    insts, meta = resolve_pool(pool, market, user, db)
+    order = [inst.code6 for inst in insts]
+    if not order:
+        return {
+            "status": "none",
+            "reason": "",
+            "total": 0,
+            "order": [],
+            "pages": [],
+            "resume_from": 0,
+            "quoted": 0,
+            "remaining": 0,
+        }
+    return peek_resume(
+        user_id=user.id,
+        pool_id=meta.get("id") or pool,
+        mode=mode_name,
+        order=order,
+        field_keys=_user_fields(user, db),
+        page_size=page_size,
+        is_trading=_resume_trading_day,
+    )
+
+
 @router.post("/query/stream")
 def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """流式查询：先送一批只有行情的行，再逐只补齐慢字段。
@@ -1168,10 +1330,11 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     # meta.total 仍然报整池行数，前端据此决定要不要再拉下一页。
     total_insts = len(insts)
     pool_id = meta.get("id") or "watch"
+    resume_on, ledger_pool, pool_order = _resume_scope(body, user, db, insts, meta)
     start = max(0, int(body.offset or 0))
     page_limit = int(body.limit or 0)
     stream_mode = (body.refresh_mode or "full").strip().lower()
-    replace = bool(body.replace_running) and start == 0
+    replace = bool(body.replace_running) and (start == 0 or bool(body.resume))
     # 一页刚好装下整池（自选通常远小于页大小）仍是整表，整份替换快照。
     # 大池只算了一段时不覆盖：把这页已经组装完的行并进未完成快照。
     covers_pool = page_limit <= 0 or (start == 0 and total_insts <= page_limit)
@@ -1223,6 +1386,9 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 snapshot_partial=not covers_pool,
                 pool_total=total_insts,
                 cancel=active_cancel,
+                resume=resume_on,
+                pool_order=pool_order,
+                ledger_pool_id=ledger_pool,
             )
 
         try:
@@ -1231,16 +1397,18 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
             else:
                 with query_slot(user.id, cancel, on_queued=on_queued, replace=replace):
                     result = run(cancel)
-            out.put((
-                "done",
-                {
-                    "rows_count": len(result.get("rows") or []),
-                    "total": total_insts,
-                    "has_more": bool(page_limit > 0 and start + len(insts) < total_insts),
-                    "elapsed_ms": int((time.time() - started) * 1000),
-                    "issues": result.get("issues") or [],
-                },
-            ))
+            done_payload = {
+                "rows_count": len(result.get("rows") or []),
+                "total": total_insts,
+                "has_more": bool(page_limit > 0 and start + len(insts) < total_insts),
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "issues": result.get("issues") or [],
+            }
+            if result.get("resume") is not None:
+                done_payload["resume"] = result.get("resume")
+            if result.get("code_order"):
+                done_payload["code_order"] = result.get("code_order")
+            out.put(("done", done_payload))
         except FlightSuperseded:
             pass
         except Exception as exc:  # noqa: BLE001 - 流式中途出错也要让前端收尾
