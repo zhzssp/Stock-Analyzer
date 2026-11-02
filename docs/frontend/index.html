@@ -2487,7 +2487,8 @@
       const span = copyTakenSpan(snap.rows, snap.saved_at);
       let line = `已打开「${name}」的副本，${snap.rows.length} 只`;
       if (span) line += `，${span}`;
-      if (snap.total && !snap.complete) line += `，已保存 ${snap.covered || snap.rows.length}/${snap.total}`;
+      if ((snap.sources || []).length) line += `，${describeSnapshotSource(snap)}，已写入这一池的副本`;
+      else if (snap.total && !snap.complete) line += `，已保存 ${snap.covered || snap.rows.length}/${snap.total}`;
       patchStatus({ table: line, pool: "", sort: "", extra: "" });
       updateExportScope(name);
       return true;

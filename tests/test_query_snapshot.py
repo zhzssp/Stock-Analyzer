@@ -9,6 +9,7 @@ from src.market.normalize import normalize_instrument
 from src.query.snapshot import (
     compose_snapshot,
     load_table_snapshot,
+    open_pool_snapshot,
     merge_partial_snapshot,
     save_table_snapshot,
 )
@@ -256,6 +257,192 @@ def test_older_superset_does_not_replace_a_newer_own_snapshot(tmp_path, monkeypa
     assert got["sources"] == []
     assert got["own_used"] == 1
     assert got["saved_at"] == "2026-10-25T09:00:00+00:00"
+
+
+def test_opening_a_board_writes_the_newer_exchange_into_its_own_snapshot(tmp_path, monkeypatch):
+    """打开创业板时，更晚的深市全部写进创业板自己的副本。深市文件保持原样。"""
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    save_table_snapshot(
+        1,
+        pool="创业板全部",
+        pool_id="board:cy",
+        field_keys=["price", "yffy"],
+        codes=["300274.SZ", "300220.SZ"],
+        rows=[
+            {"code6": "300274", "code_full": "300274.SZ", "name": "阳光电源", "price": 10, "yffy": 3},
+            {"code6": "300220", "code_full": "300220.SZ", "name": "金运激光", "price": 7, "yffy": 1},
+        ],
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T07:00:00+00:00",
+    )
+    save_table_snapshot(
+        1,
+        pool="深市全部",
+        pool_id="exchange:sz",
+        field_keys=["price", "yffy"],
+        codes=["300274.SZ", "000001.SZ"],
+        rows=[
+            {"code6": "300274", "code_full": "300274.SZ", "name": "阳光电源", "price": 12, "yffy": None},
+            {"code6": "000001", "code_full": "000001.SZ", "name": "平安银行", "price": 8},
+        ],
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T09:00:00+00:00",
+    )
+    opened = open_pool_snapshot(1, "board:cy", [_inst("300274.SZ", "阳光电源")])
+    assert opened["rows"][0]["price"] == 12
+    assert opened["rows"][0]["yffy"] == 3
+    assert opened["rows"][0]["row_saved_at"] == "2026-10-25T09:00:00+00:00"
+    assert opened["pool"] == "创业板全部"
+    assert opened["sources"][0]["pool"] == "深市全部"
+    assert opened["sources"][0]["complete"] is True
+    own = load_table_snapshot(1, "board:cy")
+    stored = {row["code6"]: row for row in own["rows"]}
+    assert stored["300274"]["price"] == 12
+    assert stored["300274"]["yffy"] == 3
+    assert stored["300220"]["price"] == 7
+    assert "000001" not in stored
+    assert own["saved_at"] != "2026-10-25T07:00:00+00:00"
+    parent = load_table_snapshot(1, "exchange:sz")
+    assert {row["code6"]: row["price"] for row in parent["rows"]}["300274"] == 12
+    assert parent["saved_at"] == "2026-10-25T09:00:00+00:00"
+    archived = list((tmp_path / "snapshots" / "days").rglob("board_cy.json"))
+    assert any(
+        row.get("code6") == "300274" and row.get("price") == 12
+        for path in archived
+        for row in (json.loads(path.read_text(encoding="utf-8")).get("rows") or [])
+    )
+    again = open_pool_snapshot(1, "board:cy", [_inst("300274.SZ", "阳光电源")])
+    assert again["sources"] == []
+    assert load_table_snapshot(1, "board:cy")["saved_at"] == own["saved_at"]
+    (tmp_path / "artifacts" / "query").mkdir(parents=True)
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        exported = client.post(
+            "/api/query/export",
+            json={
+                "rows": [opened["rows"][0]],
+                "fields": ["name", "code", "price", "yffy"],
+                "pool": "board:cy",
+                "pool_name": "创业板全部",
+                "export_label": "创业板全部_当前栏目",
+            },
+            headers=headers,
+        )
+        assert exported.status_code == 200, exported.text
+        downloaded = client.get(exported.json()["download_url"], headers=headers)
+        wb = load_workbook(BytesIO(downloaded.content), data_only=True)
+        ws = wb.active
+        header = [cell.value for cell in next(ws.iter_rows(max_row=1))]
+        assert ws.cell(2, header.index("最新价") + 1).value == 12
+        assert ws.cell(2, header.index("研发费用") + 1).value == 3
+
+
+def test_opening_a_board_with_no_own_file_still_uses_the_covering_exchange(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    save_table_snapshot(
+        1,
+        pool="深市全部",
+        pool_id="exchange:sz",
+        field_keys=["price"],
+        codes=["300274.SZ"],
+        rows=[{"code6": "300274", "name": "阳光电源", "price": 12}],
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T09:00:00+00:00",
+    )
+    opened = open_pool_snapshot(1, "board:cy", [_inst("300274.SZ", "阳光电源")])
+    assert opened["found"] is True
+    assert opened["pool"] == "创业板全部"
+    assert opened["rows"][0]["price"] == 12
+    own = load_table_snapshot(1, "board:cy")
+    assert own["rows"][0]["price"] == 12
+    assert own["pool"] == "创业板全部"
+
+
+def test_opening_watch_keeps_its_own_rows_when_a_complete_exchange_does_not_cover_them(tmp_path, monkeypatch):
+    """完整快照盖不住整批自选时，打开自选仍只用自己的副本。"""
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    save_table_snapshot(
+        1,
+        pool="自选",
+        pool_id="watch",
+        field_keys=["price"],
+        codes=["600038.SH", "300274.SZ"],
+        rows=[
+            {"code6": "600038", "name": "中直股份", "price": 10},
+            {"code6": "300274", "name": "阳光电源", "price": 20},
+        ],
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T08:00:00+00:00",
+    )
+    save_table_snapshot(
+        1,
+        pool="深市全部",
+        pool_id="exchange:sz",
+        field_keys=["price"],
+        codes=["300274.SZ"],
+        rows=[{"code6": "300274", "price": 99}],
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T09:00:00+00:00",
+    )
+    opened = open_pool_snapshot(1, "watch", [_inst("600038.SH", "中直股份"), _inst("300274.SZ", "阳光电源")])
+    by = {row["code6"]: row for row in opened["rows"]}
+    assert by["300274"]["price"] == 20
+    assert by["600038"]["price"] == 10
+    assert opened["sources"] == []
+    stored = {row["code6"]: row["price"] for row in load_table_snapshot(1, "watch")["rows"]}
+    assert stored == {"600038": 10, "300274": 20}
+
+
+def test_opening_watch_takes_newer_rows_from_an_incomplete_exchange(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    save_table_snapshot(
+        1,
+        pool="自选",
+        pool_id="watch",
+        field_keys=["price", "yffy"],
+        codes=["300274.SZ", "600038.SH"],
+        rows=[
+            {"code6": "300274", "name": "阳光电源", "price": 10, "yffy": 1.5},
+            {"code6": "600038", "name": "中直股份", "price": 8, "yffy": 2},
+        ],
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T07:00:00+00:00",
+    )
+    merge_partial_snapshot(
+        1,
+        pool="深市全部",
+        pool_id="exchange:sz",
+        field_keys=["price", "yffy"],
+        rows=[{"code6": "300274", "code_full": "300274.SZ", "name": "阳光电源", "price": 12, "yffy": None}],
+        total=2,
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T09:00:00+00:00",
+    )
+    opened = open_pool_snapshot(1, "watch", [_inst("300274.SZ", "阳光电源"), _inst("600038.SH", "中直股份")])
+    by = {row["code6"]: row for row in opened["rows"]}
+    assert by["300274"]["price"] == 12
+    assert by["300274"]["yffy"] == 1.5
+    assert by["600038"]["price"] == 8
+    assert opened["sources"][0]["pool"] == "深市全部"
+    own = load_table_snapshot(1, "watch")
+    stored = {row["code6"]: row for row in own["rows"]}
+    assert stored["300274"]["price"] == 12
+    assert stored["300274"]["yffy"] == 1.5
+    assert stored["600038"]["price"] == 8
+    parent = load_table_snapshot(1, "exchange:sz")
+    assert parent["rows"][0]["price"] == 12
 
 
 def test_partial_merge_keeps_the_other_stock_in_a_complete_snapshot(tmp_path, monkeypatch):

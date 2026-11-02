@@ -177,6 +177,8 @@ def test_export_uses_the_open_copy_without_requery():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert "function openCopyRows" in html
     assert "/query/snapshot?pool=" in html
+    assert "snap.sources" in html
+    assert "已写入这一池的副本" in html
     assert "不再重新查询" in html
     assert "当前打开的副本" in html
     assert "save_copy" in html

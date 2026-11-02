@@ -2,8 +2,9 @@
 
 整池查完会写成一份完整快照。沪市、深市这类大池一次只查一页、或中途停下时，
 已经组装完的行并进同一份未完成快照，不把没查到的股票删掉。
-按快照显示时，若有更晚且盖住当前这批的完整快照，或未完成大池里已有的股票，
-就抽出这些更新的行；空格子仍留原来的值。
+打开一个池子时，用同一套挑选：更晚且盖住整批的完整快照，或未完成大池里已有的股票，
+抽出这些更新的行；空格子仍留原来的值。挑中的行写入这一池自己的副本，并按上海日期另存。
+之后屏幕上的表和导出的 Excel 用的都是这份副本。
 
 查询、刷新行情和全量更新都并进当前这份副本，并按上海日历日期另存一份，给日期框打开。
 当前这份 user_{id}_{pool}.json 是该池正在用的副本。按日文件不写回它。
@@ -722,6 +723,190 @@ def compose_snapshot(
         "own_pool": (own or {}).get("pool") or "",
         "own_used": own_used,
         "row_count": len(requested),
+    }
+
+
+_IDENTITY_KEYS = {"code6", "code", "code_full", "name", "market", "quote_source", "as_of"}
+
+
+def _display_row(row: dict) -> bool:
+    """只有代码、没有行情或资料的占位行不拿来打开。"""
+    if _filled(row.get("row_saved_at")):
+        return True
+    return any(_filled(value) for key, value in row.items() if key not in _IDENTITY_KEYS)
+
+
+def _adopt_composed_rows(
+    user_id: int,
+    pool_id: str,
+    *,
+    pool_name: str,
+    rows: list[dict],
+    field_keys: list[str],
+    total: int,
+) -> dict | None:
+    """把已经挑好的行并进这一池自己的副本。
+
+    每行保留自己的取数时间，这样下一次打开不会把同一份数据再当成更新。
+    这一池里没被这次挑中的股票留在原处。文件时间用现在，按上海日期另存今天这份。
+    """
+    incoming: list[dict] = []
+    for raw in rows:
+        if not isinstance(raw, dict) or not raw.get("code6") or not _display_row(raw):
+            continue
+        incoming.append(dict(raw))
+    if not incoming:
+        return None
+    pid = (pool_id or "").strip()
+    stamp = _stamp()
+    with _write_lock:
+        current = _read_snapshot(_path(user_id, pid)) or {}
+        if current and not _matches_pool(current, pid):
+            current = {}
+        prev_stamp = str(current.get("saved_at") or "")
+        by_code: dict[str, dict] = {}
+        for raw in current.get("rows") or []:
+            if isinstance(raw, dict) and raw.get("code6"):
+                kept = dict(raw)
+                if not kept.get("row_saved_at") and prev_stamp:
+                    kept["row_saved_at"] = prev_stamp
+                by_code[str(raw["code6"])] = kept
+        changed = False
+        for row in incoming:
+            code = str(row["code6"])
+            if not row.get("row_saved_at"):
+                row["row_saved_at"] = prev_stamp or stamp
+            old = by_code.get(code)
+            row_at = str(row.get("row_saved_at") or "")
+            if old and _row_time({"saved_at": prev_stamp}, old) > row_at:
+                continue
+            if old == row:
+                continue
+            by_code[code] = row
+            changed = True
+        if not changed:
+            return current or None
+        stored = list(by_code.values())
+        repair_rows_from_ledger(user_id, pid, stored)
+        taken_from, taken_to = _taken_bounds(stored)
+        fields = list(dict.fromkeys([*(current.get("field_keys") or []), *field_keys]))
+        covered = len(stored)
+        pool_total = int(total or current.get("total") or 0)
+        if pool_total < covered:
+            pool_total = covered
+        label = (pool_name or "").strip() or str(current.get("pool") or "") or pid
+        payload = {
+            "saved_at": stamp,
+            "taken_from": taken_from,
+            "taken_to": taken_to,
+            "pool_id": pid,
+            "pool": label,
+            "complete": bool(pool_total and covered >= pool_total),
+            "field_keys": fields,
+            "codes": [row.get("code_full") or row.get("code6") for row in stored],
+            "rows": stored,
+            "covered": covered,
+            "total": pool_total,
+            "clock": current.get("clock") or {},
+            "refresh_mode": current.get("refresh_mode") or "full",
+        }
+        atomic_write_text(_path(user_id, pid), json.dumps(payload, ensure_ascii=False))
+        _archive_day_locked(user_id, payload)
+        return payload
+
+
+def open_pool_snapshot(
+    user_id: int,
+    pool_id: str,
+    instruments: list[Instrument] | None = None,
+) -> dict | None:
+    """打开池子时要看的副本。
+
+    先按账本补这一池自己的文件。别的池更晚、并且按已有规则盖得住时，
+    把挑中的行写进这一池的副本，屏幕和导出都用写完后的这份。
+    """
+    from src.platform.pools import pool_label
+
+    pid = (pool_id or "watch").strip() or "watch"
+    own = repair_saved_snapshot(user_id, pid) or load_table_snapshot(user_id, pid)
+    composed = compose_snapshot(user_id, pid, instruments) if instruments else None
+    if composed and composed.get("sources"):
+        by_code = {inst.code6: inst for inst in instruments or []}
+        rows: list[dict] = []
+        for row in composed.get("rows") or []:
+            if not isinstance(row, dict) or not _display_row(row):
+                continue
+            inst = by_code.get(str(row.get("code6") or ""))
+            if inst is not None:
+                if not _filled(row.get("name")) and inst.name:
+                    row["name"] = inst.name
+                if not _filled(row.get("code")) and inst.code_full:
+                    row["code"] = inst.code_full
+                if not _filled(row.get("code_full")) and inst.code_full:
+                    row["code_full"] = inst.code_full
+                if not _filled(row.get("market")) and inst.market:
+                    row["market"] = inst.market
+            rows.append(row)
+        if rows:
+            label = str((own or {}).get("pool") or "")
+            if not label or label == pid:
+                label = pool_label(pid)
+            saved = _adopt_composed_rows(
+                user_id,
+                pid,
+                pool_name=label,
+                rows=rows,
+                field_keys=list(composed.get("field_keys") or []),
+                total=len(instruments or []),
+            )
+            stored = {
+                str(row.get("code6")): row
+                for row in ((saved or {}).get("rows") or [])
+                if isinstance(row, dict)
+            }
+            rows = [stored.get(str(row.get("code6"))) or row for row in rows]
+            taken_from, taken_to = _taken_bounds(rows)
+            return {
+                "found": True,
+                "pool_id": pid,
+                "pool": (saved or {}).get("pool") or label,
+                "rows": rows,
+                "field_keys": list((saved or {}).get("field_keys") or composed.get("field_keys") or []),
+                "saved_at": (saved or {}).get("saved_at") or composed.get("saved_at") or "",
+                "taken_from": taken_from,
+                "taken_to": taken_to,
+                "complete": bool((saved or {}).get("complete")),
+                "covered": int((saved or {}).get("covered") or len(rows)),
+                "total": int((saved or {}).get("total") or len(instruments or []) or len(rows)),
+                "refresh_mode": (saved or {}).get("refresh_mode") or "",
+                "sources": list(composed.get("sources") or []),
+                "own_used": int(composed.get("own_used") or 0),
+                "own_saved_at": composed.get("own_saved_at") or "",
+                "own_pool": composed.get("own_pool") or "",
+            }
+    if not own:
+        return None
+    rows = [row for row in (own.get("rows") or []) if isinstance(row, dict)]
+    covered = int(own.get("covered") or len(rows))
+    total = int(own.get("total") or len(rows))
+    complete = bool(own.get("complete")) and (not total or covered >= total)
+    return {
+        "found": True,
+        "pool_id": own.get("pool_id") or pid,
+        "pool": own.get("pool") or "",
+        "rows": rows,
+        "field_keys": list(own.get("field_keys") or []),
+        "saved_at": own.get("saved_at") or "",
+        "taken_from": own.get("taken_from") or "",
+        "taken_to": own.get("taken_to") or "",
+        "complete": complete,
+        "covered": covered,
+        "total": total,
+        "refresh_mode": own.get("refresh_mode") or "",
+        "sources": [],
+        "own_used": len(rows),
+        "own_saved_at": own.get("saved_at") or "",
+        "own_pool": own.get("pool") or "",
     }
 
 

@@ -1361,32 +1361,25 @@ def query_export(body: QueryIn, user: User = Depends(current_user), db: Session 
 
 
 @router.get("/query/snapshot")
-def query_snapshot(pool: str = "watch", user: User = Depends(current_user)):
-    """打开某个池子上次刷新留下的副本。只读本地文件，不查行情。"""
-    from src.query.snapshot import load_table_snapshot, repair_saved_snapshot
+def query_snapshot(
+    pool: str = "watch",
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """打开某个池子的副本。符合挑选规则时，把更晚的行写入这一池自己的快照。不查行情。"""
+    from src.query.snapshot import open_pool_snapshot
 
     pid = (pool or "watch").strip() or "watch"
-    snap = repair_saved_snapshot(user.id, pid) or load_table_snapshot(user.id, pid)
+    insts: list = []
+    try:
+        insts, _meta = resolve_pool(pid, market, user, db)
+    except Exception:
+        log.warning("打开 %s 时没能列出股票，改为只读这一池自己的副本", pid, exc_info=True)
+        insts = []
+    snap = open_pool_snapshot(user.id, pid, insts)
     if not snap:
-        return {"found": False, "pool_id": pid, "rows": []}
-    rows = [row for row in (snap.get("rows") or []) if isinstance(row, dict)]
-    covered = int(snap.get("covered") or len(rows))
-    total = int(snap.get("total") or len(rows))
-    complete = bool(snap.get("complete")) and (not total or covered >= total)
-    return {
-        "found": True,
-        "pool_id": snap.get("pool_id") or pid,
-        "pool": snap.get("pool") or "",
-        "rows": rows,
-        "field_keys": list(snap.get("field_keys") or []),
-        "saved_at": snap.get("saved_at") or "",
-        "taken_from": snap.get("taken_from") or "",
-        "taken_to": snap.get("taken_to") or "",
-        "complete": complete,
-        "covered": covered,
-        "total": total,
-        "refresh_mode": snap.get("refresh_mode") or "",
-    }
+        return {"found": False, "pool_id": pid, "rows": [], "sources": []}
+    return snap
 
 
 @router.get("/query/resume")
