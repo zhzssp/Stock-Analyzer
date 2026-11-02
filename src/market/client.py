@@ -4,6 +4,7 @@ import threading
 import time
 from datetime import date
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -39,6 +40,7 @@ class QuoteBatchDowngrade(MarketError):
 
 
 # 按批一次最多 20 只，和麦蕊 ssjy_more 的上限一致。
+# 代码放在 stock_codes 查询参数里；写进路径会得到 422，整批被当成失败。
 QUOTE_BATCH_SIZE = 20
 # 升回按批所需的连续成功只数，加倍到这里为止，避免同一轮里来回切。
 QUOTE_UPGRADE_CAP = 240
@@ -138,10 +140,13 @@ class MarketClient:
         if not self.offline:
             self._probe()
 
-    def _url(self, path: str, licence: str | None = None) -> str:
+    def _url(self, path: str, licence: str | None = None, query: str | None = None) -> str:
         reg = self._registry
         key = (licence or self.licence or (reg.active() if reg else "")).strip()
-        return f"{settings.mairui_base}{path}/{key}"
+        url = f"{settings.mairui_base}{path}/{key}"
+        if query:
+            url += "?" + query
+        return url
 
     def _http_get(self, url: str) -> httpx.Response:
         """所有对麦蕊的 GET 都走这里。
@@ -179,7 +184,7 @@ class MarketClient:
                 return
             self._probe()
 
-    def _get(self, path: str) -> Any:
+    def _get(self, path: str, query: str | None = None) -> Any:
         from src.query.issues import friendly_failure
 
         if self.offline:
@@ -211,7 +216,7 @@ class MarketClient:
         for _pool_kind, lic in list(reg.iteration_plan()):
             if not lic or lic in self._unusable:
                 continue
-            url = self._url(path, lic)
+            url = self._url(path, lic, query)
             try:
                 resp = self._http_get(url)
                 if _is_plain_rate_limit(resp.status_code, resp.text):
@@ -872,6 +877,8 @@ class MarketClient:
         已经拿到的价格留在返回值里。额度用尽或逐只也连续被限频时停下。
         cancel 置位后，当前这一次请求会走完，下一批或下一只不再发。
         这一轮的降级、升级只活在这次调用里，下一次刷新重新从按批开始。
+        批量失败后先把这一批改成逐只。连续成功满一批（默认 20 只）就升回按批，
+        不再多等几十只。紧接着再失败才会把这个间隔加倍。
         """
         self.last_quote_error = ""
         self._quote_stop = False
@@ -985,7 +992,8 @@ class MarketClient:
             return {}
         codes = ",".join(i.code6 for i in insts)
         try:
-            data = self._get(f"/hsrl/ssjy_more/{codes}")
+            # 证书在路径末尾，代码在 stock_codes。旧写法把代码放进路径，接口回 422。
+            data = self._get("/hsrl/ssjy_more", query=urlencode({"stock_codes": codes}))
         except LicenceExhaustedError:
             raise
         except MarketError as exc:
@@ -1392,11 +1400,11 @@ def _quote_price_missing(row: Any) -> bool:
 
 
 def _quote_upgrade_after() -> int:
-    raw = getattr(settings, "quote_batch_upgrade_after", 60)
+    raw = getattr(settings, "quote_batch_upgrade_after", QUOTE_BATCH_SIZE)
     try:
         n = int(raw)
     except (TypeError, ValueError):
-        n = 60
+        n = QUOTE_BATCH_SIZE
     if n < 1:
         n = 1
     if n > QUOTE_UPGRADE_CAP:

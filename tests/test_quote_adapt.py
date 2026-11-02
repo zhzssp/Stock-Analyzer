@@ -37,6 +37,29 @@ def _codes(n: int) -> list[SimpleNamespace]:
     return [SimpleNamespace(code6=f"{i:02d}") for i in range(n)]
 
 
+def test_batch_requests_stock_codes_after_the_licence():
+    """代码必须在查询参数里。写进路径时接口回 422，整批会被当成失败。"""
+    client = _bare()
+    client.licence = "LIC"
+    client._registry = None
+    seen: dict[str, str] = {}
+
+    def fake_get(path, query=None):
+        seen["path"] = path
+        seen["query"] = query or ""
+        seen["url"] = client._url(path, "LIC", query)
+        return [{"dm": "00", "p": 1, "pc": 0.1}, {"dm": "01", "p": 2, "pc": 0.2}]
+
+    with patch.object(client, "_get", side_effect=fake_get):
+        mapped = client._quotes_batch(_codes(2))
+    assert seen["path"] == "/hsrl/ssjy_more"
+    assert seen["query"].startswith("stock_codes=")
+    assert "00" in seen["query"] and "01" in seen["query"]
+    assert seen["url"].split("?", 1)[0].endswith("/hsrl/ssjy_more/LIC")
+    assert mapped["00"]["p"] == 1
+    assert settings.quote_batch_upgrade_after == QUOTE_BATCH_SIZE
+
+
 def test_downgrade_then_upgrade_widens_the_next_gap(monkeypatch):
     """第一批留下；批量失败改逐只；连续成功后再按批。再失败则间隔加倍。"""
     monkeypatch.setattr(settings, "quote_batch_upgrade_after", 3)
