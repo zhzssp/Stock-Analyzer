@@ -181,10 +181,9 @@
     @keyframes cellIn { 0% { background: var(--teal-soft); } 100% { background: transparent; } }
     .exp-block { margin-bottom: 12px; }
     .exp-label { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
-    .exp-count { font-weight: 400; color: var(--muted); margin-left: 6px; }
     .exp-opts { display: flex; flex-direction: column; gap: 4px; }
     .exp-opt {
-      display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px;
+      display: flex; gap: 8px; align-items: center; padding: 7px 9px;
       border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 13px;
     }
     .exp-opt input { margin-top: 2px; }
@@ -1437,16 +1436,15 @@
       <h2><span>导出 Excel</span><span id="exportTitleMount"></span></h2>
       <div class="exp-confirm" id="expConfirm">正在读取当前选项…</div>
       <div class="exp-block">
-        <div class="exp-label">当前打开的副本<span id="expScopeCount" class="exp-count"></span></div>
-        <div class="exp-opts" id="expScopeOpts"></div>
-      </div>
-      <div class="exp-block">
-        <div class="exp-label">怎么写进表格</div>
-        <div class="exp-opts" id="expFreshOpts"></div>
-      </div>
-      <div class="exp-block">
-        <div class="exp-label">表格里放什么</div>
+        <div class="exp-label">表格里放哪些列</div>
         <div class="exp-opts" id="expColOpts"></div>
+      </div>
+      <div class="exp-block">
+        <div class="exp-label">刷新后自动导出</div>
+        <label class="exp-opt">
+          <input type="checkbox" id="expAuto" />
+          <span class="t" data-help-tip="默认关着。打开后，查询、刷新行情、全量更新、单独查询、仅查询一次，在这一轮正常结束时各写一份新的 Excel。用「和屏幕上一样」的列，数字用当前打开的副本里已有的，不再重新查询。中途停下、失败、或被新的一轮取代，都不导出。">这一轮正常结束后自动写一份</span>
+        </label>
       </div>
       <div class="exp-estimate" id="expEstimate"></div>
       <div class="exp-warn" id="expWarn" style="display:none;"></div>
@@ -1696,6 +1694,7 @@
       listFlightKey: "",
       listFlightGen: 0,
       exportBusy: false,
+      autoExportAfterRefresh: false,
       // 同时成立的提示各占一行：表的进度、整池、排序、补资料、Excel 导出。
       statusLines: { table: "尚未查询", pool: "", sort: "", extra: "", export: "" },
       statusAction: "查询",
@@ -1703,6 +1702,12 @@
       statusRole: "table",
       exportHintLabel: "",
     };
+
+    try {
+      state.autoExportAfterRefresh = localStorage.getItem("sa_auto_export") === "1";
+    } catch (err) {
+      state.autoExportAfterRefresh = false;
+    }
 
     let toastTimer = 0;
     function toast(text, ms) {
@@ -2055,6 +2060,12 @@
       document.addEventListener("mouseout", (e) => {
         const el = e.target.closest ? e.target.closest(".help-tip[data-tip]") : null;
         if (el) hideHelpBubble();
+      });
+      document.addEventListener("click", (e) => {
+        const el = e.target.closest ? e.target.closest(".help-tip") : null;
+        if (!el) return;
+        e.preventDefault();
+        e.stopPropagation();
       });
       document.addEventListener("focusin", (e) => {
         const el = e.target.closest ? e.target.closest(".help-tip[data-tip]") : null;
@@ -4096,6 +4107,7 @@
         return;
       }
       toast("已单独查询这一只，中间列表是实时结果");
+      await maybeAutoExport();
     });
     document.getElementById("stockAdd").addEventListener("click", async () => {
       const code = state.stockCode;
@@ -4117,9 +4129,13 @@
     });
 
     function expOptHtml(name, item, checked, disabled, why) {
+      const note = disabled && why ? why : item.sub;
+      const title = note
+        ? `<span class="t" data-help-tip="${escAttr(note)}">${escHtml(item.label)}</span>`
+        : `<span class="t">${escHtml(item.label)}</span>`;
       return `<label class="exp-opt ${disabled ? "off" : ""}">
           <input type="radio" name="${name}" value="${escAttr(item.id)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} />
-          <span><span class="t">${escHtml(item.label)}</span><br /><span class="s">${escHtml(disabled && why ? why : item.sub)}</span></span>
+          ${title}
         </label>`;
     }
 
@@ -4174,21 +4190,18 @@
       }
       if (document.getElementById("exportMask").style.display === "none") return;
       const rows = openCopyRows();
-      const title = openCopyTitle();
-      document.getElementById("expScopeOpts").innerHTML =
-        `<div class="exp-opt"><span><span class="t">${escHtml(title)}</span><br /><span class="s">已经刷进这份副本的各页都会写入，不管表格正停在哪一页。</span></span></div>`;
-      document.getElementById("expScopeCount").textContent = rows.length ? `共 ${rows.length} 只` : "";
-      document.getElementById("expFreshOpts").innerHTML =
-        `<div class="exp-opt"><span><span class="t">按这份副本里已有的数字写</span><br /><span class="s">不再重新查询，也不再刷新。</span></span></div>`;
       const colOpts = [
-        { id: "current", label: "和屏幕上一样", sub: `就用你现在勾选的栏目，共 ${(state.fields || []).length} 项` },
-        { id: "watch", label: "只要价格", sub: "名称、代码、现价、涨跌、市盈率、市净率。副本里没有的格子留空" },
-        { id: "research", label: "要详细资料", sub: "再加上行业、概念、公司做什么、股东和财务。没有的格子留空" },
+        { id: "current", label: "和屏幕上一样", sub: `用中间表格现在的表头，共 ${(state.fields || []).length} 列。表头上没有的列不会出现。空格子保持空白。` },
+        { id: "watch", label: "只要价格", sub: "固定六列：名称、代码、最新价、涨跌幅、市盈率（动）、市净率。跟屏幕上勾了哪些列无关。空格子保持空白。" },
+        { id: "research", label: "要详细资料", sub: "固定研究列：价格六列，再加所属行业、所属概念/板块、主营业务/经营范围、前十大流通股东、总股本、流通股本、每股未分配利润、每股净资产、每股收益、毛利率、净利率。空格子保持空白。" },
       ];
       document.getElementById("expColOpts").innerHTML = colOpts.map((it, i) =>
         expOptHtml("expCols", it, i === 0, false, "")
       ).join("");
-      document.getElementById("exportTitleMount").innerHTML = helpTip("把当前打开的副本写成 Excel，并留在档案库里（每人最多留最近 20 份）。");
+      document.getElementById("exportTitleMount").innerHTML = helpTip("把当前打开的副本写成 Excel 并下载。不向数据源再查。档案库每人只留最近 20 份。");
+      mountHelpTips(document.getElementById("exportMask"));
+      const autoBox = document.getElementById("expAuto");
+      if (autoBox) autoBox.checked = !!state.autoExportAfterRefresh;
       document.querySelectorAll('input[name="expCols"]').forEach((el) => {
         el.addEventListener("change", () => {
           state.exportOpts.cols = el.value;
@@ -4213,16 +4226,16 @@
       const o = state.exportOpts || { cols: "current" };
       const content = o.cols === "watch" ? "只要价格" : (o.cols === "research" ? "要详细资料" : "和屏幕上一样");
       box.innerHTML =
-        `<div class="ask">要导出「${escHtml(openCopyTitle())}」吗？</div>` +
-        `<div>一共 ${n} 只。按当前打开的副本写，不再重新查询。表格放「${escHtml(content)}」。</div>` +
-        `<div class="file">文件名：导出时间_${escHtml(exportFileStem())}.xlsx</div>`;
+        `<div class="ask" data-help-tip="写入当前打开的副本，不再重新查询。这一次手动导出用「${escAttr(content)}」。空格子保持空白。会下载，档案库只留最近 20 份。">要导出「${escHtml(openCopyTitle())}」吗？</div>` +
+        `<div class="file">一共 ${n} 只 · 导出时间_${escHtml(exportFileStem())}.xlsx</div>`;
+      mountHelpTips(box);
     }
 
     function closeExport() {
       document.getElementById("exportMask").style.display = "none";
     }
 
-    async function doExport() {
+    async function doExport(opts) {
       const rows = openCopyRows();
       if (!rows.length) {
         toast("当前没有可导出的副本");
@@ -4247,12 +4260,39 @@
         pool_name: openCopyTitle(),
         export_label: exportFileStem(),
       };
+      const auto = Boolean(opts && opts.auto);
       patchStatus({ export: "正在写入 Excel" });
       let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
       await downloadArtifact(data.id, data.filename);
       const exported = data.count || data.row_count || rows.length;
-      patchStatus({ export: `已导出 ${exported} 行` });
-      toast(`已导出 ${exported} 行，写入档案库并下载 ${data.filename}`);
+      const lead = auto ? `已自动导出 ${exported} 行` : `已导出 ${exported} 行`;
+      patchStatus({ export: lead });
+      toast(`${lead}，写入档案库并下载 ${data.filename}`);
+    }
+
+    async function maybeAutoExport() {
+      if (!state.autoExportAfterRefresh) return;
+      if (state.exportBusy) {
+        patchStatus({ export: "已经有一份导出在进行" });
+        return;
+      }
+      if (!openCopyRows().length) return;
+      const prev = state.exportOpts;
+      state.exportOpts = { cols: "current" };
+      markExportBusy(true);
+      try {
+        await doExport({ auto: true });
+      } catch (err) {
+        const msg = (err && err.message) || "导出失败";
+        patchStatus({
+          export: msg.indexOf("已经有一份导出在进行") >= 0 ? "已经有一份导出在进行" : "Excel表格导出没有完成",
+        });
+        toast(msg);
+      } finally {
+        state.exportOpts = prev;
+        markExportBusy(false);
+        if (document.getElementById("exportMask").style.display !== "none") renderExportConfirm();
+      }
     }
 
     async function exportXlsx() {
@@ -5018,6 +5058,7 @@
           pool: resumeStatusLine(resumeNote, false),
         });
         syncSortLine();
+        await maybeAutoExport();
       } catch (err) {
         if (isQueryAbort(err) || !listQueryCurrent(gen)) return;
         patchStatus({ table: `刷新行情 · ${state.poolLabel || ""} · 现价没有更新完` });
@@ -5178,6 +5219,7 @@
               pool: "",
               sort: state.sortKey ? "排序只排这一页" : "",
             });
+            await maybeAutoExport();
             break;
           }
           offset += PAGE_LIMIT;
@@ -5194,7 +5236,9 @@
     }
 
     document.getElementById("queryBtn").addEventListener("click", () =>
-      runQuery(null, { refreshMode: "cache", forceLive: false, stream: true }).catch(toastQueryError)
+      runQuery(null, { refreshMode: "cache", forceLive: false, stream: true })
+        .then(() => maybeAutoExport())
+        .catch(toastQueryError)
     );
     document.getElementById("fullQueryBtn").addEventListener("click", () =>
       runFullPool().catch(toastQueryError)
@@ -5241,6 +5285,7 @@
       // 整板只更新现价。慢字段补齐只留给自选、筛选这种已经收在一页里的表，避免再开 0/N 的后台任务。
       if ((state.rowsRaw || []).length > PAGE_LIMIT && !(codes && codes.length)) {
         if (quoteErr) toastQueryError(quoteErr);
+        else await maybeAutoExport();
         return;
       }
       let wanted = (state.fields || []).map((f) => f.key);
@@ -5253,10 +5298,13 @@
       if (!listQueryCurrent(gen)) return;
       if (!slowFieldsMostlyEmpty(wanted)) {
         if (quoteErr) toastQueryError(quoteErr);
+        else await maybeAutoExport();
         return;
       }
       try {
         await runQuery(codes, { refreshMode: "cache", forceLive: false, stream: true, limit: PAGE_LIMIT, gen, statusRole: "extra" });
+        if (quoteErr) toastQueryError(quoteErr);
+        else await maybeAutoExport();
       } catch (e) {
         if (stopped(e)) return;
         toastQueryError(quoteErr || e);
@@ -5283,6 +5331,14 @@
         toast(msg);
       } finally {
         markExportBusy(false);
+      }
+    });
+    document.getElementById("expAuto").addEventListener("change", () => {
+      state.autoExportAfterRefresh = document.getElementById("expAuto").checked;
+      try {
+        localStorage.setItem("sa_auto_export", state.autoExportAfterRefresh ? "1" : "0");
+      } catch (err) {
+        /* 这一页仍按勾选生效 */
       }
     });
     document.getElementById("expCancel").addEventListener("click", closeExport);
@@ -6049,6 +6105,7 @@
         await runQuery(codes, { refreshMode: "full", forceLive: true, saveCopy: false });
         closePicker();
         toast("已按筛选结果查询，未改自选。导出 Excel 会导出这一批。");
+        await maybeAutoExport();
       } catch (err) {
         if (isQueryAbort(err)) return;
         toast(err.message);

@@ -155,13 +155,15 @@ def test_workbench_pct_column_sorts_index_constituents():
     assert 'id="expConfirm"' in html
     assert "要导出" in html
     assert "export_label" in html
-    assert 'id="expFreshOpts"' in html
+    assert 'id="expFreshOpts"' not in html
+    assert 'id="expScopeOpts"' not in html
+    assert "怎么写进表格" not in html
     assert "不再重新查询" in html
     assert "当前打开的副本" in html
     assert "function openCopyRows" in html
     assert "/query/snapshot?pool=" in html
     assert "全部重新查一遍" not in html
-    assert "表格里放什么" in html
+    assert "表格里放哪些列" in html
     assert 'id="colPresets"' in html
     assert "预设「看盘」" in html
     assert 'id="customConceptAdd"' in html
@@ -181,11 +183,21 @@ def test_export_uses_the_open_copy_without_requery():
     assert "已写入这一池的副本" in html
     assert "不再重新查询" in html
     assert "当前打开的副本" in html
+    assert 'id="expFreshOpts"' not in html
+    assert 'id="expScopeOpts"' not in html
+    assert "怎么写进表格" not in html
     assert "save_copy" in html
     assert "全部重新查一遍" not in html
     export_fn = html.split("async function doExport", 1)[1].split("async function exportXlsx", 1)[0]
     assert "rows: slim" in export_fn
     assert "refresh_mode" not in export_fn
+    assert 'id="expAuto"' in html
+    assert "刷新后自动导出" in html
+    assert "function maybeAutoExport" in html
+    assert "sa_auto_export" in html
+    assert "maybeAutoExport()" in html
+    query_click = html.split('getElementById("queryBtn").addEventListener', 1)[1].split('getElementById("fullQueryBtn")', 1)[0]
+    assert "maybeAutoExport()" in query_click
 
 
 def test_workbench_picker_dialog_is_wide_and_short():
