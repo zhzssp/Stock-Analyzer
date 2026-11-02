@@ -2985,7 +2985,7 @@
         const resumeNote = data.resume && data.resume.reason ? data.resume.reason : "";
         patchStatus({
           table: `${head} · ${loaded} 只 · ${priceNote} · 用时 ${sec} 秒`,
-          pool: resumeNote,
+          pool: resumeStatusLine(resumeNote, false),
           extra: "",
         });
       } else if (state.streamAppend && !data.has_more) {
@@ -3292,6 +3292,16 @@
         el.textContent = text;
         el.hidden = !text;
       });
+    }
+
+    function resumeStatusLine(reason, active) {
+      let text = String(reason || "").trim();
+      if (!text || text === "续传已完成") return text;
+      text = text.replace(/^续传 · /, "");
+      text = text.replace("，继续剩下的", "，还剩");
+      text = text.replace(/还剩 (\d+) 只$/, "还剩 $1 只没取");
+      text = text.replace("继续补剩下的资料", "资料还没补完");
+      return active ? `正在续传 · ${text}` : `现在没有在续传 · ${text}`;
     }
 
     function patchStatus(partial) {
@@ -4840,7 +4850,7 @@
           const suffix = etaSuffix(progress.done || 0, progress.total, progress.stage || "quote");
           bit = ` ${progress.done || 0}/${progress.total}${suffix}`;
         }
-        patchStatus({ table: `${statusHead()} · 正在更新已取到的现价${bit}`, pool: (book && book.resumeNote) || "" });
+        patchStatus({ table: `${statusHead()} · 正在更新已取到的现价${bit}`, pool: resumeStatusLine(book && book.resumeNote, true) });
         if (book && state.sortKey) syncSortLine();
         return;
       }
@@ -4861,7 +4871,7 @@
       if (book && book.pages && book.pages[book.view] && book.view !== book.fetching) {
         detail += ` · 正在看第 ${book.view + 1} 页`;
       }
-      patchStatus({ table: `${statusHead()} · ${detail}${tail}`, pool: (book && book.resumeNote) || "" });
+      patchStatus({ table: `${statusHead()} · ${detail}${tail}`, pool: resumeStatusLine(book && book.resumeNote, true) });
       if (book && state.sortKey && book.pages && book.pages[book.view]) syncSortLine();
       renderPagePickerButton();
     }
@@ -5004,7 +5014,7 @@
           table: priced
             ? `刷新行情 · ${state.poolLabel || ""} · 已更新已取到各页的现价`
             : `刷新行情 · ${state.poolLabel || ""} · 已取到的页没有拿到现价`,
-          pool: resumeNote,
+          pool: resumeStatusLine(resumeNote, false),
         });
         syncSortLine();
       } catch (err) {
@@ -5069,13 +5079,13 @@
       const startOffset = offset;
       if (resuming && book.pages[0] && book.pages[0].length) {
         showBookPage(book, 0);
-        if (book.resumeNote) patchStatus({ table: `${statusHead()} · ${book.resumeNote}`, pool: "" });
+        if (book.resumeNote) patchStatus({ table: `${statusHead()} · ${resumeStatusLine(book.resumeNote, true)}`, pool: "" });
       } else {
         state.rowsRaw = [];
         state.totalRows = resuming ? (prior.total || 0) : 0;
         const freshBody = document.getElementById("tableBody");
         if (freshBody) freshBody.innerHTML = "";
-        if (book.resumeNote) patchStatus({ table: `${statusHead()} · ${book.resumeNote}`, pool: "" });
+        if (book.resumeNote) patchStatus({ table: `${statusHead()} · ${resumeStatusLine(book.resumeNote, true)}`, pool: "" });
       }
       renderPagedHint();
       closePagePicker();

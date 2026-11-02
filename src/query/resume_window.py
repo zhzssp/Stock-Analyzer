@@ -201,12 +201,13 @@ def slow_phrase(kinds: set[str]) -> str:
 
 
 def resume_banner(phase: str, quoted: int, total: int, slow_left: bool) -> str:
+    """记下还能接着用的进度。这句话不表示此刻正在取数。"""
     label = PHASE_LABEL.get(phase, "")
     if total <= 0 or quoted <= 0:
         return ""
     left = total - quoted
     if left <= 0 and slow_left:
-        return f"续传 · {label} · 现价都还在，继续补剩下的资料"
+        return f"{label} · 现价都还在，资料还没补完"
     if left <= 0:
         return ""
-    return f"续传 · {label} · 已有 {quoted} 只现价，继续剩下的 {left} 只"
+    return f"{label} · 已有 {quoted} 只现价，还剩 {left} 只没取"

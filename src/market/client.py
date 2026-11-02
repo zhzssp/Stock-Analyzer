@@ -1418,11 +1418,16 @@ def _ssjy_quote(row: Any, source: str) -> dict:
     hs = row.get("hs")
     if hs is None:
         hs = row.get("tr")
+    # 单只接口用 sjl、hs，批量接口用 pb_ratio、tr。只读单只的名字时，按批取到的值会整列变成空。
+    # 总市值 sz、流通市值 lt、60 日涨跌 zdf60、年初至今 zdfnc 批量接口不返回，没有另一个字段名可代替。
+    sjl = row.get("sjl")
+    if sjl in (None, ""):
+        sjl = row.get("pb_ratio")
     return {
         "p": row.get("p"),
         "pc": row.get("pc"),
         "pe": row.get("pe"),
-        "sjl": row.get("sjl"),
+        "sjl": sjl,
         "hs": hs,
         "sz": row.get("sz"),
         "lt": row.get("lt"),

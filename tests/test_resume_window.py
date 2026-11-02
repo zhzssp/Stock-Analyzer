@@ -93,6 +93,34 @@ def test_profile_also_stops_at_twenty_four_hours():
     assert not block_reusable("profile", taken, at(date(2026, 10, 31), 16, 0))
 
 
+def test_resume_banner_states_what_is_left_without_sounding_in_progress():
+    from src.query.resume_window import resume_banner
+
+    assert resume_banner("post_close", 837, 936, False) == "收盘后 · 已有 837 只现价，还剩 99 只没取"
+    assert resume_banner("post_close", 936, 936, True) == "收盘后 · 现价都还在，资料还没补完"
+    assert resume_banner("post_close", 936, 936, False) == ""
+
+
+def test_finished_resume_replaces_the_opening_plan():
+    from pathlib import Path
+
+    from src.query.resume_ledger import ResumeSession, fresh_ledger
+
+    ledger = fresh_ledger(["000001"], ["price"], "quote")
+    ledger["status"] = "complete"
+    session = ResumeSession(
+        Path("quote.json"),
+        ledger,
+        {"quote"},
+        lambda _day: True,
+        True,
+        "收盘后 · 已有 1 只现价，还剩 1 只没取",
+    )
+    shown = session.public()
+    assert shown["done"] is True
+    assert shown["reason"] == "续传已完成"
+
+
 def test_a_closed_weekday_does_not_count_as_the_next_open():
     closed = {date(2026, 10, 28)}
 

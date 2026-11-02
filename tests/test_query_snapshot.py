@@ -393,3 +393,65 @@ def test_open_copy_export_writes_the_given_rows(tmp_path, monkeypatch):
         header = [cell.value for cell in next(ws.iter_rows(max_row=1))]
         price_at = header.index("最新价") + 1
         assert ws.cell(2, price_at).value == 123.45
+
+
+def test_page_with_an_error_still_merges_instead_of_being_dropped():
+    from src.query.snapshot import snapshot_persist_kind
+
+    assert snapshot_persist_kind("full", partial=True, stopped=False, fatal=True) == "merge"
+    assert snapshot_persist_kind("quote", partial=False, stopped=False, fatal=True) == "merge"
+    assert snapshot_persist_kind("full", partial=False, stopped=False, fatal=True) is None
+    assert snapshot_persist_kind("full", partial=False, stopped=False, fatal=False) == "replace"
+
+
+def test_ledger_replaces_sample_capital_and_fills_a_blank_page(tmp_path, monkeypatch):
+    """全量账本里已有的股本和股东要写回副本。样例数字不能盖过实数，实数也不能被账本改掉。"""
+    from src.market.fixtures import FINANCE, HOLDERS
+    from src.query.resume_ledger import fresh_ledger, ledger_path, save_ledger
+    from src.query.snapshot import load_table_snapshot, repair_saved_snapshot, save_table_snapshot
+
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    ledger = fresh_ledger(["300274", "300220", "300750"], ["zgb", "ltgb", "holders"], "full")
+    ledger["rows"] = {
+        "300274": {
+            "code6": "300274",
+            "zgb": 2073211424.0,
+            "ltgb": 1587459661.0,
+            "holders": "曹仁贤、香港中央结算有限公司、易方达创业板ETF",
+        },
+        "300220": {"code6": "300220", "zgb": 151200000.0, "holders": "甲、乙、丙"},
+        "300750": {"code6": "300750", "zgb": 1.0, "holders": "不应覆盖"},
+    }
+    save_ledger(ledger_path(1, "board:cy", "full"), ledger)
+    save_table_snapshot(
+        1,
+        pool="创业板全部",
+        pool_id="board:cy",
+        field_keys=["name", "zgb", "ltgb", "holders"],
+        codes=["300274.SZ", "300220.SZ", "300750.SZ"],
+        rows=[
+            {
+                "code6": "300274",
+                "name": "阳光电源",
+                "zgb": FINANCE["300274"]["zgb"],
+                "ltgb": FINANCE["300274"]["ysltag"],
+                "holders": HOLDERS["300274"]["holders"],
+            },
+            {"code6": "300220", "name": "邻股", "price": 9.5},
+            {"code6": "300750", "name": "宁德时代", "zgb": 4627249686.0, "holders": "厦门瑞庭投资有限公司"},
+        ],
+        clock={},
+        refresh_mode="full",
+    )
+    snap = load_table_snapshot(1, "board:cy")
+    by = {row["code6"]: row for row in snap["rows"]}
+    assert by["300274"]["zgb"] == 2073211424.0
+    assert by["300274"]["ltgb"] == 1587459661.0
+    assert by["300274"]["holders"].startswith("曹仁贤")
+    assert "控股股东" not in by["300274"]["holders"]
+    assert by["300220"]["zgb"] == 151200000.0
+    assert by["300220"]["holders"] == "甲、乙、丙"
+    assert by["300750"]["zgb"] == 4627249686.0
+    assert by["300750"]["holders"] == "厦门瑞庭投资有限公司"
+    again = repair_saved_snapshot(1, "board:cy")
+    assert again["rows"]

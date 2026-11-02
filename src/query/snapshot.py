@@ -254,6 +254,144 @@ def _filled(value: Any) -> bool:
     return value is not None and value != "" and value != "—"
 
 
+def snapshot_persist_kind(mode: str, *, partial: bool, stopped: bool, fatal: bool) -> str | None:
+    """决定这一轮怎么写副本。
+
+    整份替换只在没有失败时做，避免一次全空的结果盖掉已经查完的表。
+    分页合并不能因为某一条证书或额度提示被整页丢掉：慢字段已经进了账本，
+    副本若不写，下一轮会当成完成而跳过，股本和股东就一直留着旧值。
+    """
+    name = (mode or "").strip().lower()
+    if name not in ("cache", "full", "quote"):
+        return None
+    replace = name != "quote" and not partial and not stopped
+    if replace and fatal:
+        return None
+    return "replace" if replace else "merge"
+
+
+_SLOW_FROM_LEDGER = (
+    "industry",
+    "sector",
+    "sw_l1",
+    "hot_concepts",
+    "concept",
+    "business",
+    "holders",
+    "top_holders",
+    "zgb",
+    "ltgb",
+    "mgwfplr",
+    "yffy",
+    "mgjzc",
+    "eps",
+    "gross",
+    "net",
+    "flow_in",
+    "flow_out",
+    "flow_net",
+    "pct3",
+    "pct5",
+    "pct10",
+    "low1y",
+    "low_long",
+    "high",
+    "off_low",
+    "multiple",
+    "target",
+    "low_note",
+)
+
+
+def _offline_cells(code: str) -> dict:
+    """内置样例写进表格时的格子。只用来认出「这格还是样例」，不能当成行情。"""
+    from src.market import fixtures
+
+    fin = fixtures.FINANCE.get(code) or {}
+    prof = fixtures.PROFILE.get(code) or {}
+    hold = fixtures.HOLDERS.get(code) or {}
+    if not fin and not prof and not hold:
+        return {}
+    cells: dict[str, Any] = {}
+    if fin:
+        cells.update(
+            {
+                "zgb": fin.get("zgb"),
+                "ltgb": fin.get("ysltag"),
+                "mgwfplr": fin.get("mgwfplr"),
+                "yffy": fin.get("yffy"),
+                "mgjzc": fin.get("mgjzc"),
+                "eps": fin.get("jbmgsy"),
+                "gross": fin.get("xsmlv"),
+                "net": fin.get("jlv"),
+            }
+        )
+    for key in ("industry", "concept", "business"):
+        if _filled(prof.get(key)):
+            cells[key] = prof.get(key)
+    if _filled(hold.get("holders")):
+        cells["holders"] = hold.get("holders")
+    return cells
+
+
+def _full_ledger_rows(user_id: int, pool_id: str) -> dict[str, dict]:
+    from src.query.resume_ledger import ledger_path, load_ledger
+
+    loaded = load_ledger(ledger_path(user_id, pool_id, "full"))
+    if not isinstance(loaded, dict):
+        return {}
+    rows = loaded.get("rows") or {}
+    return {str(code): row for code, row in rows.items() if isinstance(row, dict)}
+
+
+def repair_rows_from_ledger(user_id: int, pool_id: str, rows: list[dict]) -> bool:
+    """用全量账本补副本里缺的慢字段，并换掉仍等于内置样例的格子。
+
+    刷新行情只改现价，空的股本不会把旧样例清掉。某一页没写进副本时，
+    账本里已经有的总股本、流通股本和股东要补回来。已经是实数的格子不动。
+    """
+    ledger = _full_ledger_rows(user_id, pool_id)
+    if not ledger:
+        return False
+    changed = False
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("code6"):
+            continue
+        src = ledger.get(str(row["code6"]))
+        if not src:
+            continue
+        offline = _offline_cells(str(row["code6"]))
+        for key in _SLOW_FROM_LEDGER:
+            live = src.get(key)
+            if not _filled(live):
+                continue
+            current = row.get(key)
+            if current == live:
+                continue
+            stale_sample = key in offline and current == offline[key]
+            if _filled(current) and not stale_sample:
+                continue
+            row[key] = live
+            changed = True
+    return changed
+
+
+def repair_saved_snapshot(user_id: int, pool_id: str) -> dict | None:
+    """打开副本时把账本里已有、文件里还缺或仍是样例的慢字段写回去。不改保存时间。"""
+    pid = (pool_id or "watch").strip() or "watch"
+    with _write_lock:
+        snap = _read_snapshot(_path(user_id, pid))
+        if not snap or not _matches_pool(snap, pid):
+            return None
+        rows = [row for row in (snap.get("rows") or []) if isinstance(row, dict)]
+        if not repair_rows_from_ledger(user_id, pid, rows):
+            return snap
+        snap["rows"] = rows
+        atomic_write_text(_path(user_id, pid), json.dumps(snap, ensure_ascii=False))
+        _archive_day_locked(user_id, snap)
+        return snap
+
+
 def _row_time(snap: dict, row: dict) -> str:
     return str(row.get("row_saved_at") or snap.get("saved_at") or "")
 
@@ -301,6 +439,7 @@ def save_table_snapshot(
         stored.append(row)
     if not stored:
         return
+    repair_rows_from_ledger(user_id, pid, stored)
     taken_from, taken_to = _taken_bounds(stored)
     payload = {
         "saved_at": stamp,
@@ -376,6 +515,7 @@ def merge_partial_snapshot(
             by_code[code] = merged
         if not by_code:
             return
+        repair_rows_from_ledger(user_id, pid, list(by_code.values()))
         taken_from, taken_to = _taken_bounds(list(by_code.values()))
         fields = list(dict.fromkeys([*(current.get("field_keys") or []), *field_keys]))
         pool_total = int(total or current.get("total") or 0)

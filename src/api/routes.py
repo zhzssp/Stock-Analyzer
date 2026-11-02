@@ -1023,14 +1023,18 @@ def _execute_query(
     if mode == "cache":
         out["slow_cache"] = engine.last_slow_cache or {}
     # 整池查完才整份替换。只查到一页、或中途停下时，把已组装完的行并进未完成快照。
-    # 临时代码（详情、只看这一只）不写。整批失败不覆盖已有的完整快照。
+    # 临时代码（详情、只看这一只）不写。整批失败不把空表盖掉已经查完的完整快照。
+    # 分页这一页已经组装出来时仍要并进去：一条额度提示不能把这一页的股本和股东丢掉。
     fatal = any(item.get("level") == "error" for item in out["issues"])
     # 取消时一律按提前停下合并，哪怕行数已经凑满。空的最新价不能整表盖掉上一份快照。
     stopped_early = bool(cancel is not None and getattr(cancel, "is_set", lambda: False)())
-    if mode in ("cache", "full", "quote") and persist_snapshot and pool_id != "codes" and ordered and not fatal:
-        if mode == "quote" or snapshot_partial or stopped_early:
-            from src.query.snapshot import merge_partial_snapshot
+    from src.query.snapshot import merge_partial_snapshot, save_table_snapshot, snapshot_persist_kind
 
+    persist_kind = snapshot_persist_kind(
+        mode, partial=snapshot_partial, stopped=stopped_early, fatal=fatal
+    )
+    if persist_snapshot and pool_id != "codes" and ordered and persist_kind:
+        if persist_kind == "merge":
             merge_partial_snapshot(
                 user_id,
                 pool_id=pool_id,
@@ -1042,8 +1046,6 @@ def _execute_query(
                 total=pool_total,
             )
         else:
-            from src.query.snapshot import save_table_snapshot
-
             save_table_snapshot(
                 user_id,
                 pool_id=pool_id,
@@ -1361,10 +1363,10 @@ def query_export(body: QueryIn, user: User = Depends(current_user), db: Session 
 @router.get("/query/snapshot")
 def query_snapshot(pool: str = "watch", user: User = Depends(current_user)):
     """打开某个池子上次刷新留下的副本。只读本地文件，不查行情。"""
-    from src.query.snapshot import load_table_snapshot
+    from src.query.snapshot import load_table_snapshot, repair_saved_snapshot
 
     pid = (pool or "watch").strip() or "watch"
-    snap = load_table_snapshot(user.id, pid)
+    snap = repair_saved_snapshot(user.id, pid) or load_table_snapshot(user.id, pid)
     if not snap:
         return {"found": False, "pool_id": pid, "rows": []}
     rows = [row for row in (snap.get("rows") or []) if isinstance(row, dict)]

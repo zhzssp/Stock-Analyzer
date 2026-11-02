@@ -590,11 +590,15 @@ class ResumeSession:
             self._save()
 
     def public(self) -> dict:
+        done = self.ledger.get("status") == "complete"
+        # 打开时的那句是「还剩多少」。这一轮把剩下的取完后，不能再把那句当成当前状态。
+        reason = "续传已完成" if done and self.resumed else ("" if done else (self.reason or ""))
         return {
             "used": bool(self.resumed),
             "skipped": int(self.plan.skipped),
             "refetched": int(self.plan.refetch_count),
-            "reason": self.reason or "",
+            "done": done,
+            "reason": reason,
         }
 
     def _save(self) -> None:

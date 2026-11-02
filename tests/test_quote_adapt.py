@@ -15,6 +15,7 @@ from src.market.client import (
     MarketClient,
     MarketError,
     QuoteBatchDowngrade,
+    _ssjy_quote,
 )
 from src.market.clock import SHANGHAI, align_quotes
 from src.market.normalize import normalize_instrument
@@ -35,6 +36,15 @@ def _bare() -> MarketClient:
 
 def _codes(n: int) -> list[SimpleNamespace]:
     return [SimpleNamespace(code6=f"{i:02d}") for i in range(n)]
+
+
+def test_batch_pb_ratio_fills_the_pb_field():
+    """批量现价的市净率字段是 pb_ratio，单只接口才叫 sjl。"""
+    batch = _ssjy_quote({"dm": "300111", "p": 10, "pc": 1, "pe": -198.33, "pb_ratio": 6.2, "tr": 7.93}, "live")
+    assert batch["sjl"] == 6.2
+    assert batch["hs"] == 7.93
+    single = _ssjy_quote({"p": 10, "sjl": 1.5, "pb_ratio": 9}, "live")
+    assert single["sjl"] == 1.5
 
 
 def test_batch_requests_stock_codes_after_the_licence():
