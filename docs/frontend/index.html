@@ -1437,11 +1437,11 @@
       <h2><span>导出 Excel</span><span id="exportTitleMount"></span></h2>
       <div class="exp-confirm" id="expConfirm">正在读取当前选项…</div>
       <div class="exp-block">
-        <div class="exp-label">要导出哪些股票<span id="expScopeCount" class="exp-count"></span></div>
+        <div class="exp-label">当前打开的副本<span id="expScopeCount" class="exp-count"></span></div>
         <div class="exp-opts" id="expScopeOpts"></div>
       </div>
       <div class="exp-block">
-        <div class="exp-label">数字从哪里来</div>
+        <div class="exp-label">怎么写进表格</div>
         <div class="exp-opts" id="expFreshOpts"></div>
       </div>
       <div class="exp-block">
@@ -2396,8 +2396,11 @@
       state.streamRows = null;
       state.listOnly = false;
       renderTable(data.fields || [], rows, { all: true });
+      const span = copyTakenSpan(rows, data.saved_at);
       const when = formatShanghaiMinute(data.saved_at);
-      let line = "正在查看 " + (when || day) + " 的" + (data.pool || data.pool_id || "");
+      let line = span
+        ? "正在查看 " + (data.pool || data.pool_id || "") + "，" + span
+        : "正在查看 " + (when || day) + " 的" + (data.pool || data.pool_id || "");
       if (!data.complete) line += "，已保存 " + (data.covered || 0) + "/" + (data.total || 0) + " 只";
       patchStatus({ table: line, pool: "", sort: "", extra: "" });
     }
@@ -2456,10 +2459,45 @@
       });
     }
 
+    async function showPoolCopy(poolId, label) {
+      let snap = null;
+      try {
+        snap = await api("/query/snapshot?pool=" + encodeURIComponent(poolId));
+      } catch (err) {
+        return false;
+      }
+      if (state.pool !== poolId) return false;
+      if (!snap || !snap.found || !(snap.rows || []).length) return false;
+      clearPageBook();
+      state.lastQueryCodes = null;
+      state.viewingDay = false;
+      state.shownPool = poolId;
+      state.streamRows = null;
+      state.paged = false;
+      state.loadingMore = false;
+      state.tablePage = 1;
+      state.totalRows = snap.rows.length;
+      const fields = chosenFieldList();
+      renderTable(
+        fields.length ? fields : [{ key: "name", label: "名称" }, { key: "code", label: "代码" }],
+        snap.rows,
+        { all: true }
+      );
+      const name = snap.pool || label || poolId;
+      const span = copyTakenSpan(snap.rows, snap.saved_at);
+      let line = `已打开「${name}」的副本，${snap.rows.length} 只`;
+      if (span) line += `，${span}`;
+      if (snap.total && !snap.complete) line += `，已保存 ${snap.covered || snap.rows.length}/${snap.total}`;
+      patchStatus({ table: line, pool: "", sort: "", extra: "" });
+      updateExportScope(name);
+      return true;
+    }
+
     async function selectPool(poolId) {
       // 换到另一池时，上一池的刷新还在写右上角进度，先作废那一轮。
       if (poolId !== state.pool || state.pageBook) supersedeListQuery();
       clearPageBook();
+      clearDateBox();
       state.pool = poolId;
       state.poolPage = 1;
       if (poolId !== "watch") {
@@ -2468,11 +2506,13 @@
       }
       renderPoolChips(state.pools);
       const data = await api("/markets/pools/" + encodeURIComponent(poolId) + "/instruments");
+      if (state.pool !== poolId) return;
       renderPoolList(data.items || []);
       setPoolHint(poolHintText(state.side, data));
       updateExportScope(data.label || poolId);
-      // 只换中间这份名单，不拉行情。行情留给「刷新行情」。
-      showCenterList(data.items || [], data.label || poolId);
+      const opened = await showPoolCopy(poolId, data.label || poolId);
+      if (state.pool !== poolId) return;
+      if (!opened) showCenterList(data.items || [], data.label || poolId);
     }
 
     function setSide(side) {
@@ -2856,11 +2896,14 @@
     }
 
     // 剩余时间只在新进度到达时重算，不在本地往下减。
-    // 第一阶段用本次请求的起点；换阶段（现价 → 慢字段）后以前一拍为起点，避免把上一段耗时算进去。
+    // 还没有一只完成时写「正在估算」；完成一只就给出数字。
+    // 换阶段（现价 → 慢字段）后以前一拍为起点，避免把上一段耗时算进去。
+    const ETA_PENDING = " · 正在估算剩余时间";
+
     function etaSuffix(done, total, stage) {
       const n = Number(done) || 0;
       const all = Number(total) || 0;
-      if (!all || n <= 0) return " · 正在估算剩余时间";
+      if (!all || n <= 0) return ETA_PENDING;
       if (n >= all) return "";
       if (!state.eta) resetEtaClock();
       const eta = state.eta;
@@ -2871,24 +2914,35 @@
         if (!first) {
           eta.t0 = performance.now();
           eta.done0 = n;
-          return " · 正在估算剩余时间";
+          return ETA_PENDING;
         }
         eta.done0 = 0;
       }
       const gained = n - eta.done0;
       const elapsed = performance.now() - eta.t0;
-      if (gained < 10 || elapsed < 300) return " · 正在估算剩余时间";
+      if (gained < 1 || elapsed <= 0) return ETA_PENDING;
       const raw = (elapsed / gained) * (all - n);
       const remain = eta.lastRemainMs == null ? raw : eta.lastRemainMs * 0.6 + raw * 0.4;
       eta.lastRemainMs = remain;
       const text = formatRemain(remain);
-      return text ? ` · ${text}` : " · 正在估算剩余时间";
+      return text ? ` · ${text}` : ETA_PENDING;
     }
 
     function pageRemainClause(elapsedMs, pageCount, remaining) {
-      if (!pageCount || !remaining || remaining <= 0 || !elapsedMs || elapsedMs < 300) return "";
+      if (!pageCount || !remaining || remaining <= 0 || !elapsedMs || elapsedMs <= 0) return "";
       const text = formatRemain((elapsedMs / pageCount) * remaining);
-      return text ? ` · 若后面每页也按这个速度，${text}` : "";
+      return text ? ` · 后面几页${text}` : "";
+    }
+
+    function pageRemainTail(book) {
+      const clock = book && book.pageClock;
+      if (!book || book.quoting || book.fetching < 0 || !clock || !clock.done) return "";
+      const total = book.total || 0;
+      if (!total) return "";
+      const pages = Math.max(1, Math.ceil(total / PAGE_LIMIT));
+      const ahead = pages - book.fetching - 1;
+      if (ahead <= 0) return "";
+      return pageRemainClause(performance.now() - clock.t0, clock.done, ahead);
     }
 
     function statusHead() {
@@ -2986,14 +3040,14 @@
         const head = statusHead();
         const whole = Number(data.total) || 0;
         if (state.statusRole === "extra") {
-          patchStatus({ extra: "正在补行业、股东和财务" });
+          patchStatus({ extra: `正在补行业、股东和财务${ETA_PENDING}` });
           return;
         }
         if (state.streamAppend) {
           // 下一页先攒着，结束再接上。中途失败不能把半页写进表，否则下次 offset 会跳号。
           state.streamAppendMap = {};
           patchStatus({
-            table: `${head} · 正在加载本页`,
+            table: `${head} · 正在加载本页${ETA_PENDING}`,
             pool: poolProgressLine(0, (state.rowsRaw || []).length, ""),
           });
           return;
@@ -3001,14 +3055,14 @@
         if (state.streamKeepRows && (state.rowsRaw || []).length) {
           // 刷新不要先把名单换成骨架，也不要收成第一页再让人下滚。
           state.paged = false;
-          patchStatus({ table: `${head} · 正在更新现价` });
+          patchStatus({ table: `${head} · 正在更新现价${ETA_PENDING}` });
           return;
         }
         state.vscroll = wantVirtualScroll(state.totalRows, 0);
         renderSkeleton(data.fields || [], data.total || 0);
         const paged = whole > PAGE_LIMIT;
         patchStatus({
-          table: paged ? `${head} · 正在取本页现价` : `${head} · 共 ${whole} 只 · 正在取现价`,
+          table: paged ? `${head} · 正在取本页现价${ETA_PENDING}` : `${head} · 共 ${whole} 只 · 正在取现价${ETA_PENDING}`,
           pool: paged ? `这一池一共 ${whole} 只` : "",
         });
         return;
@@ -3041,14 +3095,14 @@
       if (event === "progress") {
         if (state.pageCapture) {
           if ((data.stage || "") === "queued") {
-            patchStatus({ table: `${statusHead()} · 等上一轮结束` });
+            patchStatus({ table: `${statusHead()} · 等上一轮结束${ETA_PENDING}` });
             return;
           }
           updateFullPoolStatus(data);
           return;
         }
         if ((data.stage || "") === "queued") {
-          const line = `${statusHead()} · 等上一轮结束`;
+          const line = `${statusHead()} · 等上一轮结束${ETA_PENDING}`;
           if (state.statusRole === "extra") patchStatus({ extra: line });
           else patchStatus({ table: line });
           return;
@@ -3354,7 +3408,7 @@
           if (exporting) patchStatus({ export: "导出排队，等当前刷新结束" });
           else if (listQueryCurrent(gen)) {
             const key = state.statusRole === "extra" ? "extra" : "table";
-            patchStatus({ [key]: `${statusHead()} · 等上一轮结束` });
+            patchStatus({ [key]: `${statusHead()} · 等上一轮结束${ETA_PENDING}` });
           }
           await new Promise((resolve) => setTimeout(resolve, 400));
           continue;
@@ -3377,7 +3431,8 @@
           patchStatus({ export: `Excel表格导出进度：${exportLabel}${done}/${total}` });
         } else if (listQueryCurrent(gen)) {
           const key = state.statusRole === "extra" ? "extra" : "table";
-          patchStatus({ [key]: `${statusHead()} · ${done}/${total}` });
+          const suffix = etaSuffix(done, Number(total) || 0, "job");
+          patchStatus({ [key]: `${statusHead()} · ${done}/${total}${suffix}` });
         }
         await new Promise((resolve) => setTimeout(resolve, 400));
       }
@@ -3475,6 +3530,14 @@
           if (poolId) base.pool = poolId;
         }
       }
+      // 查询、刷新行情、全量更新写入当前池的副本。详情和筛选一次显式关掉。
+      if (o.saveCopy !== false && (refreshMode === "quote" || refreshMode === "cache" || refreshMode === "full")) {
+        base.save_copy = true;
+        if (codes && codes.length) {
+          const poolId = o.pool || state.pool;
+          if (poolId) base.pool = poolId;
+        }
+      }
       return base;
     }
 
@@ -3494,6 +3557,22 @@
       }).formatToParts(d);
       const pick = (type) => (parts.find((p) => p.type === type) || {}).value || "";
       return `${pick("year")}-${pick("month")}-${pick("day")} ${pick("hour")}:${pick("minute")}`;
+    }
+
+    function copyTakenSpan(rows, fallback) {
+      const stamps = [];
+      (rows || []).forEach((row) => {
+        const raw = row && row.row_saved_at;
+        if (raw) stamps.push(String(raw));
+      });
+      if (!stamps.length && fallback) stamps.push(String(fallback));
+      if (!stamps.length) return "";
+      stamps.sort();
+      const early = formatShanghaiMinute(stamps[0]);
+      const late = formatShanghaiMinute(stamps[stamps.length - 1]);
+      if (!early) return "";
+      if (!late || early === late) return `取数时间 ${early}`;
+      return `取数时间 ${early} 至 ${late}`;
     }
 
     function quoteSourceLabel(source) {
@@ -3648,11 +3727,11 @@
       state.lastRefreshMode = refreshMode;
       beginStatus(o, refreshMode);
       if (!appending && state.statusRole !== "extra") {
-        if (!setQueryHint(gen, `${statusHead()} · 正在开始`)) throw querySupersededError();
+        if (!setQueryHint(gen, `${statusHead()} · 正在开始${ETA_PENDING}`)) throw querySupersededError();
         showQueryIssues([]);
         state.emptyWarned = false;
       } else if (state.statusRole === "extra") {
-        patchStatus({ extra: "正在补行业、股东和财务" });
+        patchStatus({ extra: `正在补行业、股东和财务${ETA_PENDING}` });
       }
       // 顶部指数先走：请求轻、返回快，让小板块先于大表刷新出来
       if (!appending && !(o.pageCapture && o.offset)) loadBoard().catch(() => {});
@@ -3999,7 +4078,7 @@
       closeStock();
       // 临时代码查询：整只按列设置现网重拉。pool 是 codes，不会写成自选快照。
       try {
-        await runQuery([code], { refreshMode: "full", forceLive: true });
+        await runQuery([code], { refreshMode: "full", forceLive: true, saveCopy: false });
       } catch (err) {
         if (isQueryAbort(err)) return;
         toast(err.message);
@@ -4026,12 +4105,6 @@
       }
     });
 
-    const EXPORT_FRESH = [
-      { id: "snapshot", label: "用上次保存的表", sub: "不再重新查询，几秒就能下载" },
-      { id: "cache", label: "用已有的，缺的再补（推荐）", sub: "以前查过的直接用，只补还没有的" },
-      { id: "full", label: "全部重新查一遍", sub: "数字最新，但最慢，也最费查询次数" },
-    ];
-
     function expOptHtml(name, item, checked, disabled, why) {
       return `<label class="exp-opt ${disabled ? "off" : ""}">
           <input type="radio" name="${name}" value="${escAttr(item.id)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} />
@@ -4039,197 +4112,99 @@
         </label>`;
     }
 
-    function displayedQueryRows() {
-      // 表上这一轮真正在用的行。虚拟滚动和后端翻页都把已加载的行算进去；
-      // 只有「一次拿全、本机再翻页」才按 tablePage 截断。
-      const all = sortedRows(state.rowsRaw || []);
-      if (state.paged || state.vscroll) return all;
-      return all.slice(0, state.tablePage * PAGE_SIZE);
+    function openCopyRows() {
+      // 筛选结果、单独查询、某一天的旧表：表上这份就是要导出的副本。
+      if (state.viewingDay || (state.lastQueryCodes && state.lastQueryCodes.length)) {
+        return (state.rowsRaw || []).slice();
+      }
+      const book = state.pageBook;
+      if (book && book.pool === state.pool && book.pages && book.pages.length) {
+        const rows = [];
+        book.pages.forEach((page) => {
+          if (page && page.length) rows.push.apply(rows, page);
+        });
+        if (rows.length) return rows;
+      }
+      return (state.rowsRaw || []).slice();
     }
 
-    function expCount() {
-      // 当前池（或搜索批次）一共有多少只
-      if (state.lastQueryCodes && state.lastQueryCodes.length) return state.lastQueryCodes.length;
-      // 全量更新按页查看时，表上只有当前页，整池行数记在页册上。
-      if (state.pageBook && state.pageBook.total) return state.pageBook.total;
-      // 分页模式下 rowsRaw 只是已加载的那几页，整池行数看 total
-      if (state.totalRows) return state.totalRows;
-      if (state.rowsRaw && state.rowsRaw.length) return state.rowsRaw.length;
-      const pool = (state.pools || []).find((p) => p.id === state.pool);
-      return (pool && pool.count) || 0;
+    function openCopyTitle() {
+      if (state.viewingDay) {
+        const day = ((document.getElementById("xDate") || {}).value || "").trim();
+        return day ? `${day} 的查询表` : "正在查看的这一天";
+      }
+      if (state.lastQueryCodes && state.lastQueryCodes.length) return "当前筛选结果";
+      return state.poolLabel || "当前池";
     }
 
-    function exportFieldGroups(cols) {
-      const catalog = state.fieldCatalog || [];
-      if (cols === "watch" || cols === "research") {
-        const def = (state.colPresetDefs || []).find((p) => p.id === cols);
-        const keys = new Set((def && def.fields) || []);
-        if (keys.size && catalog.length) {
-          return new Set(catalog.filter((f) => keys.has(f.key)).map((f) => f.group));
-        }
+    function exportFieldKeys() {
+      const o = state.exportOpts || { cols: "current" };
+      if (o.cols === "watch" || o.cols === "research") {
+        const def = (state.colPresetDefs || []).find((p) => p.id === o.cols);
+        if (def && def.fields && def.fields.length) return def.fields.slice();
       }
-      return new Set((state.fields || []).map((f) => f.group));
-    }
-
-    function expEstimate(n, mode, hasSnapshot, cacheWarm, cols) {
-      if (mode === "snapshot") {
-        return { level: "马上就能下", text: "直接用上次保存的表格，不用再查询，几秒钟就能下载。" };
-      }
-      if (mode === "cache") {
-        if (hasSnapshot || cacheWarm) {
-          return { level: "只补缺少的", text: "以前查过的内容直接用，只补还没有的。" };
-        }
-        return { level: "这次会查很多", text: "电脑里还没有这批数据，这次会把要导出的内容都查一遍。" };
-      }
-      const groups = exportFieldGroups(cols);
-      const slow = ["profile", "holders", "finance", "flow", "bottom"].filter((g) => groups.has(g)).length;
-      let level = "查得很少";
-      if (slow >= 3) level = "查得很多";
-      else if (slow === 2) level = "查得比较多";
-      else if (slow === 1) level = "查得不算少";
-      const extra = n > 40 ? "超过 40 只时会在后台慢慢做，完成前请不要关掉这个页面。" : "";
-      const what = slow ? "财务、股东、公司业务这些比较慢的内容" : "现价、涨跌和估值";
-      return {
-        level,
-        text: `每只股票都会重新查${what}。查询次数有限，不要反复点。${extra}`,
-      };
+      return (state.fields || []).map((f) => f.key).filter(Boolean);
     }
 
     async function openExport() {
-      state.exportOpts = { scope: "pool", fresh: "cache", cols: "current" };
+      state.exportOpts = { cols: "current" };
       const est = document.getElementById("expEstimate");
       const warn = document.getElementById("expWarn");
-      if (est) est.textContent = "正在读取本机状态…";
+      if (est) est.textContent = "";
       if (warn) { warn.style.display = "none"; warn.innerHTML = ""; }
       document.getElementById("exportMask").style.display = "flex";
       markExportBusy(state.exportBusy);
-
-      let snap = null;
-      let health = null;
-      let prefs = null;
       try {
-        const [storage, h, p] = await Promise.all([api("/storage"), api("/health"), api("/query/prefs")]);
-        snap = storage.query_snapshot || {};
-        health = h.market || h;
-        prefs = p;
-        state.colPresetDefs = p.presets || state.colPresetDefs || [];
-        rememberColumnChoice(p.fields, p.all);
+        const prefs = await api("/query/prefs");
+        state.colPresetDefs = prefs.presets || state.colPresetDefs || [];
+        rememberColumnChoice(prefs.fields, prefs.all);
       } catch (err) {
         toast(err.message);
       }
       if (document.getElementById("exportMask").style.display === "none") return;
-
-      const n = expCount();
-      const hasSnapshot = Boolean(snap && snap.has_snapshot);
-      const searchCount = (state.lastQueryCodes || []).length;
-      const pageCount = displayedQueryRows().length;
-
-      const scopeOpts = [
-        { id: "pool", label: `整份名单（${state.poolLabel || "自选"}）`, sub: searchCount ? "左侧现在选中的全部股票" : `左侧现在选中的全部股票，一共 ${n} 只` },
-        { id: "search", label: "刚才查出来的", sub: searchCount ? `只含这次查到的 ${searchCount} 只` : "", disabled: !searchCount, why: "现在没有单独查出来的结果" },
-        { id: "page", label: "屏幕上已经出来的", sub: `还没往下加载的不算，一共 ${pageCount} 只`, disabled: !pageCount || n <= pageCount, why: pageCount && n <= pageCount ? "已经全部显示了，和第一项是同一批" : "屏幕上还没有股票" },
-      ];
-      document.getElementById("expScopeOpts").innerHTML = scopeOpts.map((it, i) =>
-        expOptHtml("expScope", it, i === 0, it.disabled, it.why || "当前没有可导的范围")
-      ).join("");
-      document.getElementById("expScopeCount").textContent = n ? `共 ${n} 只` : "";
-
-      document.getElementById("expFreshOpts").innerHTML = EXPORT_FRESH.map((it) => {
-        const disabled = it.id === "snapshot" && !hasSnapshot;
-        const why = "还没有保存过。先点一次「查询」，这项才能用";
-        return expOptHtml("expFresh", it, it.id === "cache", disabled, why);
-      }).join("");
-
+      const rows = openCopyRows();
+      const title = openCopyTitle();
+      document.getElementById("expScopeOpts").innerHTML =
+        `<div class="exp-opt"><span><span class="t">${escHtml(title)}</span><br /><span class="s">已经刷进这份副本的各页都会写入，不管表格正停在哪一页。</span></span></div>`;
+      document.getElementById("expScopeCount").textContent = rows.length ? `共 ${rows.length} 只` : "";
+      document.getElementById("expFreshOpts").innerHTML =
+        `<div class="exp-opt"><span><span class="t">按这份副本里已有的数字写</span><br /><span class="s">不再重新查询，也不再刷新。</span></span></div>`;
       const colOpts = [
         { id: "current", label: "和屏幕上一样", sub: `就用你现在勾选的栏目，共 ${(state.fields || []).length} 项` },
-        { id: "watch", label: "只要价格", sub: "名称、代码、现价、涨跌、市盈率、市净率" },
-        { id: "research", label: "要详细资料", sub: "再加上行业、概念、公司做什么、股东和财务" },
+        { id: "watch", label: "只要价格", sub: "名称、代码、现价、涨跌、市盈率、市净率。副本里没有的格子留空" },
+        { id: "research", label: "要详细资料", sub: "再加上行业、概念、公司做什么、股东和财务。没有的格子留空" },
       ];
       document.getElementById("expColOpts").innerHTML = colOpts.map((it, i) =>
         expOptHtml("expCols", it, i === 0, false, "")
       ).join("");
-      document.getElementById("exportTitleMount").innerHTML = helpTip("按下面三项做一张表，并留在档案库里（每人最多留最近 20 份）。股票越多、栏目越多，越慢。");
-
-      ["expScope", "expFresh", "expCols"].forEach((name) => {
-        document.querySelectorAll(`input[name="${name}"]`).forEach((el) => {
-          el.addEventListener("change", () => {
-            const key = name === "expScope" ? "scope" : (name === "expFresh" ? "fresh" : "cols");
-            state.exportOpts[key] = el.value;
-            renderExportHint(hasSnapshot);
-          });
+      document.getElementById("exportTitleMount").innerHTML = helpTip("把当前打开的副本写成 Excel，并留在档案库里（每人最多留最近 20 份）。");
+      document.querySelectorAll('input[name="expCols"]').forEach((el) => {
+        el.addEventListener("change", () => {
+          state.exportOpts.cols = el.value;
+          renderExportConfirm();
         });
       });
-      state.exportSnapshot = snap;
-      state.exportHasSnapshot = hasSnapshot;
-      renderExportHint(hasSnapshot);
-
-      // 市场状态警告：离线 / 探针失败 / 额度用尽
-      const notes = [];
-      const off = Boolean(health && (health.offline || health.mairui_offline));
-      if (off) notes.push(`现在是<b>离线样例</b>${health.offline_reason ? "（" + escHtml(health.offline_reason) + "）" : ""}，导出的表不会是真实行情。`);
-      if (health && health.status === "probe-failed") notes.push("行情探针失败（可能是证书额度用尽或网络不通），导出的表会大片空白。");
-      if (health && (health.sample_only || health.status === "demo-licence")) notes.push("当前只能用演示样本，导出的是样本数据。");
-      if (notes.length) {
-        const tip = hasSnapshot ? "　建议改选「用上次保存的表」。" : "";
-        warn.innerHTML = notes.join("<br />") + tip;
-        warn.style.display = "block";
-      }
+      renderExportConfirm();
+      if (est) est.innerHTML = rows.length ? "" : "<b>当前没有可导出的行</b>";
       markExportBusy(state.exportBusy);
     }
 
-    function exportDescribe() {
-      const o = state.exportOpts || { scope: "pool", fresh: "cache", cols: "current" };
-      const pool = state.poolLabel || "自选";
-      const content = o.cols === "watch" ? "只要价格" : (o.cols === "research" ? "要详细资料" : "和屏幕上一样");
+    function exportFileStem() {
+      const o = state.exportOpts || { cols: "current" };
       const fileContent = o.cols === "watch" ? "只要价格" : (o.cols === "research" ? "详细资料" : "当前栏目");
-      const fresh = o.fresh === "snapshot" ? "上次保存的表" : (o.fresh === "full" ? "全部重新查一遍" : "已有的，缺的再补");
-      let sentence = `要导出「${pool}」里的全部股票吗？`;
-      let fileParts = [pool, fileContent];
-      if (o.scope === "search") {
-        sentence = `要导出刚才在「${pool}」里查出来的股票吗？`;
-        fileParts = [pool, "查询结果", fileContent];
-      } else if (o.scope === "page") {
-        sentence = `要导出「${pool}」里屏幕上已经出来的股票吗？`;
-        fileParts = [pool, "已显示", fileContent];
-      }
-      return { sentence, fresh, content, fileStem: fileParts.join("_") };
+      return [openCopyTitle(), fileContent].join("_");
     }
 
     function renderExportConfirm() {
       const box = document.getElementById("expConfirm");
       if (!box) return;
-      const desc = exportDescribe();
-      const n = (() => {
-        const o = state.exportOpts || {};
-        const total = expCount();
-        if (o.scope === "search") return (state.lastQueryCodes || []).length;
-        if (o.scope === "page") return displayedQueryRows().length;
-        return total;
-      })();
+      const n = openCopyRows().length;
+      const o = state.exportOpts || { cols: "current" };
+      const content = o.cols === "watch" ? "只要价格" : (o.cols === "research" ? "要详细资料" : "和屏幕上一样");
       box.innerHTML =
-        `<div class="ask">${escHtml(desc.sentence)}</div>` +
-        `<div>一共 ${n || 0} 只。数字用「${escHtml(desc.fresh)}」，表格放「${escHtml(desc.content)}」。</div>` +
-        `<div class="file">文件名：导出时间_${escHtml(desc.fileStem)}.xlsx</div>`;
-    }
-
-    function renderExportHint(hasSnapshot) {
-      const est = document.getElementById("expEstimate");
-      renderExportConfirm();
-      if (!est) return;
-      const o = state.exportOpts || {};
-      const n = expCount();
-      const count = o.scope === "search" ? (state.lastQueryCodes || []).length
-        : (o.scope === "page" ? displayedQueryRows().length : n);
-      const snap = state.exportSnapshot || {};
-      const info = expEstimate(count, o.fresh, hasSnapshot, Boolean(snap && snap.has_snapshot), o.cols);
-      let text = `<b>${escHtml(info.level)}</b> · 约 ${count} 只<br />${escHtml(info.text)}`;
-      if (o.fresh === "snapshot" && hasSnapshot) {
-        text += `<br />上次保存：${escHtml(snap.saved_at || "—")}${snap.count ? `，${snap.count} 行` : ""}`;
-      }
-      if (o.scope === "page" && n > count) {
-        text += `<br /><b>只导出屏幕上这 ${count} 只</b>（这一批一共 ${n} 只）。要全部导出，请改选「整份名单」。`;
-      }
-      est.innerHTML = text;
+        `<div class="ask">要导出「${escHtml(openCopyTitle())}」吗？</div>` +
+        `<div>一共 ${n} 只。按当前打开的副本写，不再重新查询。表格放「${escHtml(content)}」。</div>` +
+        `<div class="file">文件名：导出时间_${escHtml(exportFileStem())}.xlsx</div>`;
     }
 
     function closeExport() {
@@ -4237,52 +4212,40 @@
     }
 
     async function doExport() {
-      const o = state.exportOpts || { scope: "pool", fresh: "cache", cols: "current" };
-      const payload = {};
-      if (o.scope === "search") payload.codes = state.lastQueryCodes || [];
-      else if (o.scope === "page") {
-        payload.codes = displayedQueryRows()
-          .map((r) => r.code_full || r.code6)
-          .filter(Boolean);
-      } else {
-        payload.pool = currentExportPool();
+      const rows = openCopyRows();
+      if (!rows.length) {
+        toast("当前没有可导出的副本");
+        return;
       }
-      if (!payload.codes || !payload.codes.length) delete payload.codes;
-      state.exportHintLabel = exportDescribe().fileStem || state.poolLabel || "";
-      payload.refresh_mode = o.fresh;
-      payload.force_live = o.fresh === "full";
-      payload.export_label = exportDescribe().fileStem;
-      if (o.cols === "watch" || o.cols === "research") {
-        const def = (state.colPresetDefs || []).find((p) => p.id === o.cols);
-        if (def && def.fields && def.fields.length) payload.fields = def.fields;
-      }
+      const fields = exportFieldKeys();
+      const slim = rows.map((row) => {
+        const out = {};
+        fields.concat(["code6", "code", "code_full", "name"]).forEach((key) => {
+          const value = row[key];
+          if (value === null || value === undefined || value === "") return;
+          out[key] = value;
+        });
+        if (!out.code && row.code_full) out.code = row.code_full;
+        if (!out.code6 && row.code) out.code6 = String(row.code).split(".")[0];
+        return out;
+      });
+      const payload = {
+        rows: slim,
+        fields,
+        pool: currentExportPool(),
+        pool_name: openCopyTitle(),
+        export_label: exportFileStem(),
+      };
+      patchStatus({ export: "正在写入 Excel" });
       let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
-      if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
       await downloadArtifact(data.id, data.filename);
-      const rows = (data.rows && data.rows.length) || (data.row_count || 0);
-      toast(`已导出 ${rows || "这一批"} 行，写入档案库并下载 ${data.filename}`);
+      const exported = data.count || data.row_count || rows.length;
+      patchStatus({ export: `已导出 ${exported} 行` });
+      toast(`已导出 ${exported} 行，写入档案库并下载 ${data.filename}`);
     }
 
     async function exportXlsx() {
-      if (state.exportBusy) {
-        toast("导出还在进行");
-        return;
-      }
-      markExportBusy(true);
-      try {
-        state.exportHintLabel = state.poolLabel || "";
-        const payload = queryPayload(
-          state.lastQueryCodes && state.lastQueryCodes.length ? state.lastQueryCodes : null,
-          { refreshMode: "full", forceLive: true }
-        );
-        if (!payload.codes) payload.pool = currentExportPool();
-        let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
-        if (data.job_id && data.status === "running") data = await waitJob(data.job_id);
-        await downloadArtifact(data.id, data.filename);
-        toast("已写入档案库，并下载 " + data.filename + "（" + (data.pool || payload.pool || "筛选一次") + "）");
-      } finally {
-        markExportBusy(false);
-      }
+      return doExport();
     }
 
     const GROUP_LABEL = { meta: "基础", quote: "行情", profile: "公司", holders: "股东", finance: "财务", flow: "资金", bottom: "底/顶", card: "决策卡" };
@@ -4739,42 +4702,17 @@
     }
 
     async function bootTableQuery() {
-      let wanted = [];
       try {
         const prefs = await api("/query/prefs");
-        wanted = prefs.fields || [];
         if (prefs.preset) state.colPreset = prefs.preset;
-        rememberColumnChoice(wanted, prefs.all);
+        rememberColumnChoice(prefs.fields, prefs.all);
       } catch {
-        /* 列设置读不到时，查询本身仍走服务端默认的十七列 */
+        /* 列设置读不到时，打开副本仍用已经记住的列 */
       }
-      const wantsSlow = wanted.some((k) => FAST_FIELDS.indexOf(k) < 0);
-      try {
-        await runQuery(null, { refreshMode: "snapshot", forceLive: false });
-        const shown = new Set((state.fields || []).map((f) => f.key));
-        const missing = wanted.filter((k) => !shown.has(k));
-        if ((!wantsSlow || !missing.length) && !slowFieldsMostlyEmpty(wanted)) return;
-      } catch (err) {
-        if (isQueryAbort(err)) return;
-        /* 没有这一池的快照，或快照对不上，先出行情列，再按默认勾选补齐 */
-      }
-      try {
-        const opts = { refreshMode: "cache", forceLive: false };
-        if (wantsSlow) opts.fields = FAST_FIELDS;
-        await runQuery(null, opts);
-      } catch (err) {
-        if (isQueryAbort(err)) return;
-        try {
-          await runQuery(null, { refreshMode: "cache", forceLive: false });
-        } catch (again) {
-          if (isQueryAbort(again)) return;
-        }
-        return;
-      }
-      if (!wantsSlow) return;
-      runQuery(null, { refreshMode: "cache", forceLive: false, stream: true, statusRole: "extra" })
-        .then(() => toast("行业、股东和财务已补齐"))
-        .catch(() => {});
+      state.pool = state.pool || "watch";
+      const opened = await showPoolCopy("watch", "自选");
+      if (state.pool !== "watch" || state.side !== "watch") return;
+      if (!opened) showCenterList(state.watch || [], "自选");
     }
 
     // 抬头指数是小板块，请求轻（后端有 60 秒缓存），先把它请求出去并渲染好，
@@ -4895,8 +4833,9 @@
 
     function updateFullPoolStatus(progress) {
       const book = state.pageBook;
+      const tail = pageRemainTail(book);
       if (book && book.quoting) {
-        let bit = "";
+        let bit = ETA_PENDING;
         if (progress && progress.total) {
           const suffix = etaSuffix(progress.done || 0, progress.total, progress.stage || "quote");
           bit = ` ${progress.done || 0}/${progress.total}${suffix}`;
@@ -4911,16 +4850,18 @@
       let detail = `正在取第 ${pageNo} 页`;
       if (pages > 1) detail += ` · 共 ${pages} 页`;
       if (progress && (progress.stage || "") === "queued") {
-        detail = "等上一轮结束";
+        detail = `等上一轮结束${ETA_PENDING}`;
       } else if (progress && progress.total) {
         const stage = progress.stage === "quote" ? "本页现价" : "本页资料";
         const suffix = etaSuffix(progress.done || 0, progress.total, progress.stage || "full");
         detail += ` · ${stage} ${progress.done || 0}/${progress.total}${suffix}`;
+      } else {
+        detail += ETA_PENDING;
       }
       if (book && book.pages && book.pages[book.view] && book.view !== book.fetching) {
         detail += ` · 正在看第 ${book.view + 1} 页`;
       }
-      patchStatus({ table: `${statusHead()} · ${detail}`, pool: (book && book.resumeNote) || "" });
+      patchStatus({ table: `${statusHead()} · ${detail}${tail}`, pool: (book && book.resumeNote) || "" });
       if (book && state.sortKey && book.pages && book.pages[book.view]) syncSortLine();
       renderPagePickerButton();
     }
@@ -5139,6 +5080,7 @@
       renderPagedHint();
       closePagePicker();
       renderPagePickerButton();
+      book.pageClock = { t0: performance.now(), done: 0 };
       try {
         while (listQueryCurrent(gen) && state.pageBook === book) {
           const idx = Math.floor(offset / PAGE_LIMIT);
@@ -5207,6 +5149,7 @@
             break;
           }
           book.pages[idx] = rows;
+          if (book.pageClock) book.pageClock.done += 1;
           if (idx === 0) showBookPage(book, 0);
           renderPagePickerButton();
           if (mask && mask.style.display === "flex") fillPagePicker();
@@ -5448,7 +5391,15 @@
       if (side === "watch") {
         if (switchingAway || state.pageBook) supersedeListQuery();
         clearPageBook();
-        showCenterList(state.watch || [], "自选");
+        clearDateBox();
+        state.pool = "watch";
+        showPoolCopy("watch", "自选").then((opened) => {
+          if (state.side === "watch" && state.pool === "watch" && !opened) {
+            showCenterList(state.watch || [], "自选");
+          }
+        }).catch(() => {
+          if (state.side === "watch" && state.pool === "watch") showCenterList(state.watch || [], "自选");
+        });
         return;
       }
       const kind = side === "quote" ? "index" : "exchange";
@@ -6084,7 +6035,7 @@
       const codes = selectedPickCodes();
       if (!codes.length) return toast("先勾选股票");
       try {
-        await runQuery(codes, { refreshMode: "full", forceLive: true });
+        await runQuery(codes, { refreshMode: "full", forceLive: true, saveCopy: false });
         closePicker();
         toast("已按筛选结果查询，未改自选。导出 Excel 会导出这一批。");
       } catch (err) {

@@ -289,3 +289,107 @@ def test_partial_merge_keeps_the_other_stock_in_a_complete_snapshot(tmp_path, mo
     assert by["600038"]["price"] == 11
     assert by["600893"]["price"] == 20
     assert by["600893"]["row_saved_at"] == "2026-10-25T07:00:00+00:00"
+    assert snap["taken_from"] == "2026-10-25T07:00:00+00:00"
+    assert snap["taken_to"] == "2026-10-25T08:00:00+00:00"
+
+
+def test_quote_merge_keeps_slow_fields_and_does_not_wipe_price(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    save_table_snapshot(
+        1,
+        pool="创业板全部",
+        pool_id="board:cy",
+        field_keys=["price", "pct", "industry"],
+        codes=["300001.SZ", "300324.SZ"],
+        rows=[
+            {"code6": "300001", "code": "300001.SZ", "price": 10, "pct": 1, "industry": "计算机"},
+            {"code6": "300324", "code": "300324.SZ", "price": 8, "pct": -1, "industry": "电子"},
+        ],
+        clock={},
+        refresh_mode="full",
+        saved_at="2026-10-25T07:00:00+00:00",
+    )
+    merge_partial_snapshot(
+        1,
+        pool="创业板全部",
+        pool_id="board:cy",
+        field_keys=["price", "pct", "industry"],
+        rows=[{"code6": "300001", "price": 12, "pct": 2, "industry": None}],
+        clock={},
+        refresh_mode="quote",
+        total=936,
+        saved_at="2026-10-25T08:00:00+00:00",
+    )
+    snap = load_table_snapshot(1, "board:cy")
+    by = {row["code6"]: row for row in snap["rows"]}
+    assert by["300001"]["price"] == 12
+    assert by["300001"]["industry"] == "计算机"
+    assert by["300324"]["price"] == 8
+    assert snap["complete"] is False
+    assert snap["total"] == 936
+
+
+def test_open_copy_export_writes_the_given_rows(tmp_path, monkeypatch):
+    """导出带上行时只写文件，不把空价格重新查满。"""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    monkeypatch.setattr("src.config.settings.data_dir", tmp_path)
+    (tmp_path / "artifacts" / "query").mkdir(parents=True)
+    (tmp_path / "snapshots").mkdir(parents=True)
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        saved = client.post(
+            "/api/query/run",
+            json={"refresh_mode": "full", "pool": "watch"},
+            headers=headers,
+        )
+        assert saved.status_code == 200, saved.text
+        opened = client.get("/api/query/snapshot", params={"pool": "watch"}, headers=headers)
+        assert opened.status_code == 200
+        snap = opened.json()
+        assert snap["found"] is True
+        assert snap["rows"]
+        kept_industry = {row["code6"]: row.get("industry") for row in snap["rows"]}
+        quoted = client.post(
+            "/api/query/run",
+            json={
+                "refresh_mode": "quote",
+                "pool": "watch",
+                "fields": ["name", "code", "price", "pct"],
+            },
+            headers=headers,
+        )
+        assert quoted.status_code == 200, quoted.text
+        again = client.get("/api/query/snapshot", params={"pool": "watch"}, headers=headers).json()
+        by = {row["code6"]: row for row in again["rows"]}
+        for code, industry in kept_industry.items():
+            if industry:
+                assert by[code].get("industry") == industry
+        sample = dict(next(iter(by.values())))
+        sample["price"] = 123.45
+        sample["pct"] = 1.25
+        exported = client.post(
+            "/api/query/export",
+            json={
+                "rows": [sample],
+                "fields": ["name", "code", "price", "pct", "industry"],
+                "pool": "watch",
+                "pool_name": "自选",
+                "export_label": "自选_当前栏目",
+            },
+            headers=headers,
+        )
+        assert exported.status_code == 200, exported.text
+        body = exported.json()
+        assert body["refresh_mode"] == "copy"
+        assert body["count"] == 1
+        downloaded = client.get(body["download_url"], headers=headers)
+        assert downloaded.status_code == 200
+        wb = load_workbook(BytesIO(downloaded.content), data_only=True)
+        ws = wb.active
+        header = [cell.value for cell in next(ws.iter_rows(max_row=1))]
+        price_at = header.index("最新价") + 1
+        assert ws.cell(2, price_at).value == 123.45

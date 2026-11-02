@@ -5,8 +5,8 @@
 按快照显示时，若有更晚且盖住当前这批的完整快照，或未完成大池里已有的股票，
 就抽出这些更新的行；空格子仍留原来的值。
 
-查询和全量更新还会按上海日历日期另存一份，给日期框打开。
-当前这份 user_{id}_{pool}.json 仍是实时表，按日副本不写回它，刷新行情也不另存。
+查询、刷新行情和全量更新都并进当前这份副本，并按上海日历日期另存一份，给日期框打开。
+当前这份 user_{id}_{pool}.json 是该池正在用的副本。按日文件不写回它。
 """
 
 from __future__ import annotations
@@ -258,6 +258,19 @@ def _row_time(snap: dict, row: dict) -> str:
     return str(row.get("row_saved_at") or snap.get("saved_at") or "")
 
 
+def _taken_bounds(rows: list[dict]) -> tuple[str, str]:
+    """这份副本里各只自己的取数时间：最早一次到最晚一次。"""
+    stamps = [
+        str(row.get("row_saved_at") or "")
+        for row in rows
+        if isinstance(row, dict) and row.get("row_saved_at")
+    ]
+    if not stamps:
+        return "", ""
+    stamps.sort()
+    return stamps[0], stamps[-1]
+
+
 def save_table_snapshot(
     user_id: int,
     *,
@@ -288,8 +301,11 @@ def save_table_snapshot(
         stored.append(row)
     if not stored:
         return
+    taken_from, taken_to = _taken_bounds(stored)
     payload = {
         "saved_at": stamp,
+        "taken_from": taken_from,
+        "taken_to": taken_to,
         "pool_id": pid,
         "pool": pool,
         "complete": True,
@@ -322,7 +338,7 @@ def merge_partial_snapshot(
 ) -> None:
     """把已经组装完的一页并进该池快照。没出现在这页里的股票保留。"""
     mode = (refresh_mode or "").strip().lower()
-    if mode not in ("cache", "full"):
+    if mode not in ("cache", "full", "quote"):
         return
     pid = (pool_id or "").strip()
     if not pid or pid == "codes" or not rows or not field_keys:
@@ -360,13 +376,17 @@ def merge_partial_snapshot(
             by_code[code] = merged
         if not by_code:
             return
+        taken_from, taken_to = _taken_bounds(list(by_code.values()))
         fields = list(dict.fromkeys([*(current.get("field_keys") or []), *field_keys]))
-        complete = bool(current.get("complete"))
         pool_total = int(total or current.get("total") or 0)
-        if pool_total and len(by_code) >= pool_total:
-            complete = True
+        if not pool_total:
+            pool_total = len(by_code)
+        # 盖满名单才算这份副本完成。以前完成过、后来只并进一部分，不能继续标成完成。
+        complete = bool(pool_total and len(by_code) >= pool_total)
         payload = {
             "saved_at": stamp,
+            "taken_from": taken_from,
+            "taken_to": taken_to,
             "pool_id": pid,
             "pool": pool or current.get("pool") or pid,
             "complete": complete,

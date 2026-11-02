@@ -60,7 +60,7 @@ from src.platform.flight import (
 from src.platform.jobs import job_payload as bg_job_payload, jobs
 from src.platform.runtime_profile import LITE_DETAIL, agents_enabled, apply as apply_runtime, public as runtime_public
 from src.platform.monitor_prefs import pref_payload, save_pref
-from src.platform.pools import catalog, resolve_pool
+from src.platform.pools import catalog, pool_label, resolve_pool
 from src.platform.security import issue_token, verify_password
 from src.platform.storage import clear_cache, enforce_all, health_storage, prune_artifacts, record_artifact, usage
 from src.query.cards import card_dict
@@ -137,6 +137,10 @@ class QueryIn(BaseModel):
     replace_running: bool = False
     # 刷新行情、全量更新才带。服务端按时间窗跳过还有效的股票，并在每一批现价后落账。
     resume: bool = False
+    # 带代码的刷新若要对上某个池子的副本，置真并带上 pool。详情、筛选一次不置。
+    save_copy: bool = False
+    # 导出当前打开的副本时带上这些行。有行就只写文件，不再查行情。
+    rows: list[dict[str, Any]] | None = None
 
 
 class DiffIn(BaseModel):
@@ -757,13 +761,47 @@ def _prepare_query(body: QueryIn, user: User, db: Session):
     fields = body.fields or _user_fields(user, db)
     if body.codes:
         insts = resolve_instruments(body.codes, market)
-        meta = {"id": "codes", "label": body.pool_name or "筛选一次", "sample": False, "note": ""}
+        label = body.pool_name or "筛选一次"
+        if body.save_copy and (body.pool or "") not in ("", "codes"):
+            label = body.pool_name or pool_label(body.pool)
+        meta = {"id": "codes", "label": label, "sample": False, "note": ""}
     else:
         insts, meta = resolve_pool(body.pool, market, user, db)
     if not insts:
         raise HTTPException(status_code=400, detail="当前池为空")
     name = body.pool_name or meta["label"]
     return insts, fields, name, meta, _cards_map(db, user)
+
+
+def _copy_kwargs(body: QueryIn, meta: dict, inst_count: int) -> dict:
+    """这一轮刷新要写成哪个池子的副本。
+
+    整池的查询、刷新行情、全量更新都写。带代码时只有 save_copy 才并进指定池，
+    详情和筛选一次不写。刷新行情只合并，避免用空的行业财务盖掉已有副本。
+    """
+    mode = (body.refresh_mode or "full").strip().lower()
+    meta_id = (meta.get("id") or "watch").strip() or "watch"
+    copy_id = ""
+    merge_only = False
+    if mode in ("quote", "cache", "full"):
+        if body.codes:
+            pid = (body.pool or "").strip()
+            if body.save_copy and pid and pid != "codes":
+                copy_id = pid
+                merge_only = True
+        elif meta_id != "codes":
+            copy_id = meta_id
+            merge_only = mode == "quote"
+    limit = int(body.limit or 0)
+    offset = max(0, int(body.offset or 0))
+    covers = limit <= 0 or (offset == 0 and inst_count <= limit)
+    total = 0 if body.codes else inst_count
+    return {
+        "pool_id": copy_id or meta_id,
+        "persist_snapshot": bool(copy_id),
+        "snapshot_partial": (not covers) or merge_only,
+        "pool_total": total,
+    }
 
 
 def _execute_query(
@@ -989,8 +1027,8 @@ def _execute_query(
     fatal = any(item.get("level") == "error" for item in out["issues"])
     # 取消时一律按提前停下合并，哪怕行数已经凑满。空的最新价不能整表盖掉上一份快照。
     stopped_early = bool(cancel is not None and getattr(cancel, "is_set", lambda: False)())
-    if mode in ("cache", "full") and persist_snapshot and pool_id != "codes" and ordered and not fatal:
-        if snapshot_partial or stopped_early:
+    if mode in ("cache", "full", "quote") and persist_snapshot and pool_id != "codes" and ordered and not fatal:
+        if mode == "quote" or snapshot_partial or stopped_early:
             from src.query.snapshot import merge_partial_snapshot
 
             merge_partial_snapshot(
@@ -1056,7 +1094,7 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
     market_work = mode != "snapshot"
     use_job = body.async_mode or len(insts) > settings.query_sync_limit
     replace = bool(body.replace_running) and (int(body.offset or 0) <= 0 or bool(body.resume))
-    pool_id = meta.get("id") or "watch"
+    copy = _copy_kwargs(body, meta, len(insts))
     resume_on, ledger_pool, pool_order = _resume_scope(body, user, db, insts, meta)
     if do_export:
         resume_on = False
@@ -1086,7 +1124,10 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                         sort_key=body.sort_key,
                         sort_dir=body.sort_dir,
                         file_label=body.export_label,
-                        pool_id=pool_id,
+                        pool_id=copy["pool_id"],
+                        persist_snapshot=copy["persist_snapshot"],
+                        snapshot_partial=copy["snapshot_partial"],
+                        pool_total=copy["pool_total"],
                         cancel=export_token.cancel,
                         resume=resume_on,
                         pool_order=pool_order,
@@ -1115,7 +1156,10 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                 sort_key=body.sort_key,
                 sort_dir=body.sort_dir,
                 file_label=body.export_label,
-                pool_id=pool_id,
+                pool_id=copy["pool_id"],
+                persist_snapshot=copy["persist_snapshot"],
+                snapshot_partial=copy["snapshot_partial"],
+                pool_total=copy["pool_total"],
                 resume=resume_on,
                 pool_order=pool_order,
                 ledger_pool_id=ledger_pool,
@@ -1140,7 +1184,10 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                     sort_key=body.sort_key,
                     sort_dir=body.sort_dir,
                     file_label=body.export_label,
-                    pool_id=pool_id,
+                    pool_id=copy["pool_id"],
+                    persist_snapshot=copy["persist_snapshot"],
+                    snapshot_partial=copy["snapshot_partial"],
+                    pool_total=copy["pool_total"],
                     cancel=token.cancel,
                     resume=resume_on,
                     pool_order=pool_order,
@@ -1189,10 +1236,10 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
                     sort_key=body.sort_key,
                     sort_dir=body.sort_dir,
                     file_label=body.export_label,
-                    pool_id=pool_id,
-                    persist_snapshot=pool_id != "codes" and covers_pool,
-                    snapshot_partial=not covers_pool,
-                    pool_total=len(snapshot_rows),
+                    pool_id=copy["pool_id"],
+                    persist_snapshot=copy["persist_snapshot"],
+                    snapshot_partial=copy["snapshot_partial"] or not covers_pool,
+                    pool_total=copy["pool_total"],
                     cancel=active_cancel,
                     resume=resume_on,
                     pool_order=pool_order,
@@ -1255,6 +1302,8 @@ def query_snapshot_day(date: str = "", user: User = Depends(current_user)):
         "pool": snap.get("pool") or "",
         "pool_id": snap.get("pool_id") or "",
         "saved_at": snap.get("saved_at") or "",
+        "taken_from": snap.get("taken_from") or "",
+        "taken_to": snap.get("taken_to") or "",
         "complete": bool(snap.get("complete", True)),
         "covered": int(snap.get("covered") or len(rows)),
         "total": int(snap.get("total") or len(rows)),
@@ -1268,9 +1317,74 @@ def query_run(body: QueryIn, user: User = Depends(current_user), db: Session = D
     return _run_or_enqueue(body, user, db, do_export=False)
 
 
+def _export_open_copy(body: QueryIn, user: User, db: Session) -> dict:
+    """把当前打开的副本写成 Excel。不查行情，不改这份副本。"""
+    rows = [row for row in (body.rows or []) if isinstance(row, dict) and (row.get("code6") or row.get("code"))]
+    if not rows:
+        raise HTTPException(status_code=400, detail="当前没有可导出的副本")
+    known = {spec.key for spec in registry.all()}
+    fields = [key for key in (body.fields or _user_fields(user, db)) if key in known]
+    if not fields:
+        raise HTTPException(status_code=400, detail="没有可写入的列")
+    pool_name = (body.pool_name or "").strip()
+    if not pool_name:
+        pool_name = pool_label(body.pool) if (body.pool or "") not in ("", "codes") else "当前副本"
+    path = write_query_xlsx(rows, fields, pool_name, file_label=(body.export_label or "").strip()[:80])
+    codes = [str(row.get("code_full") or row.get("code") or row.get("code6") or "") for row in rows]
+    rec = record_artifact(
+        db,
+        user_id=user.id,
+        path=path,
+        pool_name=pool_name,
+        field_keys=fields,
+        codes=codes,
+    )
+    return {
+        "id": rec.id,
+        "filename": rec.filename,
+        "path": rec.path,
+        "download_url": f"/api/artifacts/{rec.id}/download",
+        "pool": pool_name,
+        "count": len(rows),
+        "rows": rows,
+        "refresh_mode": "copy",
+    }
+
+
 @router.post("/query/export")
 def query_export(body: QueryIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if body.rows:
+        return _export_open_copy(body, user, db)
     return _run_or_enqueue(body, user, db, do_export=True)
+
+
+@router.get("/query/snapshot")
+def query_snapshot(pool: str = "watch", user: User = Depends(current_user)):
+    """打开某个池子上次刷新留下的副本。只读本地文件，不查行情。"""
+    from src.query.snapshot import load_table_snapshot
+
+    pid = (pool or "watch").strip() or "watch"
+    snap = load_table_snapshot(user.id, pid)
+    if not snap:
+        return {"found": False, "pool_id": pid, "rows": []}
+    rows = [row for row in (snap.get("rows") or []) if isinstance(row, dict)]
+    covered = int(snap.get("covered") or len(rows))
+    total = int(snap.get("total") or len(rows))
+    complete = bool(snap.get("complete")) and (not total or covered >= total)
+    return {
+        "found": True,
+        "pool_id": snap.get("pool_id") or pid,
+        "pool": snap.get("pool") or "",
+        "rows": rows,
+        "field_keys": list(snap.get("field_keys") or []),
+        "saved_at": snap.get("saved_at") or "",
+        "taken_from": snap.get("taken_from") or "",
+        "taken_to": snap.get("taken_to") or "",
+        "complete": complete,
+        "covered": covered,
+        "total": total,
+        "refresh_mode": snap.get("refresh_mode") or "",
+    }
 
 
 @router.get("/query/resume")
@@ -1329,15 +1443,13 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
     # 流式同样分页：只算、只流这一段，首屏更快，前端也不用把整池攒在内存里。
     # meta.total 仍然报整池行数，前端据此决定要不要再拉下一页。
     total_insts = len(insts)
-    pool_id = meta.get("id") or "watch"
+    copy = _copy_kwargs(body, meta, total_insts)
     resume_on, ledger_pool, pool_order = _resume_scope(body, user, db, insts, meta)
     start = max(0, int(body.offset or 0))
     page_limit = int(body.limit or 0)
     stream_mode = (body.refresh_mode or "full").strip().lower()
     replace = bool(body.replace_running) and (start == 0 or bool(body.resume))
-    # 一页刚好装下整池（自选通常远小于页大小）仍是整表，整份替换快照。
-    # 大池只算了一段时不覆盖：把这页已经组装完的行并进未完成快照。
-    covers_pool = page_limit <= 0 or (start == 0 and total_insts <= page_limit)
+    # 一页刚好装下整池仍整份替换副本。大池只算了一段时，把这一页并进已有副本。
     if page_limit > 0:
         insts = insts[start : start + page_limit]
 
@@ -1381,10 +1493,10 @@ def query_stream(body: QueryIn, user: User = Depends(current_user), db: Session 
                 on_row=on_row,
                 on_issue=on_issue,
                 on_quote_progress=on_quote_progress,
-                persist_snapshot=pool_id != "codes",
-                pool_id=pool_id,
-                snapshot_partial=not covers_pool,
-                pool_total=total_insts,
+                persist_snapshot=copy["persist_snapshot"],
+                pool_id=copy["pool_id"],
+                snapshot_partial=copy["snapshot_partial"],
+                pool_total=copy["pool_total"],
                 cancel=active_cancel,
                 resume=resume_on,
                 pool_order=pool_order,

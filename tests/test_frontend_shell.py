@@ -133,7 +133,7 @@ def test_workbench_pct_column_sorts_index_constituents():
     assert 'code: "asc"' in html
     assert "点击按${f.label}排序" in html
     assert "排序只针对已加载的行" in html
-    assert "function displayedQueryRows" in html
+    assert "function openCopyRows" in html
     # 点列头只排已加载的行，不能再发一次查询把后面几页丢掉
     sort_fn = html.split("function bindColumnSort", 1)[1].split("function fillRuleCodes", 1)[0]
     assert "runQuery(" not in sort_fn
@@ -150,18 +150,18 @@ def test_workbench_pct_column_sorts_index_constituents():
     # 列表 / 表格分页（导出不受分页影响）
     assert "data-pool-more" in html
     assert "PAGE_SIZE" in html
-    # 导出选项弹窗：范围 / 新鲜度 / 列 + 预估与警告
+    # 导出当前打开的副本，不再为导出重新查询
     assert 'id="exportMask"' in html
     assert 'id="expConfirm"' in html
     assert "要导出" in html
     assert "export_label" in html
     assert 'id="expFreshOpts"' in html
-    assert "用上次保存的表" in html
-    assert "全部重新查一遍" in html
-    assert "要导出哪些股票" in html
-    assert "数字从哪里来" in html
+    assert "不再重新查询" in html
+    assert "当前打开的副本" in html
+    assert "function openCopyRows" in html
+    assert "/query/snapshot?pool=" in html
+    assert "全部重新查一遍" not in html
     assert "表格里放什么" in html
-    assert "function renderExportHint" in html
     assert 'id="colPresets"' in html
     assert "预设「看盘」" in html
     assert 'id="customConceptAdd"' in html
@@ -171,6 +171,19 @@ def test_workbench_pct_column_sorts_index_constituents():
     assert "--down: #1f7a4d" in html
     assert "function signedClass" in html
     assert 'return "flat"' in html
+
+
+def test_export_uses_the_open_copy_without_requery():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert "function openCopyRows" in html
+    assert "/query/snapshot?pool=" in html
+    assert "不再重新查询" in html
+    assert "当前打开的副本" in html
+    assert "save_copy" in html
+    assert "全部重新查一遍" not in html
+    export_fn = html.split("async function doExport", 1)[1].split("async function exportXlsx", 1)[0]
+    assert "rows: slim" in export_fn
+    assert "refresh_mode" not in export_fn
 
 
 def test_workbench_picker_dialog_is_wide_and_short():
@@ -194,7 +207,10 @@ def test_query_hint_estimates_remaining_time():
     assert "function formatRemain" in html
     assert "function etaSuffix" in html
     assert "正在估算剩余时间" in html
-    assert "若后面每页也按这个速度，" in html
+    assert "gained < 1" in html
+    assert "function pageRemainTail" in html
+    assert "后面几页" in html
+    assert "若后面每页也按这个速度，" not in html
     assert "现价 ${done}/${total}${suffix}" in html
     assert '"本页资料"} ${done}/${total}${suffix}' in html
     assert 'id="queryHintExport"' in html
@@ -205,6 +221,10 @@ def test_export_job_hint_names_excel_progress():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
     assert "Excel表格导出进度：" in html
     assert "Excel表格导出完成：" in html
+    assert "正在写入 Excel" in html
+    assert "已导出 ${exported} 行" in html
+    assert "function copyTakenSpan" in html
+    assert "取数时间" in html
     assert "任务进行中" not in html
 
 

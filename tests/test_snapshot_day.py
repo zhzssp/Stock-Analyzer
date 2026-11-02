@@ -145,9 +145,11 @@ def test_only_partial_opens_with_covered_count(tmp_path, monkeypatch):
     assert opened["total"] == 936
 
 
-def test_quote_refresh_does_not_archive(tmp_path, monkeypatch):
+def test_quote_refresh_updates_the_copy_and_that_day(tmp_path, monkeypatch):
     _use(tmp_path, monkeypatch)
+    # 整表替换仍不接受「只刷行情」，避免空的行业财务盖掉副本。
     _save(1, "2026-10-29T02:00:00+00:00", mode="quote", price=9)
+    assert load_table_snapshot(1) is None
     merge_partial_snapshot(
         1,
         pool="自选",
@@ -159,8 +161,10 @@ def test_quote_refresh_does_not_archive(tmp_path, monkeypatch):
         total=1,
         saved_at="2026-10-29T03:00:00+00:00",
     )
-    assert not (tmp_path / "snapshots" / "days").exists()
-    assert load_table_snapshot(1) is None
+    snap = load_table_snapshot(1)
+    assert snap["rows"][0]["price"] == 9
+    opened = load_day_for_view(1, "2026-10-29")
+    assert opened["rows"][0]["price"] == 9
 
 
 def test_keep_drops_the_oldest_last_used(tmp_path, monkeypatch):
