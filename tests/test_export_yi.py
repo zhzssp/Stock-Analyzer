@@ -31,3 +31,46 @@ def test_query_excel_writes_yi_with_two_decimals(monkeypatch, tmp_path):
     assert ws.cell(2, 5).value == 184.43
     assert ws.cell(2, 4).number_format == "0.00"
     wb.close()
+
+
+def test_query_excel_matches_screen_text(monkeypatch, tmp_path):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    settings.artifact_dir.mkdir(parents=True, exist_ok=True)
+    path = write_query_xlsx(
+        [{
+            "pct": 1.2,
+            "pct60": -3,
+            "pct_ytd": 0,
+            "turnover": 0.5,
+            "off_low": 8.25,
+            "vs_cost": -1.5,
+            "dist_buy": 2,
+            "dist_reduce": 4.5,
+            "gross": 18.2,
+            "pct3": 1.2,
+            "concept": "所属概念板块,白酒、食品",
+            "holders": "甲、乙",
+        }],
+        ["pct", "pct60", "pct_ytd", "turnover", "off_low", "vs_cost", "dist_buy", "dist_reduce", "gross", "pct3", "concept", "holders"],
+        "自选",
+    )
+    wb = load_workbook(path, data_only=True)
+    ws = wb.active
+    got = [ws.cell(2, col).value for col in range(1, 13)]
+    assert got == [
+        "+1.20%",
+        "-3.00%",
+        "0.00%",
+        "0.50%",
+        "8.25%",
+        "-1.50%",
+        "2.00%",
+        "4.50%",
+        18.2,
+        1.2,
+        "白酒,食品",
+        "甲、乙",
+    ]
+    wb.close()

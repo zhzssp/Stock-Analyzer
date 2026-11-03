@@ -81,9 +81,8 @@ def test_holder_cell_and_excel_keep_all_ten_names(monkeypatch, tmp_path):
     assert ws.cell(1, 1).value == "前十大流通股东"
     cell = ws.cell(2, 1)
     assert cell.alignment.wrap_text is True
-    for name in names:
-        assert name in cell.value
-    assert cell.value.count("\n") == 9
+    assert cell.value == "、".join(names)
+    assert "\n" not in cell.value
     assert "股东11" not in cell.value
     wb.close()
 

@@ -8,13 +8,16 @@ from openpyxl.utils import get_column_letter
 from src.config import settings
 from src.query.registry import registry
 
-# 前十名拼在一个单元格里。列宽按最长的一个名字留，每人一行，避免默认窄列看起来像被截断。
+# 股东名单和屏幕一样用顿号连在一起。列宽按整段文字留，并允许换行，避免窄列把名字截掉。
 _HOLDER_KEYS = frozenset({"holders", "top_holders"})
 _HOLDER_WRAP = Alignment(wrap_text=True, vertical="top")
 # 股本是股、市值是元。表上和 Excel 都改成亿，保留两位小数。
 # 样例数据本身已经是亿（几十到几千），满 1 万才按原始单位换算，避免把样例再除一次。
 _YI_KEYS = frozenset({"zgb", "ltgb", "mcap", "fcap"})
 _YI = 100_000_000
+# 和屏幕 fmt 一致：涨跌幅三类带正号，其余百分数只加 %。毛利率、净利率、短周期涨跌幅两边都不加。
+_PLUS_PCT_KEYS = frozenset({"pct", "pct60", "pct_ytd"})
+_PCT_KEYS = _PLUS_PCT_KEYS | frozenset({"off_low", "turnover", "vs_cost", "dist_buy", "dist_reduce"})
 
 
 def as_yi(value):
@@ -35,16 +38,33 @@ def _safe_token(name: str) -> str:
     return cleaned.strip("_") or "pool"
 
 
-def _holder_lines(value) -> str | None:
-    if value is None:
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def clean_concept(value) -> str:
+    """和屏幕一样去掉栏目标题，顿号、中文逗号都当成分隔。"""
+    parts = []
+    for raw in str(value or "").replace("，", ",").replace("、", ",").split(","):
+        name = raw.strip()
+        if not name or name == "所属概念板块":
+            continue
+        parts.append(name)
+    return ",".join(parts)
+
+
+def format_like_screen(key: str, value):
+    """把单元格写成屏幕上看到的那一串。空值留空，不写成破折号。"""
+    if key == "concept":
+        value = clean_concept(value)
+    if value is None or value == "":
         return None
-    text = str(value).strip()
-    if not text:
-        return text
-    parts = [part.strip() for part in text.split("、") if part.strip()]
-    if len(parts) <= 1:
-        return text
-    return "\n".join(parts)
+    if key in _YI_KEYS:
+        return as_yi(value)
+    if key in _PCT_KEYS and _is_number(value):
+        sign = "+" if key in _PLUS_PCT_KEYS and value > 0 else ""
+        return f"{sign}{float(value):.2f}%"
+    return value
 
 
 def _fit_holder_columns(ws, cols: list[int]) -> None:
@@ -89,12 +109,7 @@ def write_query_xlsx(
     for row in rows:
         values = []
         for key in field_keys:
-            value = row.get(key)
-            if key in _HOLDER_KEYS:
-                value = _holder_lines(value)
-            elif key in _YI_KEYS:
-                value = as_yi(value)
-            values.append(value)
+            values.append(format_like_screen(key, row.get(key)))
         ws.append(values)
     for col in yi_cols:
         for row_idx in range(2, ws.max_row + 1):
