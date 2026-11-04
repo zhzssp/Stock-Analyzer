@@ -46,6 +46,10 @@ QUOTE_BATCH_SIZE = 20
 QUOTE_UPGRADE_CAP = 240
 # 逐只也连续被限频这么多次，就停下，不再把后面的请求打完。
 _SINGLE_RATE_LIMIT_STOP = 3
+# 2026-11-04 实测一批 ssjy_more 只有这些键：
+# cje dm h l o p pb_ratio pc pe pv t tr tv ud v yc zf。
+# 没有总市值、流通市值、60 日涨跌、年初至今。zf 是振幅，不能拿来顶这四项。
+QUOTE_BATCH_GAP = ("sz", "lt", "zdf60", "zdfnc")
 
 
 # 单次请求的默认超时（秒）；共享连接池按次覆盖，探针的短超时照旧生效。
@@ -983,6 +987,67 @@ class MarketClient:
                 break
         return out
 
+    def fill_quote_gaps(
+        self,
+        quotes: dict[str, dict],
+        insts: list[Instrument],
+        cancel: Any = None,
+        on_progress: Any = None,
+    ) -> None:
+        """批量现价没有总市值、流通市值、60 日和年初至今。勾了这些列时逐只补上。
+
+        只写入这四项里实际取到的值，不换掉这一轮已经取到的现价。
+        这四项里已经有数的（逐只回退、样例、或同一档里留下的）不再请求。
+        """
+        pending: list[Instrument] = []
+        for inst in insts:
+            row = quotes.get(inst.code6) if isinstance(quotes, dict) else None
+            if not isinstance(row, dict) or row.get("p") in (None, ""):
+                continue
+            if any(row.get(key) not in (None, "") for key in QUOTE_BATCH_GAP):
+                continue
+            pending.append(inst)
+        if not pending:
+            return
+        if on_progress:
+            try:
+                on_progress(0, len(pending))
+            except Exception:
+                pass
+        rate_streak = 0
+        for index, inst in enumerate(pending, start=1):
+            if cancel is not None and getattr(cancel, "is_set", lambda: False)():
+                return
+            row = quotes.get(inst.code6) or {}
+            try:
+                single = self.quote(inst)
+            except LicenceExhaustedError as exc:
+                self.last_quote_error = str(exc) or self.last_quote_error
+                return
+            except MarketError as exc:
+                text = str(exc)
+                self.last_quote_error = text or self.last_quote_error
+                if getattr(self, "_issues_open", False):
+                    self.note_issue("quote", text, inst.code6)
+                if text == RATE_LIMIT_MESSAGE or RATE_LIMIT_MESSAGE in text:
+                    rate_streak += 1
+                    if rate_streak >= _SINGLE_RATE_LIMIT_STOP:
+                        return
+                else:
+                    rate_streak = 0
+            else:
+                rate_streak = 0
+                if isinstance(single, dict):
+                    for key in QUOTE_BATCH_GAP:
+                        value = single.get(key)
+                        if value not in (None, ""):
+                            row[key] = value
+            if on_progress:
+                try:
+                    on_progress(index, len(pending))
+                except Exception:
+                    pass
+
     def _quotes_batch(self, insts: list[Instrument]) -> dict[str, dict]:
         """按批取这一组。整批失败或过半没有现价时抛 QuoteBatchDowngrade，调用方改逐只。
 
@@ -1419,7 +1484,7 @@ def _ssjy_quote(row: Any, source: str) -> dict:
     if hs is None:
         hs = row.get("tr")
     # 单只接口用 sjl、hs，批量接口用 pb_ratio、tr。只读单只的名字时，按批取到的值会整列变成空。
-    # 总市值 sz、流通市值 lt、60 日涨跌 zdf60、年初至今 zdfnc 批量接口不返回，没有另一个字段名可代替。
+    # 总市值、流通市值、60 日、年初至今只在单只接口上，批量结果里没有对应字段。
     sjl = row.get("sjl")
     if sjl in (None, ""):
         sjl = row.get("pb_ratio")

@@ -209,3 +209,54 @@ def test_cancel_stops_before_the_next_batch():
     assert batches == [["00", "01"]]
     assert out["00"]["p"] == 1
     assert "02" not in out
+
+
+def test_gap_fill_copies_the_four_fields_and_keeps_the_batch_price():
+    """批量没有这四项时逐只补上，但不把现价换成稍晚的单只价格。"""
+    client = _bare()
+    insts = _codes(1)
+    quotes = {"00": {"p": 10, "pc": 1, "sz": None, "lt": None, "zdf60": None, "zdfnc": None}}
+    seen: list[str] = []
+
+    def one(inst):
+        seen.append(inst.code6)
+        return {"p": 99, "sz": 412.5, "lt": 318.2, "zdf60": 8.4, "zdfnc": 12.1}
+
+    with patch.object(client, "quote", side_effect=one):
+        client.fill_quote_gaps(quotes, insts)
+
+    assert seen == ["00"]
+    assert quotes["00"]["p"] == 10
+    assert quotes["00"]["sz"] == 412.5
+    assert quotes["00"]["lt"] == 318.2
+    assert quotes["00"]["zdf60"] == 8.4
+    assert quotes["00"]["zdfnc"] == 12.1
+
+
+def test_gap_fill_skips_a_quote_that_already_has_the_fields():
+    client = _bare()
+    quotes = {"00": {"p": 10, "sz": 1, "lt": None, "zdf60": None, "zdfnc": None}}
+    with patch.object(client, "quote") as one:
+        client.fill_quote_gaps(quotes, _codes(1))
+    one.assert_not_called()
+    assert quotes["00"]["p"] == 10
+    assert quotes["00"]["sz"] == 1
+
+
+def test_gap_fill_stops_when_cancelled():
+    client = _bare()
+    quotes = {
+        "00": {"p": 1, "sz": None, "lt": None, "zdf60": None, "zdfnc": None},
+        "01": {"p": 2, "sz": None, "lt": None, "zdf60": None, "zdfnc": None},
+    }
+    cancel = threading.Event()
+
+    def one(inst):
+        cancel.set()
+        return {"sz": 3, "lt": 4, "zdf60": 5, "zdfnc": 6}
+
+    with patch.object(client, "quote", side_effect=one):
+        client.fill_quote_gaps(quotes, _codes(2), cancel=cancel)
+
+    assert quotes["00"]["sz"] == 3
+    assert quotes["01"].get("sz") in (None, "")

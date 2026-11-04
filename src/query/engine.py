@@ -35,6 +35,8 @@ REFRESH_CACHE = "cache"
 REFRESH_SNAPSHOT = "snapshot"
 REFRESH_FULL = "full"
 SLOW_DEPS = frozenset({"profile", "holders", "finance", "flow", "bars", "indicators"})
+# 这四列批量现价不带。只有用户勾了，才逐只再取一次，并写回这一轮的现价。
+QUOTE_GAP_COLUMNS = frozenset({"mcap", "fcap", "pct60", "pct_ytd"})
 # 取数任务的调度顺序。bars 最重（一次 500 根日线 + 底顶），排在最前面投出去，
 # 否则最长的任务拖在队尾，整轮的尾延迟就是它决定的。
 SLOW_FETCH_ORDER = ("bars", "profile", "holders", "finance", "flow", "indicators")
@@ -195,6 +197,13 @@ class QueryEngine:
             for code, seed in (seed_quotes or {}).items():
                 if seed and code not in quotes:
                     quotes[code] = seed
+            if quote_insts and QUOTE_GAP_COLUMNS.intersection(keys):
+                self.market.fill_quote_gaps(
+                    quotes,
+                    quote_insts,
+                    cancel=cancel,
+                    on_progress=on_quote_progress,
+                )
         self.last_clock_meta = clock_meta
         cancelled = cancel is not None and getattr(cancel, "is_set", lambda: False)()
         if not cancelled:

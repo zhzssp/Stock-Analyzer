@@ -37,5 +37,32 @@ def test_quote_refresh_skips_slow_fetches():
     market.finance.assert_not_called()
     market.capital_flow.assert_not_called()
     market.history.assert_not_called()
+    market.fill_quote_gaps.assert_not_called()
     assert rows[0]["price"] == 10
     assert rows[0].get("industry") in (None, "")
+
+
+def test_selected_gap_columns_are_filled_from_the_single_quote():
+    """没勾这四列不额外请求。勾了才把单只补回的数写进这一行，盖掉旧的空值。"""
+    inst = normalize_instrument("600038.SH", "中直股份", "SH")
+    market = MagicMock(spec=MarketClient)
+
+    def fill(quotes, insts, cancel=None, on_progress=None):
+        quotes["600038"]["sz"] = 412.5
+        quotes["600038"]["lt"] = 318.2
+        quotes["600038"]["zdf60"] = 8.4
+        quotes["600038"]["zdfnc"] = 12.1
+
+    market.fill_quote_gaps.side_effect = fill
+    with patch("src.market.clock.align_quotes", return_value=({"600038": {"p": 10, "pc": 1.2}}, {"source": "live"})):
+        rows = QueryEngine(market).run(
+            [inst],
+            ["name", "price", "pct", "mcap", "fcap", "pct60", "pct_ytd"],
+            refresh_mode=REFRESH_QUOTE,
+        )
+    market.fill_quote_gaps.assert_called_once()
+    assert rows[0]["price"] == 10
+    assert rows[0]["mcap"] == 412.5
+    assert rows[0]["fcap"] == 318.2
+    assert rows[0]["pct60"] == 8.4
+    assert rows[0]["pct_ytd"] == 12.1
