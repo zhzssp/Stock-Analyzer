@@ -46,7 +46,7 @@ from src.market.clock import (
 )
 from src.market.normalize import infer_market
 from src.models import AgentSession, Alert, Artifact, FieldPref, MonitorJob, MonitorPref, User, UserRule, WatchItem
-from src.platform.export_xlsx import write_query_xlsx
+from src.platform.export_xlsx import write_query_xlsx, write_query_xlsx_days
 from src.platform.flight import (
     FlightBusy,
     FlightSuperseded,
@@ -141,6 +141,8 @@ class QueryIn(BaseModel):
     save_copy: bool = False
     # 导出当前打开的副本时带上这些行。有行就只写文件，不再查行情。
     rows: list[dict[str, Any]] | None = None
+    # 导出这个池子最近三天里勾中的日快照。有日期就读本地文件，不再查行情，也不用 rows。
+    snapshot_dates: list[str] | None = None
 
 
 class DiffIn(BaseModel):
@@ -1282,6 +1284,16 @@ def _run_or_enqueue(body: QueryIn, user: User, db: Session, do_export: bool):
     return bg_job_payload(job)
 
 
+@router.get("/query/snapshot-days")
+def query_snapshot_days(pool: str = "watch", user: User = Depends(current_user)):
+    """这个池子最近三天的日快照。只读名册和文件，不占查询槽，也不打麦蕊。"""
+    from src.query.snapshot import list_pool_days
+
+    pid = (pool or "watch").strip() or "watch"
+    days = list_pool_days(user.id, pid, 3)
+    return {"pool": pid, "days": days}
+
+
 @router.get("/query/snapshot-day")
 def query_snapshot_day(date: str = "", user: User = Depends(current_user)):
     """打开某一天保存过的查询表。只读本地文件，不占查询槽，也不打麦蕊。"""
@@ -1317,6 +1329,74 @@ def query_snapshot_day(date: str = "", user: User = Depends(current_user)):
 @router.post("/query/run")
 def query_run(body: QueryIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     return _run_or_enqueue(body, user, db, do_export=False)
+
+
+def _export_pool_days(body: QueryIn, user: User, db: Session) -> dict:
+    """把勾中的日快照写成同一个 Excel。一天一个工作表。不查行情。"""
+    from src.query.snapshot import list_pool_days, load_pool_day
+
+    pid = (body.pool or "watch").strip() or "watch"
+    if pid == "codes":
+        raise HTTPException(status_code=400, detail="临时代码没有按天留下的快照")
+    requested: list[str] = []
+    for raw in body.snapshot_dates or []:
+        day = str(raw or "").strip()
+        if day and day not in requested:
+            requested.append(day)
+    if not requested:
+        raise HTTPException(status_code=400, detail="请选择至少一天")
+    if len(requested) > 3:
+        raise HTTPException(status_code=400, detail="一次最多导出三天")
+    allowed = {item["date"]: item for item in list_pool_days(user.id, pid, 3)}
+    missing = [day for day in requested if day not in allowed]
+    if missing:
+        raise HTTPException(status_code=400, detail="只能导出这个池子最近三天里的快照")
+    chosen = sorted(requested, reverse=True)
+    sheets: list[dict] = []
+    for day in chosen:
+        snap = load_pool_day(user.id, pid, day)
+        if not snap:
+            raise HTTPException(status_code=400, detail="只能导出这个池子最近三天里的快照")
+        rows = [row for row in (snap.get("rows") or []) if isinstance(row, dict)]
+        sheets.append(
+            {
+                "date": day,
+                "rows": rows,
+                "saved_at": snap.get("saved_at") or "",
+                "taken_from": snap.get("taken_from") or "",
+                "taken_to": snap.get("taken_to") or "",
+                "count": len(rows),
+            }
+        )
+    known = {spec.key for spec in registry.all()}
+    fields = [key for key in (body.fields or _user_fields(user, db)) if key in known]
+    if not fields:
+        raise HTTPException(status_code=400, detail="没有可写入的列")
+    pool_name = (body.pool_name or "").strip() or pool_label(pid)
+    path = write_query_xlsx_days(sheets, fields, pool_name, file_label=(body.export_label or "").strip()[:80])
+    codes = [
+        str(row.get("code_full") or row.get("code") or row.get("code6") or "")
+        for item in sheets
+        for row in item["rows"]
+    ]
+    rec = record_artifact(
+        db,
+        user_id=user.id,
+        path=path,
+        pool_name=pool_name,
+        field_keys=fields,
+        codes=codes,
+    )
+    return {
+        "id": rec.id,
+        "filename": rec.filename,
+        "path": rec.path,
+        "download_url": f"/api/artifacts/{rec.id}/download",
+        "pool": pool_name,
+        "count": sum(item["count"] for item in sheets),
+        "days": [item["date"] for item in sheets],
+        "refresh_mode": "copy",
+    }
 
 
 def _export_open_copy(body: QueryIn, user: User, db: Session) -> dict:
@@ -1355,6 +1435,8 @@ def _export_open_copy(body: QueryIn, user: User, db: Session) -> dict:
 
 @router.post("/query/export")
 def query_export(body: QueryIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if body.snapshot_dates:
+        return _export_pool_days(body, user, db)
     if body.rows:
         return _export_open_copy(body, user, db)
     return _run_or_enqueue(body, user, db, do_export=True)

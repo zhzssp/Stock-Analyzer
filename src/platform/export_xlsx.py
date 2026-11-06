@@ -89,40 +89,81 @@ def _fit_holder_columns(ws, cols: list[int]) -> None:
             ws.row_dimensions[row_idx].height = min(16 * lines + 6, 220)
 
 
-def write_query_xlsx(
-    rows: list[dict],
-    field_keys: list[str],
-    pool_name: str,
-    file_label: str = "",
-) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    # 文件名 = 导出时间 + 用户确认的范围说明（如 沪市全部_看盘）。没传说明时仍用池名。
-    filename = f"{stamp}_{_safe_token(file_label or pool_name)}.xlsx"
-    path = settings.artifact_dir / filename
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "query"
+def _write_sheet(ws, rows: list[dict], field_keys: list[str]) -> None:
     headers = [registry.get(k).label for k in field_keys]
     ws.append(headers)
     holder_cols = [i for i, key in enumerate(field_keys, start=1) if key in _HOLDER_KEYS]
     yi_cols = [i for i, key in enumerate(field_keys, start=1) if key in _YI_KEYS]
     for row in rows:
-        values = []
-        for key in field_keys:
-            values.append(format_like_screen(key, row.get(key)))
-        ws.append(values)
+        ws.append([format_like_screen(key, row.get(key)) for key in field_keys])
     for col in yi_cols:
         for row_idx in range(2, ws.max_row + 1):
             cell = ws.cell(row_idx, col)
             if isinstance(cell.value, float):
                 cell.number_format = "0.00"
     _fit_holder_columns(ws, holder_cols)
+
+
+def _workbook_path(pool_name: str, file_label: str) -> tuple[Workbook, Path]:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # 文件名 = 导出时间 + 用户确认的范围说明（如 沪市全部_看盘）。没传说明时仍用池名。
+    filename = f"{stamp}_{_safe_token(file_label or pool_name)}.xlsx"
+    path = settings.artifact_dir / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return Workbook(), path
+
+
+def _write_meta(wb: Workbook, pool_name: str, file_label: str, field_keys: list[str], days: list[dict] | None = None) -> None:
     meta = wb.create_sheet("meta")
     meta.append(["exported_at", datetime.now().isoformat(timespec="seconds")])
     meta.append(["pool", pool_name])
     if file_label:
         meta.append(["export_label", file_label])
     meta.append(["fields", ",".join(field_keys)])
+    if days:
+        meta.append(["days", ",".join(str(item.get("date") or "") for item in days)])
+        for item in days:
+            meta.append(
+                [
+                    item.get("date") or "",
+                    item.get("saved_at") or "",
+                    item.get("taken_from") or "",
+                    item.get("taken_to") or "",
+                    item.get("count") or 0,
+                ]
+            )
+
+
+def write_query_xlsx(
+    rows: list[dict],
+    field_keys: list[str],
+    pool_name: str,
+    file_label: str = "",
+) -> Path:
+    wb, path = _workbook_path(pool_name, file_label)
+    ws = wb.active
+    ws.title = "query"
+    _write_sheet(ws, rows, field_keys)
+    _write_meta(wb, pool_name, file_label, field_keys)
+    wb.save(path)
+    return path
+
+
+def write_query_xlsx_days(
+    sheets: list[dict],
+    field_keys: list[str],
+    pool_name: str,
+    file_label: str = "",
+) -> Path:
+    """一天一个工作表，表名就是日期。调用方按从新到旧排好。"""
+    wb, path = _workbook_path(pool_name, file_label)
+    first = True
+    for item in sheets:
+        ws = wb.active if first else wb.create_sheet()
+        first = False
+        ws.title = str(item.get("date") or "day")[:31]
+        _write_sheet(ws, list(item.get("rows") or []), field_keys)
+    _write_meta(wb, pool_name, file_label, field_keys, sheets)
     wb.save(path)
     return path
 

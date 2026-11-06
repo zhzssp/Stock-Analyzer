@@ -1435,6 +1435,10 @@
     <div class="login-card stock-card">
       <h2><span>导出 Excel</span><span id="exportTitleMount"></span></h2>
       <div class="exp-confirm" id="expConfirm">正在读取当前选项…</div>
+      <div class="exp-block" id="expDayBlock" style="display:none;">
+        <div class="exp-label"><span data-help-tip="列出这个池子最近留下快照的三天，中间可以空一天。同一天多次刷新只保留最后一次。默认只勾最新一天。多选时写进同一个 Excel 的不同工作表，不再重新查询。">导出哪几天</span></div>
+        <div class="exp-opts" id="expDayOpts"></div>
+      </div>
       <div class="exp-block">
         <div class="exp-label">表格里放哪些列</div>
         <div class="exp-opts" id="expColOpts"></div>
@@ -3274,8 +3278,14 @@
 
     function markExportBusy(on) {
       state.exportBusy = !!on;
+      syncExportStart();
+    }
+
+    function syncExportStart() {
       const btn = document.getElementById("expStart");
-      if (btn) btn.disabled = !!on;
+      if (!btn) return;
+      const none = state.exportDayMode && !(state.exportDays || []).length;
+      btn.disabled = !!state.exportBusy || none;
     }
 
     function querySupersededError() {
@@ -4173,8 +4183,49 @@
       return (state.fields || []).map((f) => f.key).filter(Boolean);
     }
 
+    function exportDayText(day) {
+      const at = formatShanghaiMinute(day.saved_at);
+      const clock = at.length >= 16 ? at.slice(11) : "";
+      let text = clock ? `${day.date} ${clock}` : (day.date || "");
+      const covered = day.covered || day.count || 0;
+      text += day.complete ? ` · ${covered} 只` : ` · 未完成 · ${covered}/${day.total || covered} 只`;
+      return text;
+    }
+
+    function renderExportDays(days) {
+      const block = document.getElementById("expDayBlock");
+      const box = document.getElementById("expDayOpts");
+      if (!block || !box) return;
+      block.style.display = "block";
+      if (!days.length) {
+        state.exportDayMode = false;
+        state.exportDayCatalog = [];
+        state.exportDays = [];
+        box.innerHTML = `<div class="exp-opt off"><span class="t">还没有按天留下的快照</span></div>`;
+        return;
+      }
+      state.exportDayMode = true;
+      state.exportDayCatalog = days;
+      state.exportDays = [days[0].date];
+      box.innerHTML = days.map((day, i) =>
+        `<label class="exp-opt"><input type="checkbox" name="expDay" value="${escAttr(day.date)}" ${i === 0 ? "checked" : ""} /><span class="t">${escHtml(exportDayText(day))}</span></label>`
+      ).join("");
+      box.querySelectorAll('input[name="expDay"]').forEach((el) => {
+        el.addEventListener("change", () => {
+          state.exportDays = [...box.querySelectorAll('input[name="expDay"]:checked')].map((item) => item.value);
+          renderExportConfirm();
+          syncExportStart();
+        });
+      });
+    }
+
     async function openExport() {
       state.exportOpts = { cols: "current" };
+      state.exportDayMode = false;
+      state.exportDayCatalog = [];
+      state.exportDays = [];
+      const dayBlock = document.getElementById("expDayBlock");
+      if (dayBlock) dayBlock.style.display = "none";
       const est = document.getElementById("expEstimate");
       const warn = document.getElementById("expWarn");
       if (est) est.textContent = "";
@@ -4189,6 +4240,17 @@
         toast(err.message);
       }
       if (document.getElementById("exportMask").style.display === "none") return;
+      const poolExport = !state.viewingDay && !(state.lastQueryCodes && state.lastQueryCodes.length);
+      if (poolExport) {
+        try {
+          const listed = await api("/query/snapshot-days?pool=" + encodeURIComponent(currentExportPool()));
+          if (document.getElementById("exportMask").style.display === "none") return;
+          renderExportDays(listed.days || []);
+        } catch (err) {
+          toast(err.message);
+          renderExportDays([]);
+        }
+      }
       const rows = openCopyRows();
       const colOpts = [
         { id: "current", label: "和屏幕上一样", sub: `用中间表格现在的表头，共 ${(state.fields || []).length} 列。表头上没有的列不会出现。空格子保持空白。` },
@@ -4200,6 +4262,7 @@
       ).join("");
       document.getElementById("exportTitleMount").innerHTML = helpTip("把当前打开的副本写成 Excel 并下载。不向数据源再查。档案库每人只留最近 20 份。");
       mountHelpTips(document.getElementById("exportMask"));
+      syncExportStart();
       const autoBox = document.getElementById("expAuto");
       if (autoBox) autoBox.checked = !!state.autoExportAfterRefresh;
       document.querySelectorAll('input[name="expCols"]').forEach((el) => {
@@ -4209,14 +4272,18 @@
         });
       });
       renderExportConfirm();
-      if (est) est.innerHTML = rows.length ? "" : "<b>当前没有可导出的行</b>";
+      if (est) est.innerHTML = (state.exportDayMode || rows.length) ? "" : "<b>当前没有可导出的行</b>";
       markExportBusy(state.exportBusy);
     }
 
     function exportFileStem() {
       const o = state.exportOpts || { cols: "current" };
       const fileContent = o.cols === "watch" ? "只要价格" : (o.cols === "research" ? "详细资料" : "当前栏目");
-      return [openCopyTitle(), fileContent].join("_");
+      const parts = [openCopyTitle(), fileContent];
+      if (state.exportDayMode && (state.exportDays || []).length > 1) {
+        parts.push(state.exportDays.slice().sort().reverse().join("_"));
+      }
+      return parts.join("_");
     }
 
     function renderExportConfirm() {
@@ -4225,9 +4292,18 @@
       const n = openCopyRows().length;
       const o = state.exportOpts || { cols: "current" };
       const content = o.cols === "watch" ? "只要价格" : (o.cols === "research" ? "要详细资料" : "和屏幕上一样");
-      box.innerHTML =
-        `<div class="ask" data-help-tip="写入当前打开的副本，不再重新查询。这一次手动导出用「${escAttr(content)}」。空格子保持空白。会下载，档案库只留最近 20 份。">要导出「${escHtml(openCopyTitle())}」吗？</div>` +
-        `<div class="file">一共 ${n} 只 · 导出时间_${escHtml(exportFileStem())}.xlsx</div>`;
+      if (state.exportDayMode) {
+        const picked = (state.exportDayCatalog || []).filter((day) => (state.exportDays || []).indexOf(day.date) >= 0);
+        const names = picked.map((day) => day.date).join("、");
+        box.innerHTML = picked.length
+          ? `<div class="ask" data-help-tip="按勾选的日期读取这个池子留下的日快照，不再重新查询。这一次用「${escAttr(content)}」。空格子保持空白。多天写在不同工作表里。">要导出「${escHtml(state.poolLabel || openCopyTitle())}」的这 ${picked.length} 天吗？</div>` +
+            `<div class="file">${escHtml(names)} · 导出时间_${escHtml(exportFileStem())}.xlsx</div>`
+          : `<div class="ask">还没有勾选要导出的日期。</div>`;
+      } else {
+        box.innerHTML =
+          `<div class="ask" data-help-tip="写入当前打开的副本，不再重新查询。这一次手动导出用「${escAttr(content)}」。空格子保持空白。会下载，档案库只留最近 20 份。">要导出「${escHtml(openCopyTitle())}」吗？</div>` +
+          `<div class="file">一共 ${n} 只 · 导出时间_${escHtml(exportFileStem())}.xlsx</div>`;
+      }
       mountHelpTips(box);
     }
 
@@ -4236,8 +4312,9 @@
     }
 
     async function doExport(opts) {
+      const useDays = !(opts && opts.auto) && state.exportDayMode && (state.exportDays || []).length;
       const rows = openCopyRows();
-      if (!rows.length) {
+      if (!useDays && !rows.length) {
         toast("当前没有可导出的副本");
         return;
       }
@@ -4253,19 +4330,30 @@
         if (!out.code6 && row.code) out.code6 = String(row.code).split(".")[0];
         return out;
       });
-      const payload = {
-        rows: slim,
-        fields,
-        pool: currentExportPool(),
-        pool_name: openCopyTitle(),
-        export_label: exportFileStem(),
-      };
+      const payload = useDays
+        ? {
+          snapshot_dates: state.exportDays.slice(),
+          fields,
+          pool: currentExportPool(),
+          pool_name: state.poolLabel || openCopyTitle(),
+          export_label: exportFileStem(),
+        }
+        : {
+          rows: slim,
+          fields,
+          pool: currentExportPool(),
+          pool_name: openCopyTitle(),
+          export_label: exportFileStem(),
+        };
       const auto = Boolean(opts && opts.auto);
       patchStatus({ export: "正在写入 Excel" });
       let data = await api("/query/export", { method: "POST", body: JSON.stringify(payload) });
       await downloadArtifact(data.id, data.filename);
       const exported = data.count || data.row_count || rows.length;
-      const lead = auto ? `已自动导出 ${exported} 行` : `已导出 ${exported} 行`;
+      const dayCount = (data.days || []).length;
+      const lead = auto
+        ? `已自动导出 ${exported} 行`
+        : (dayCount > 1 ? `已导出 ${dayCount} 天` : `已导出 ${exported} 行`);
       patchStatus({ export: lead });
       toast(`${lead}，写入档案库并下载 ${data.filename}`);
     }

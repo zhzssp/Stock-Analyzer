@@ -192,6 +192,11 @@ def test_export_uses_the_open_copy_without_requery():
     assert "rows: slim" in export_fn
     assert "refresh_mode" not in export_fn
     assert 'id="expAuto"' in html
+    assert 'id="expDayBlock"' in html
+    assert "导出哪几天" in html
+    assert "还没有按天留下的快照" in html
+    assert "/query/snapshot-days?pool=" in html
+    assert "snapshot_dates" in export_fn
     assert "刷新后自动导出" in html
     assert "function maybeAutoExport" in html
     assert "sa_auto_export" in html

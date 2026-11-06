@@ -238,3 +238,76 @@ def test_api_snapshot_day(tmp_path, monkeypatch):
     assert empty.status_code == 200
     assert empty.json()["found"] is False
     assert empty.json()["message"] == "这一天没有可打开的查询表"
+
+
+def test_export_picks_the_latest_three_days_for_this_pool(tmp_path, monkeypatch):
+    """最近三天可以不连续。更早的一天和别的池子都不能混进这次导出。"""
+    _use(tmp_path, monkeypatch)
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from src.db import SessionLocal
+    from src.models import User
+
+    with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            uid = db.query(User).filter_by(username="hanish").first().id
+        finally:
+            db.close()
+        _save(uid, "2026-10-26T02:00:00+00:00", price=1)
+        _save(uid, "2026-10-28T02:00:00+00:00", price=2)
+        merge_partial_snapshot(
+            uid,
+            pool="自选",
+            pool_id="watch",
+            field_keys=["name", "price"],
+            rows=[_row(3)],
+            clock={},
+            refresh_mode="quote",
+            total=10,
+            saved_at="2026-10-30T02:00:00+00:00",
+        )
+        _save(uid, "2026-11-01T02:00:00+00:00", price=4)
+        _save(uid, "2026-11-02T02:00:00+00:00", pool="沪市全部", pool_id="exchange:sh", price=9, code6="600000")
+        login = client.post("/api/auth/login", json={"username": "hanish", "password": "change-me"})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        listed = client.get("/api/query/snapshot-days", params={"pool": "watch"}, headers=headers)
+        assert listed.status_code == 200, listed.text
+        days = listed.json()["days"]
+        assert [item["date"] for item in days] == ["2026-11-01", "2026-10-30", "2026-10-28"]
+        assert days[1]["complete"] is False
+        assert days[1]["covered"] == 1
+        assert days[1]["total"] == 10
+        rejected = client.post(
+            "/api/query/export",
+            json={"pool": "watch", "fields": ["name", "price"], "snapshot_dates": ["2026-10-26"]},
+            headers=headers,
+        )
+        assert rejected.status_code == 400
+        other = client.post(
+            "/api/query/export",
+            json={"pool": "watch", "fields": ["name", "price"], "snapshot_dates": ["2026-11-02"]},
+            headers=headers,
+        )
+        assert other.status_code == 400
+        exported = client.post(
+            "/api/query/export",
+            json={
+                "pool": "watch",
+                "pool_name": "自选",
+                "fields": ["name", "price"],
+                "snapshot_dates": ["2026-10-28", "2026-11-01"],
+                "export_label": "自选_当前栏目_2026-11-01_2026-10-28",
+            },
+            headers=headers,
+        )
+        assert exported.status_code == 200, exported.text
+        assert exported.json()["days"] == ["2026-11-01", "2026-10-28"]
+        downloaded = client.get(exported.json()["download_url"], headers=headers)
+        wb = load_workbook(BytesIO(downloaded.content), data_only=True)
+        assert wb.sheetnames[:2] == ["2026-11-01", "2026-10-28"]
+        assert wb["2026-11-01"].cell(2, 2).value == 4
+        assert wb["2026-10-28"].cell(2, 2).value == 2
+        assert "meta" in wb.sheetnames

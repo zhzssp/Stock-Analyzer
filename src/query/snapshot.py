@@ -251,6 +251,61 @@ def load_day_for_view(user_id: int, day: str) -> dict | None:
     return None
 
 
+def list_pool_days(user_id: int, pool_id: str, limit: int = 3) -> list[dict]:
+    """这个池子最近留下快照的若干天。同一天只有一份，中间没有的日期会空过去。"""
+    pid = (pool_id or "watch").strip() or "watch"
+    if pid == "codes":
+        return []
+    cap = max(1, min(int(limit or 3), 3))
+    ranked = sorted(
+        (
+            item
+            for item in _load_index(user_id)
+            if str(item.get("pool_id") or "") == pid and str(item.get("date") or "")
+        ),
+        key=lambda item: str(item.get("date") or ""),
+        reverse=True,
+    )
+    out: list[dict] = []
+    for entry in ranked:
+        if len(out) >= cap:
+            break
+        day = str(entry.get("date") or "")
+        data = _read_snapshot(_day_file(user_id, day, pid))
+        if not data or not _matches_pool(data, pid):
+            continue
+        rows = [row for row in (data.get("rows") or []) if isinstance(row, dict)]
+        covered = int(data.get("covered") or len(rows))
+        total = int(data.get("total") or len(rows))
+        out.append(
+            {
+                "date": day,
+                "saved_at": str(data.get("saved_at") or entry.get("saved_at") or ""),
+                "taken_from": str(data.get("taken_from") or ""),
+                "taken_to": str(data.get("taken_to") or ""),
+                "complete": bool(data.get("complete")) and (not total or covered >= total),
+                "covered": covered,
+                "total": total,
+                "pool": str(data.get("pool") or entry.get("pool") or ""),
+                "pool_id": pid,
+                "count": len(rows),
+            }
+        )
+    return out
+
+
+def load_pool_day(user_id: int, pool_id: str, day: str) -> dict | None:
+    """只读这一池自己在这一天的快照。不改名册，也不打开别的池。"""
+    pid = (pool_id or "watch").strip() or "watch"
+    norm = _normalize_day(day)
+    if not norm or pid == "codes":
+        return None
+    data = _read_snapshot(_day_file(user_id, norm, pid))
+    if not data or not _matches_pool(data, pid):
+        return None
+    return data
+
+
 def _filled(value: Any) -> bool:
     return value is not None and value != "" and value != "—"
 
