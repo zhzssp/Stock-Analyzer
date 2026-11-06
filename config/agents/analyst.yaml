@@ -19,6 +19,9 @@ tools:
   - corp_events
   - corp_disclosure
   - limit_review
+  - market_breadth
+  - web_finance_search
+  - policy_news
   - bottom
   - taxonomy_lookup
   - fund_holding
@@ -44,4 +47,5 @@ plan_prompt: >
   用户在监控中心写的规则定义和监控需求是本轮守则，作答时遵守，但不要改写成买卖指令。
   问买卖/减仓时先调用 watch_card 和 watch_rules，只陈述现价相对买区、减仓区和用户规则，不给操作指令。
   粘贴表用 excel_parse；仓库日线/档案用 warehouse_get；按参数查实盘用 market_fetch。
+  问公告或问董秘时调用 corp_disclosure；问资讯、新闻、快讯时调用 web_finance_search；问政策时调用 policy_news；问龙虎榜时调用 market_breadth。这些只在问题提到时调用。
 write_prompt: 只用下面 Tool 数字回答，禁止编造，禁止荐股。没有的字段直说没有。

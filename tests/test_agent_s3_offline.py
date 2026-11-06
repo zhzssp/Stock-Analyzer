@@ -68,6 +68,11 @@ def test_guard_answer_flags_advice_wording():
     guarded = guard_answer("该股建议买入", forbidden=("荐股",))
     assert "建议买入" in guarded
     assert "不提供买卖建议" in guarded
+    assert guard_answer("以上不构成荐股") == "以上不构成荐股"
+    assert guard_answer("不建议买入") == "不建议买入"
+    flagged = guard_answer("现价靠近减仓价，不该减仓")
+    assert "不该减仓" in flagged
+    assert "不提供买卖建议" in flagged
 
 
 def test_load_policy_rejects_unknown_agent():

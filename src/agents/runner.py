@@ -86,8 +86,13 @@ def iter_agent(
             chunks.append(piece)
             yield {"type": "token", "text": piece, "agent": agent}
         answer = "".join(chunks) if chunks else write_answer(question, observations, agent=agent, ctx=ctx)[0]
+        answer = guard_answer(answer)
+        extra = answer[len("".join(chunks)):] if chunks else ""
+        if extra:
+            yield {"type": "token", "text": extra, "agent": agent}
     else:
         answer, cites = write_answer(question, observations, agent=agent, ctx=ctx)
+        answer = guard_answer(answer)
         yield {"type": "token", "text": answer, "agent": agent}
 
     yield {

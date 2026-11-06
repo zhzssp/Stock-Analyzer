@@ -27,6 +27,10 @@ API_HINTS = ("接口", "实时", "实盘", "查一下", "按代码")
 ACTION_HINTS = ("该不该", "减仓", "买入", "买区", "决策卡", "成本", "作废", "持有逻辑")
 REVIEW_HINTS = ("复盘", "次日", "假信号", "规则有效", "同向", "反向")
 RULE_HINTS = ("监控规则", "监控需求", "盯盘规则", "我的规则", "守则")
+DISCLOSURE_HINTS = ("公告", "问董秘", "董秘")
+NEWS_HINTS = ("资讯", "新闻", "快讯")
+POLICY_HINTS = ("产业政策", "政策")
+BREADTH_HINTS = ("龙虎榜",)
 RESEARCH_HINTS = research_hints()
 
 
@@ -120,6 +124,18 @@ def _dedicated_covers_fetch(resource: str, flags: dict[str, bool]) -> bool:
     return bool(flags.get(mapping.get(resource, "")))
 
 
+def _named_args(question: str, codes: list[str], insts) -> dict:
+    """资讯/政策按点到的股票检索；没点名就让工具走自选清单，不把整句问题当成必须命中的词。"""
+    args: dict = {"question": question}
+    if codes:
+        args["codes"] = codes
+    if insts:
+        first = insts[0]
+        args["code"] = getattr(first, "code6", "") or ""
+        args["name"] = getattr(first, "name", "") or ""
+    return args
+
+
 def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict] | None = None) -> list[dict]:
     extras = watch_instruments(ctx)
     insts = mentioned(question + " " + _history_text(ctx), ctx.market, extras)
@@ -147,6 +163,10 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
     wants_action = _has(question, ACTION_HINTS)
     wants_review = _has(question, REVIEW_HINTS)
     wants_rules = _has(question, RULE_HINTS)
+    wants_disclosure = _has(question, DISCLOSURE_HINTS)
+    wants_news = _has(question, NEWS_HINTS)
+    wants_policy = _has(question, POLICY_HINTS)
+    wants_breadth = _has(question, BREADTH_HINTS)
 
     if not any(
         (
@@ -170,6 +190,10 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
             wants_action,
             wants_review,
             wants_rules,
+            wants_disclosure,
+            wants_news,
+            wants_policy,
+            wants_breadth,
         )
     ):
         if insts:
@@ -255,6 +279,14 @@ def heuristic_plan(question: str, called: set[str], ctx, observations: list[dict
         add("capital_flow")
     if wants_events:
         add("corp_events")
+    if wants_disclosure:
+        add("corp_disclosure")
+    if wants_news:
+        add("web_finance_search", _named_args(question, codes, insts))
+    if wants_policy:
+        add("policy_news", _named_args(question, codes, insts))
+    if wants_breadth:
+        add("market_breadth", {"limit": 6})
     if wants_table:
         add("query_run")
     if wants_excel or wants_diff:
@@ -498,7 +530,18 @@ def _draft_lines(observations: list[dict]) -> list[str]:
                 names = "、".join(h.get("name") for h in hits if h.get("name")) or "未命中白名单"
                 lines.append(f"{row.get('name')} 活跃资金：{names}。")
         elif tool == "futures_map":
-            lines.append("关联期货仅有品种映射，尚未接入行情，不编价格。")
+            lines.append(_futures_map_line(data))
+        elif tool in {"web_finance_search", "policy_news"} and isinstance(data, list):
+            label = "资讯" if tool == "web_finance_search" else "产业政策"
+            if not data:
+                lines.append(f"{label}：已查已配置的检索源，没有命中。")
+            else:
+                bits = []
+                for row in data[:5]:
+                    title = row.get("title") or "无标题"
+                    url = row.get("url") or ""
+                    bits.append(f"{title} {url}".strip())
+                lines.append(f"{label}命中 {len(data)} 条：{'；'.join(bits)}。")
         elif tool == "export_share" and isinstance(data, list):
             for row in data:
                 lines.append(
@@ -648,6 +691,26 @@ def _draft_lines(observations: list[dict]) -> list[str]:
         else:
             lines.append(f"{obs.get('cite') or tool} 已返回数据。")
     return lines
+
+
+def _contract_names(rows: Any) -> str:
+    if not isinstance(rows, list):
+        return ""
+    return "、".join(str(c.get("name")) for c in rows if isinstance(c, dict) and c.get("name"))
+
+
+def _futures_map_line(data: Any) -> str:
+    if isinstance(data, list):
+        bits = []
+        for row in data:
+            names = _contract_names(row.get("contracts") if isinstance(row, dict) else None)
+            who = row.get("name") if isinstance(row, dict) else ""
+            bits.append(f"{who} 关联品种 {names or '无'}（无期货价格）")
+        return "；".join(bits) + "。"
+    if isinstance(data, dict):
+        names = _contract_names(data.get("contracts"))
+        return f"关联期货品种：{names or '无'}。没有期货价格。"
+    return "关联期货仅有品种映射，没有期货价格。"
 
 
 def _fmt(value: Any) -> str:

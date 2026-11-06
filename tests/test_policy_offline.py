@@ -17,6 +17,11 @@ def test_policies_load_from_yaml():
     assert "excel_parse" in analyst.tools
     assert "excel_parse" not in researcher.tools
     assert "query_run" not in researcher.tools
+    assert "web_finance_search" in analyst.tools
+    assert "policy_news" in analyst.tools
+    assert "market_breadth" in analyst.tools
+    assert "futures_quote" not in researcher.tools
+    assert "futures_map" in researcher.tools
     assert researcher.inject_today_queue is True
     assert analyst.inject_watch_hits is False
     assert "看市场" in research_hints()

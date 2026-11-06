@@ -47,6 +47,9 @@ _FALLBACK = {
             "corp_events",
             "corp_disclosure",
             "limit_review",
+            "market_breadth",
+            "web_finance_search",
+            "policy_news",
             "bottom",
             "taxonomy_lookup",
             "fund_holding",
@@ -76,7 +79,6 @@ _FALLBACK = {
             "market_fetch",
             "warehouse_get",
             "web_finance_search",
-            "futures_quote",
             "futures_map",
             "policy_news",
             "fund_holding",
@@ -118,23 +120,37 @@ def _from_dict(data: dict, fallback: AgentPolicy) -> AgentPolicy:
     )
 
 
-# 输出守门：这些表述一旦出现就加注记。以前 forbidden 只是写给模型看的文字，
-# 输出层面没有任何检查 —— 实测报告里已出现过一次「不该减仓」这类操作性判断。
+# 输出守门：这些是明确的买卖措辞。问答路径只查这一列，不把 YAML 里的「荐股」当子串，
+# 否则「不荐股」也会被误伤。前面紧挨着「不」的（如「不建议买入」）跳过。
 ADVICE_WORDS = (
     "建议买入", "建议卖出", "推荐买入", "推荐卖出",
-    "可以加仓", "可以满仓", "建议满仓", "建议清仓",
+    "可以买入", "可以卖出", "应该买入", "应该卖出",
+    "不该买入", "不该卖出",
+    "可以加仓", "建议加仓", "可以满仓", "建议满仓", "建议清仓", "应该清仓", "不该清仓",
+    "可以减仓", "建议减仓", "应该减仓", "不该减仓",
     "必涨", "稳赚", "包赚", "无风险",
 )
 
 
-def guard_answer(text: str, forbidden: tuple[str, ...] = ()) -> str:
-    """命中禁用表述时追加注记。
+def _phrase_hit(body: str, word: str) -> bool:
+    start = 0
+    while True:
+        idx = body.find(word, start)
+        if idx < 0:
+            return False
+        if idx == 0 or body[idx - 1] != "不":
+            return True
+        start = idx + len(word)
 
-    不删内容：误删会破坏正常回答，先做到「出现就有提示」，后续再收紧。
+
+def guard_answer(text: str, forbidden: tuple[str, ...] = ()) -> str:
+    """命中明确买卖措辞时追加注记。
+
+    不删内容。问答调用时不要传入 YAML 的 forbidden（「荐股」会命中「不荐股」）。
     """
     body = text or ""
-    hits = [w for w in ADVICE_WORDS if w in body]
-    hits += [w for w in (forbidden or ()) if w and w in body]
+    hits = [w for w in ADVICE_WORDS if _phrase_hit(body, w)]
+    hits += [w for w in (forbidden or ()) if w and _phrase_hit(body, w)]
     if not hits:
         return body
     words = "、".join(sorted(set(hits)))
