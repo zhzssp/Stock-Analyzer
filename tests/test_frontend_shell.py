@@ -191,7 +191,8 @@ def test_export_uses_the_open_copy_without_requery():
     export_fn = html.split("async function doExport", 1)[1].split("async function exportXlsx", 1)[0]
     assert "rows: slim" in export_fn
     assert "refresh_mode" not in export_fn
-    assert 'id="expAuto"' in html
+    assert 'id="expAutoFull"' in html
+    assert 'id="expAutoQuote"' in html
     assert 'id="expDayBlock"' in html
     assert "导出哪几天" in html
     assert "还没有按天留下的快照" in html
@@ -199,10 +200,11 @@ def test_export_uses_the_open_copy_without_requery():
     assert "snapshot_dates" in export_fn
     assert "刷新后自动导出" in html
     assert "function maybeAutoExport" in html
-    assert "sa_auto_export" in html
-    assert "maybeAutoExport()" in html
+    assert "sa_auto_export_full" in html
+    assert "sa_auto_export_quote" in html
     query_click = html.split('getElementById("queryBtn").addEventListener', 1)[1].split('getElementById("fullQueryBtn")', 1)[0]
-    assert "maybeAutoExport()" in query_click
+    assert query_click.index("autoExportFull") < query_click.index("runQuery")
+    assert 'maybeAutoExport("full", exportThis)' in query_click
 
 
 def test_workbench_picker_dialog_is_wide_and_short():
@@ -380,3 +382,31 @@ def test_both_exchanges_run_shenzhen_then_shanghai():
     click = html.split('getElementById("bothExBtn")', 1)[1].split("bothExStart", 1)[0]
     assert "stopBothExchanges" in click
     assert "openBothExchanges" in click
+
+
+def test_auto_export_is_split_between_full_and_quote():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert 'id="autoExportFull"' in html
+    assert 'id="autoExportQuote"' in html
+    assert "全量后导出" in html
+    assert "行情后导出" in html
+    prefs = html.split("function loadAutoExportPrefs", 1)[1].split("function toast", 1)[0]
+    assert 'localStorage.getItem("sa_auto_export")' in prefs
+    assert prefs.index("sa_auto_export_full") < prefs.index('getItem("sa_auto_export")')
+    refresh = html.split('getElementById("refreshBtn").addEventListener', 1)[1].split("exportBtn", 1)[0]
+    assert refresh.index("autoExportQuote") < refresh.index("runQuery")
+    assert 'maybeAutoExport("quote", exportThis)' in refresh
+    assert "autoExportFull" not in refresh
+    book = html.split("async function refreshBookQuotes(", 1)[1].split("async function runFullPool(", 1)[0]
+    assert book.index("autoExportQuote") < book.index("runQuery")
+    assert 'maybeAutoExport("quote", exportThis)' in book
+    walk = html.split("async function runFullPool(", 1)[1].split("const BOTH_EXCHANGES", 1)[0]
+    assert "const exportThis = !skipAutoExport && autoExportOn(exportKind)" in walk
+    assert walk.index("exportThis") < walk.index("while (listQueryCurrent")
+    both = html.split("async function runBothExchanges", 1)[1].split('getElementById("queryBtn")', 1)[0]
+    assert "exportThis: autoExportOn(exportKind)" in both
+    assert "run.exportThis" in both
+    stock = html.split('getElementById("stockView").addEventListener', 1)[1].split("stockAdd", 1)[0]
+    assert stock.index("autoExportFull") < stock.index("runQuery")
+    picked = html.split('getElementById("queryPicked").addEventListener', 1)[1].split("function kindLabel", 1)[0]
+    assert picked.index("autoExportFull") < picked.index("runQuery")

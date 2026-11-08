@@ -190,6 +190,11 @@
     .exp-opt .t { font-weight: 600; }
     .exp-opt .s { color: var(--muted); font-size: 12px; }
     .exp-opt.off { opacity: 0.5; cursor: not-allowed; }
+    .auto-exp {
+      display: inline-flex; align-items: center; gap: 4px;
+      margin: 0 2px; font-size: 12px; color: var(--muted); white-space: nowrap;
+    }
+    .auto-exp input { margin: 0; }
     .exp-confirm {
       margin-bottom: 12px; padding: 10px 12px; border-radius: 8px;
       background: #f4f7f6; border: 1px solid var(--line);
@@ -994,7 +999,9 @@
           <div class="toolbar">
             <button class="btn primary" id="queryBtn" type="button" data-action-peek="cache">查询</button>
             <button class="btn" id="refreshBtn" type="button" data-action-peek="quote">刷新行情</button>
+            <label class="auto-exp"><input type="checkbox" id="autoExportQuote" data-auto-export="quote" /><span data-help-tip="只对刷新行情生效。这一轮开始时记下。进行中再改，只影响下一轮。正常结束才写 Excel，中途停下或失败不写。">行情后导出</span></label>
             <button class="btn" id="fullQueryBtn" type="button" data-action-peek="full">全量更新</button>
+            <label class="auto-exp"><input type="checkbox" id="autoExportFull" data-auto-export="full" /><span data-help-tip="对查询、全量更新、单独查询、仅查询一次生效。这一轮开始时记下。进行中再改，只影响下一轮。正常结束才写 Excel，中途停下或失败不写。">全量后导出</span></label>
             <button class="btn" id="bothExBtn" type="button"><span data-help-tip="先做完深市全部，再做沪市全部。深市含创业板，沪市含科创。两市不会同时取数。">沪深全部</span></button>
             <button class="btn ghost" id="pagePickBtn" type="button" style="display:none" data-help-tip="打开页码。已经取完的页可以点开看，正在取的页会继续，不会停。">页码</button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
@@ -1447,8 +1454,12 @@
       <div class="exp-block">
         <div class="exp-label">刷新后自动导出</div>
         <label class="exp-opt">
-          <input type="checkbox" id="expAuto" />
-          <span class="t" data-help-tip="默认关着。打开后，查询、刷新行情、全量更新、单独查询、仅查询一次，在这一轮正常结束时各写一份新的 Excel。用「和屏幕上一样」的列，数字用当前打开的副本里已有的，不再重新查询。中途停下、失败、或被新的一轮取代，都不导出。">这一轮正常结束后自动写一份</span>
+          <input type="checkbox" id="expAutoFull" data-auto-export="full" />
+          <span><span class="t">全量后导出</span><br /><span class="s">查询、全量更新、单独查询、仅查询一次正常结束后各写一份。用屏幕上的列和已有数字，不再重新查询。</span></span>
+        </label>
+        <label class="exp-opt">
+          <input type="checkbox" id="expAutoQuote" data-auto-export="quote" />
+          <span><span class="t">行情后导出</span><br /><span class="s">刷新行情正常结束后写一份。进行中改勾选只影响下一轮。</span></span>
         </label>
       </div>
       <div class="exp-estimate" id="expEstimate"></div>
@@ -1476,7 +1487,7 @@
       </div>
       <label class="exp-opt">
         <input type="checkbox" id="bothExAuto" />
-        <span class="t" data-help-tip="和导出窗口里的「这一轮正常结束后自动写一份」是同一个开关。每一市全部完成后各写一份 Excel，再开始下一市。中途停下或某一页失败，不导出，也不开始下一市。">每一市正常结束后自动导出 Excel</span>
+        <span class="t" data-help-tip="跟着上面选的刷新方式。选全量更新时用「全量后导出」，选只刷新行情时用「行情后导出」。这里改勾选会记到对应的开关。这一轮开始时记下，两市都用这一下的选择。">按所选方式，每一市结束后导出 Excel</span>
       </label>
       <div class="pick-actions" style="margin-top:12px;">
         <button class="btn primary" id="bothExStart" type="button">开始</button>
@@ -1724,7 +1735,8 @@
       listFlightKey: "",
       listFlightGen: 0,
       exportBusy: false,
-      autoExportAfterRefresh: false,
+      autoExportFull: false,
+      autoExportQuote: false,
       bothRun: null,
       bothToken: 0,
       // 同时成立的提示各占一行：表的进度、整池、排序、补资料、Excel 导出。
@@ -1735,10 +1747,26 @@
       exportHintLabel: "",
     };
 
-    try {
-      state.autoExportAfterRefresh = localStorage.getItem("sa_auto_export") === "1";
-    } catch (err) {
-      state.autoExportAfterRefresh = false;
+    function autoExportOn(kind) {
+      return kind === "quote" ? !!state.autoExportQuote : !!state.autoExportFull;
+    }
+
+    function loadAutoExportPrefs() {
+      try {
+        let full = localStorage.getItem("sa_auto_export_full");
+        let quote = localStorage.getItem("sa_auto_export_quote");
+        if (full == null && quote == null && localStorage.getItem("sa_auto_export") === "1") {
+          full = "1";
+          quote = "1";
+          localStorage.setItem("sa_auto_export_full", "1");
+          localStorage.setItem("sa_auto_export_quote", "1");
+        }
+        state.autoExportFull = full === "1";
+        state.autoExportQuote = quote === "1";
+      } catch (err) {
+        state.autoExportFull = false;
+        state.autoExportQuote = false;
+      }
     }
 
     let toastTimer = 0;
@@ -4145,6 +4173,7 @@
     document.getElementById("stockView").addEventListener("click", async () => {
       const code = state.stockCode;
       if (!code) return;
+      const exportThis = !!state.autoExportFull;
       closeStock();
       // 临时代码查询：整只按列设置现网重拉。pool 是 codes，不会写成自选快照。
       try {
@@ -4155,7 +4184,7 @@
         return;
       }
       toast("已单独查询这一只，中间列表是实时结果");
-      await maybeAutoExport();
+      await maybeAutoExport("full", exportThis);
     });
     document.getElementById("stockAdd").addEventListener("click", async () => {
       const code = state.stockCode;
@@ -4301,8 +4330,7 @@
       document.getElementById("exportTitleMount").innerHTML = helpTip("把当前打开的副本写成 Excel 并下载。不向数据源再查。档案库每人只留最近 20 份。");
       mountHelpTips(document.getElementById("exportMask"));
       syncExportStart();
-      const autoBox = document.getElementById("expAuto");
-      if (autoBox) autoBox.checked = !!state.autoExportAfterRefresh;
+      syncAutoExportBoxes();
       document.querySelectorAll('input[name="expCols"]').forEach((el) => {
         el.addEventListener("change", () => {
           state.exportOpts.cols = el.value;
@@ -4396,21 +4424,41 @@
       toast(`${lead}，写入档案库并下载 ${data.filename}`);
     }
 
-    function rememberAutoExport(on) {
-      state.autoExportAfterRefresh = !!on;
+    function bothExMode() {
+      const picked = document.querySelector('input[name="bothExMode"]:checked');
+      return picked && picked.value === "quote" ? "quote" : "full";
+    }
+
+    function syncBothExAuto() {
+      const box = document.getElementById("bothExAuto");
+      if (!box) return;
+      const on = autoExportOn(bothExMode());
+      if (box.checked !== on) box.checked = on;
+    }
+
+    function syncAutoExportBoxes() {
+      document.querySelectorAll("[data-auto-export]").forEach((el) => {
+        const on = autoExportOn(el.getAttribute("data-auto-export"));
+        if (el.checked !== on) el.checked = on;
+      });
+      syncBothExAuto();
+    }
+
+    function rememberAutoExport(kind, on) {
+      const name = kind === "quote" ? "quote" : "full";
+      if (name === "quote") state.autoExportQuote = !!on;
+      else state.autoExportFull = !!on;
       try {
-        localStorage.setItem("sa_auto_export", state.autoExportAfterRefresh ? "1" : "0");
+        localStorage.setItem(name === "quote" ? "sa_auto_export_quote" : "sa_auto_export_full", on ? "1" : "0");
       } catch (err) {
         /* 这一页仍按勾选生效 */
       }
-      const exp = document.getElementById("expAuto");
-      const both = document.getElementById("bothExAuto");
-      if (exp && exp.checked !== state.autoExportAfterRefresh) exp.checked = state.autoExportAfterRefresh;
-      if (both && both.checked !== state.autoExportAfterRefresh) both.checked = state.autoExportAfterRefresh;
+      syncAutoExportBoxes();
     }
 
-    async function maybeAutoExport() {
-      if (!state.autoExportAfterRefresh) return false;
+    async function maybeAutoExport(kind, captured) {
+      const allow = typeof captured === "boolean" ? captured : autoExportOn(kind);
+      if (!allow) return false;
       if (state.exportBusy) {
         patchStatus({ export: "已经有一份导出在进行" });
         return false;
@@ -5152,6 +5200,7 @@
         toast("这一轮还在进行");
         return;
       }
+      const exportThis = !!state.autoExportQuote;
       const gen = supersedeListQuery();
       book.fetching = -1;
       book.quoting = true;
@@ -5199,7 +5248,7 @@
           pool: resumeStatusLine(resumeNote, false),
         });
         syncSortLine();
-        await maybeAutoExport();
+        await maybeAutoExport("quote", exportThis);
       } catch (err) {
         if (isQueryAbort(err) || !listQueryCurrent(gen)) return;
         patchStatus({ table: `刷新行情 · ${state.poolLabel || ""} · 现价没有更新完` });
@@ -5229,6 +5278,8 @@
       const mode = opts && opts.mode === "quote" ? "quote" : "full";
       const skipAutoExport = Boolean(opts && opts.skipAutoExport);
       const both = Boolean(opts && opts.both);
+      const exportKind = mode === "quote" ? "quote" : "full";
+      const exportThis = !skipAutoExport && autoExportOn(exportKind);
       clearDateBox();
       const key = listFlightKeyFor(mode, null);
       if (sameListFlight(key)) {
@@ -5409,7 +5460,7 @@
               pool: "",
               sort: state.sortKey ? "排序只排这一页" : "",
             });
-            if (!skipAutoExport) await maybeAutoExport();
+            if (exportThis) await maybeAutoExport(exportKind, true);
             outcome = "done";
             break;
           }
@@ -5479,8 +5530,7 @@
     }
 
     function openBothExchanges() {
-      const box = document.getElementById("bothExAuto");
-      if (box) box.checked = !!state.autoExportAfterRefresh;
+      syncBothExAuto();
       const mask = document.getElementById("bothExMask");
       if (mask) mask.style.display = "flex";
       mountHelpTips(mask);
@@ -5498,9 +5548,11 @@
       }
       const token = (state.bothToken || 0) + 1;
       state.bothToken = token;
+      const exportKind = mode === "quote" ? "quote" : "full";
       state.bothRun = {
         token,
-        mode: mode === "quote" ? "quote" : "full",
+        mode: exportKind,
+        exportThis: autoExportOn(exportKind),
         step: 1,
         label: "深市全部",
         stop: false,
@@ -5525,9 +5577,9 @@
           const outcome = await runFullPool({ mode: run.mode, skipAutoExport: true, both: true });
           if (!state.bothRun || state.bothRun.token !== token || state.bothRun.stop || state.bothRun.quiet) return;
           if (outcome !== "done") return;
-          if (!state.autoExportAfterRefresh) continue;
+          if (!run.exportThis) continue;
           patchStatus({ table: `沪深全部 · ${item.label}已完成 · 正在导出 Excel`, pool: "" });
-          const exported = await maybeAutoExport();
+          const exported = await maybeAutoExport(run.mode, true);
           if (!state.bothRun || state.bothRun.token !== token || state.bothRun.stop || state.bothRun.quiet) return;
           if (!exported) {
             const tail = i === 0 ? "，沪市还没开始" : "";
@@ -5544,11 +5596,12 @@
       }
     }
 
-    document.getElementById("queryBtn").addEventListener("click", () =>
+    document.getElementById("queryBtn").addEventListener("click", () => {
+      const exportThis = !!state.autoExportFull;
       runQuery(null, { refreshMode: "cache", forceLive: false, stream: true })
-        .then(() => maybeAutoExport())
-        .catch(toastQueryError)
-    );
+        .then(() => maybeAutoExport("full", exportThis))
+        .catch(toastQueryError);
+    });
     document.getElementById("fullQueryBtn").addEventListener("click", () =>
       runFullPool().catch(toastQueryError)
     );
@@ -5563,19 +5616,30 @@
       const picked = document.querySelector('input[name="bothExMode"]:checked');
       const mode = picked && picked.value === "quote" ? "quote" : "full";
       const auto = document.getElementById("bothExAuto");
-      if (auto) rememberAutoExport(auto.checked);
+      if (auto) rememberAutoExport(mode, auto.checked);
       closeBothExchanges();
       runBothExchanges(mode).catch(toastQueryError);
     });
     document.getElementById("bothExCancel").addEventListener("click", closeBothExchanges);
     document.getElementById("bothExAuto").addEventListener("change", () => {
-      rememberAutoExport(document.getElementById("bothExAuto").checked);
+      rememberAutoExport(bothExMode(), document.getElementById("bothExAuto").checked);
     });
+    document.querySelectorAll('input[name="bothExMode"]').forEach((el) => {
+      el.addEventListener("change", syncBothExAuto);
+    });
+    document.querySelectorAll("[data-auto-export]").forEach((el) => {
+      el.addEventListener("change", () => {
+        rememberAutoExport(el.getAttribute("data-auto-export"), el.checked);
+      });
+    });
+    loadAutoExportPrefs();
+    syncAutoExportBoxes();
     document.getElementById("bothExMask").addEventListener("click", (e) => {
       if (e.target.id === "bothExMask") closeBothExchanges();
     });
     document.getElementById("xDate").addEventListener("change", onDateBoxChange);
     document.getElementById("refreshBtn").addEventListener("click", async () => {
+      const exportThis = !!state.autoExportQuote;
       clearDateBox();
       const book = state.pageBook;
       if (book && (book.pages || []).some((page) => page && page.length)) {
@@ -5616,7 +5680,7 @@
       // 整板只更新现价。慢字段补齐只留给自选、筛选这种已经收在一页里的表，避免再开 0/N 的后台任务。
       if ((state.rowsRaw || []).length > PAGE_LIMIT && !(codes && codes.length)) {
         if (quoteErr) toastQueryError(quoteErr);
-        else await maybeAutoExport();
+        else await maybeAutoExport("quote", exportThis);
         return;
       }
       let wanted = (state.fields || []).map((f) => f.key);
@@ -5629,13 +5693,13 @@
       if (!listQueryCurrent(gen)) return;
       if (!slowFieldsMostlyEmpty(wanted)) {
         if (quoteErr) toastQueryError(quoteErr);
-        else await maybeAutoExport();
+        else await maybeAutoExport("quote", exportThis);
         return;
       }
       try {
         await runQuery(codes, { refreshMode: "cache", forceLive: false, stream: true, limit: PAGE_LIMIT, gen, statusRole: "extra" });
         if (quoteErr) toastQueryError(quoteErr);
-        else await maybeAutoExport();
+        else await maybeAutoExport("quote", exportThis);
       } catch (e) {
         if (stopped(e)) return;
         toastQueryError(quoteErr || e);
@@ -5663,9 +5727,6 @@
       } finally {
         markExportBusy(false);
       }
-    });
-    document.getElementById("expAuto").addEventListener("change", () => {
-      rememberAutoExport(document.getElementById("expAuto").checked);
     });
     document.getElementById("expCancel").addEventListener("click", closeExport);
     document.getElementById("exportMask").addEventListener("click", (e) => {
@@ -6427,11 +6488,12 @@
     document.getElementById("queryPicked").addEventListener("click", async () => {
       const codes = selectedPickCodes();
       if (!codes.length) return toast("先勾选股票");
+      const exportThis = !!state.autoExportFull;
       try {
         await runQuery(codes, { refreshMode: "full", forceLive: true, saveCopy: false });
         closePicker();
         toast("已按筛选结果查询，未改自选。导出 Excel 会导出这一批。");
-        await maybeAutoExport();
+        await maybeAutoExport("full", exportThis);
       } catch (err) {
         if (isQueryAbort(err)) return;
         toast(err.message);
