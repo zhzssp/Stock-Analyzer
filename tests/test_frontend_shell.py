@@ -322,7 +322,7 @@ def test_full_update_walks_pages_from_a_popup():
     query_btn = html.split('getElementById("queryBtn")', 1)[1].split("fullQueryBtn", 1)[0]
     assert "runQuery(" in query_btn
     assert "runFullPool" not in query_btn
-    walk = html.split("async function runFullPool()", 1)[1].split('getElementById("queryBtn")', 1)[0]
+    walk = html.split("async function runFullPool(", 1)[1].split('getElementById("queryBtn")', 1)[0]
     assert "PAGE_LIMIT" in walk
     assert "pageCapture: true" in walk
     assert "这一页没有取到股票" in walk
@@ -339,12 +339,13 @@ def test_full_update_walks_pages_from_a_popup():
 
 def test_refresh_buttons_resume_an_open_run():
     html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
-    walk = html.split("async function runFullPool()", 1)[1].split('getElementById("queryBtn")', 1)[0]
-    assert "/query/resume?mode=full" in walk
+    walk = html.split("async function runFullPool(", 1)[1].split('getElementById("queryBtn")', 1)[0]
+    assert "/query/resume?mode=" in walk
+    assert 'mode === "quote" ? "quote" : "full"' in walk
     assert "resume: true" in walk
-    assert "已停下，再点全量更新会从这里继续" in walk
+    assert "再点全量更新会从这里继续" in walk
     assert "code_order" in html
-    book = html.split("async function refreshBookQuotes(", 1)[1].split("async function runFullPool()", 1)[0]
+    book = html.split("async function refreshBookQuotes(", 1)[1].split("async function runFullPool(", 1)[0]
     assert "resume: true" in book
     refresh = html.split('getElementById("refreshBtn")', 1)[1].split("exportBtn", 1)[0]
     assert "resume:" in refresh
@@ -352,3 +353,30 @@ def test_refresh_buttons_resume_an_open_run():
     assert "resume:" not in slow
     query = html.split('getElementById("queryBtn")', 1)[1].split("fullQueryBtn", 1)[0]
     assert "resume:" not in query
+
+
+def test_both_exchanges_run_shenzhen_then_shanghai():
+    html = Path("docs/frontend/index.html").read_text(encoding="utf-8")
+    assert html.count('id="bothExBtn"') == 1
+    assert 'id="bothExMask"' in html
+    assert 'id="bothExAuto"' in html
+    assert 'name="bothExMode" value="full"' in html
+    assert 'name="bothExMode" value="quote"' in html
+    assert "先做完深市全部，再做沪市全部" in html
+    seq = html.split("const BOTH_EXCHANGES", 1)[1].split("async function runBothExchanges", 1)[0]
+    assert seq.index("exchange:sz") < seq.index("exchange:sh")
+    run = html.split("async function runBothExchanges", 1)[1].split('getElementById("queryBtn")', 1)[0]
+    assert "BOTH_EXCHANGES" in run
+    assert run.index("focusExchange") < run.index("runFullPool")
+    assert run.index("runFullPool") < run.index("maybeAutoExport")
+    assert "skipAutoExport: true" in run
+    assert "maybeAutoExport" in run
+    assert "沪市还没开始" in run
+    assert "两市都已完成" in run
+    assert "停止沪深" in html
+    walk = html.split("async function runFullPool(", 1)[1].split("const BOTH_EXCHANGES", 1)[0]
+    assert "overlayQuoteRows" in walk
+    assert 'refreshMode: mode' in walk
+    click = html.split('getElementById("bothExBtn")', 1)[1].split("bothExStart", 1)[0]
+    assert "stopBothExchanges" in click
+    assert "openBothExchanges" in click

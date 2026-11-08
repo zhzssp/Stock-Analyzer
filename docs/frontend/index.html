@@ -995,6 +995,7 @@
             <button class="btn primary" id="queryBtn" type="button" data-action-peek="cache">查询</button>
             <button class="btn" id="refreshBtn" type="button" data-action-peek="quote">刷新行情</button>
             <button class="btn" id="fullQueryBtn" type="button" data-action-peek="full">全量更新</button>
+            <button class="btn" id="bothExBtn" type="button"><span data-help-tip="先做完深市全部，再做沪市全部。深市含创业板，沪市含科创。两市不会同时取数。">沪深全部</span></button>
             <button class="btn ghost" id="pagePickBtn" type="button" style="display:none" data-help-tip="打开页码。已经取完的页可以点开看，正在取的页会继续，不会停。">页码</button>
             <button class="btn" id="exportBtn" type="button">导出 Excel</button>
             <button class="btn ghost" id="colBtn" type="button">列设置</button>
@@ -1458,6 +1459,31 @@
       </div>
     </div>
   </div>
+  <div class="login-mask" id="bothExMask" style="display:none;">
+    <div class="login-card page-card">
+      <h2>沪深全部</h2>
+      <p class="hint">先做完深市全部，再做沪市全部。两市不会同时取数。深市含创业板，沪市含科创。</p>
+      <div class="exp-label">刷新方式</div>
+      <div class="exp-opts">
+        <label class="exp-opt">
+          <input type="radio" name="bothExMode" value="full" checked />
+          <span><span class="t">全量更新</span><br /><span class="s">按当前列重新向数据源要，每页 100 只。已经取完的页可以从页码打开。</span></span>
+        </label>
+        <label class="exp-opt">
+          <input type="radio" name="bothExMode" value="quote" />
+          <span><span class="t">只刷新行情</span><br /><span class="s">也按每页 100 只走完这一市。只更新现价、涨跌等行情列，行业、股东、财务保持原样。</span></span>
+        </label>
+      </div>
+      <label class="exp-opt">
+        <input type="checkbox" id="bothExAuto" />
+        <span class="t" data-help-tip="和导出窗口里的「这一轮正常结束后自动写一份」是同一个开关。每一市全部完成后各写一份 Excel，再开始下一市。中途停下或某一页失败，不导出，也不开始下一市。">每一市正常结束后自动导出 Excel</span>
+      </label>
+      <div class="pick-actions" style="margin-top:12px;">
+        <button class="btn primary" id="bothExStart" type="button">开始</button>
+        <button class="btn ghost" id="bothExCancel" type="button">取消</button>
+      </div>
+    </div>
+  </div>
   <div class="login-mask" id="pagePickMask" style="display:none;">
     <div class="login-card page-card">
       <h2>选择页码</h2>
@@ -1699,6 +1725,8 @@
       listFlightGen: 0,
       exportBusy: false,
       autoExportAfterRefresh: false,
+      bothRun: null,
+      bothToken: 0,
       // 同时成立的提示各占一行：表的进度、整池、排序、补资料、Excel 导出。
       statusLines: { table: "尚未查询", pool: "", sort: "", extra: "", export: "" },
       statusAction: "查询",
@@ -2962,6 +2990,11 @@
     }
 
     function statusHead() {
+      const run = state.bothRun;
+      if (run && run.active && !run.stop) {
+        const action = run.mode === "quote" ? "刷新行情" : "全量更新";
+        return `沪深全部 · ${run.step}/2 ${run.label} · ${action}`;
+      }
       const action = state.statusAction || "查询";
       const pool = state.statusPool || state.poolLabel || "";
       return pool ? `${action} · ${pool}` : action;
@@ -3386,6 +3419,11 @@
 
     // 新的一轮开始：旧流式请求断开，旧后台任务取消。之后只有这一轮可以改进度提示。
     function supersedeListQuery() {
+      const run = state.bothRun;
+      if (run && !run.arming) {
+        run.stop = true;
+        run.quiet = true;
+      }
       state.queryGen = (state.queryGen || 0) + 1;
       if (state.streamAbort) {
         try { state.streamAbort.abort(); } catch (err) { /* 流已经结束 */ }
@@ -4358,24 +4396,39 @@
       toast(`${lead}，写入档案库并下载 ${data.filename}`);
     }
 
+    function rememberAutoExport(on) {
+      state.autoExportAfterRefresh = !!on;
+      try {
+        localStorage.setItem("sa_auto_export", state.autoExportAfterRefresh ? "1" : "0");
+      } catch (err) {
+        /* 这一页仍按勾选生效 */
+      }
+      const exp = document.getElementById("expAuto");
+      const both = document.getElementById("bothExAuto");
+      if (exp && exp.checked !== state.autoExportAfterRefresh) exp.checked = state.autoExportAfterRefresh;
+      if (both && both.checked !== state.autoExportAfterRefresh) both.checked = state.autoExportAfterRefresh;
+    }
+
     async function maybeAutoExport() {
-      if (!state.autoExportAfterRefresh) return;
+      if (!state.autoExportAfterRefresh) return false;
       if (state.exportBusy) {
         patchStatus({ export: "已经有一份导出在进行" });
-        return;
+        return false;
       }
-      if (!openCopyRows().length) return;
+      if (!openCopyRows().length) return false;
       const prev = state.exportOpts;
       state.exportOpts = { cols: "current" };
       markExportBusy(true);
       try {
         await doExport({ auto: true });
+        return true;
       } catch (err) {
         const msg = (err && err.message) || "导出失败";
         patchStatus({
           export: msg.indexOf("已经有一份导出在进行") >= 0 ? "已经有一份导出在进行" : "Excel表格导出没有完成",
         });
         toast(msg);
+        return false;
       } finally {
         state.exportOpts = prev;
         markExportBusy(false);
@@ -5158,29 +5211,48 @@
       }
     }
 
-    async function runFullPool() {
+    function overlayQuoteRows(rows, snapBy) {
+      if (!snapBy) return rows || [];
+      return (rows || []).map((neu) => {
+        const old = neu && snapBy.get(neu.code6);
+        if (!old) return neu;
+        const out = Object.assign({}, old);
+        Object.entries(neu).forEach(([k, v]) => {
+          if (v == null || v === "") return;
+          if (QUOTE_FIELD_KEYS.has(k) || k === "code6" || k === "code" || k === "name") out[k] = v;
+        });
+        return out;
+      });
+    }
+
+    async function runFullPool(opts) {
+      const mode = opts && opts.mode === "quote" ? "quote" : "full";
+      const skipAutoExport = Boolean(opts && opts.skipAutoExport);
+      const both = Boolean(opts && opts.both);
       clearDateBox();
-      const key = listFlightKeyFor("full", null);
+      const key = listFlightKeyFor(mode, null);
       if (sameListFlight(key)) {
         toast("这一轮还在进行");
-        return;
+        return "busy";
       }
+      if (both && state.bothRun) state.bothRun.arming = true;
       const gen = supersedeListQuery();
+      if (both && state.bothRun) state.bothRun.arming = false;
       armListFlight(key, gen);
-      state.statusAction = "全量更新";
+      state.statusAction = mode === "quote" ? "刷新行情" : "全量更新";
       state.statusPool = state.poolLabel || "自选";
       state.statusRole = "table";
       let prior = null;
       try {
         prior = await api(
-          "/query/resume?mode=full&pool=" + encodeURIComponent(state.pool) + "&page_size=" + PAGE_LIMIT
+          "/query/resume?mode=" + mode + "&pool=" + encodeURIComponent(state.pool) + "&page_size=" + PAGE_LIMIT
         );
       } catch (err) {
         prior = null;
       }
       if (!listQueryCurrent(gen)) {
         releaseListFlight(gen);
-        return;
+        return "stopped";
       }
       const resuming = Boolean(prior && prior.status === "open");
       const book = {
@@ -5221,13 +5293,35 @@
       closePagePicker();
       renderPagePickerButton();
       book.pageClock = { t0: performance.now(), done: 0 };
+      let snapBy = null;
+      let outcome = "stopped";
       try {
+        if (mode === "quote") {
+          patchStatus({ table: `${statusHead()} · 正在打开已有副本`, pool: "" });
+          try {
+            const snap = await api("/query/snapshot?pool=" + encodeURIComponent(state.pool));
+            snapBy = new Map();
+            ((snap && snap.rows) || []).forEach((row) => {
+              if (row && row.code6) snapBy.set(row.code6, row);
+            });
+          } catch (err) {
+            snapBy = null;
+          }
+          if (!listQueryCurrent(gen) || (state.bothRun && state.bothRun.stop)) return "stopped";
+          if (snapBy) {
+            for (let i = 0; i < book.pages.length; i += 1) {
+              if (book.pages[i] && book.pages[i].length) book.pages[i] = overlayQuoteRows(book.pages[i], snapBy);
+            }
+            if (book.pages[0] && book.pages[0].length) showBookPage(book, 0);
+          }
+        }
         while (listQueryCurrent(gen) && state.pageBook === book) {
           const idx = Math.floor(offset / PAGE_LIMIT);
           if (idx > 99) {
             book.failed = "页数过多，已停在这里";
             book.fetching = -1;
             patchStatus({ table: `${statusHead()} · ${book.failed}` });
+            outcome = "failed";
             break;
           }
           book.fetching = idx;
@@ -5237,8 +5331,8 @@
           if (mask && mask.style.display === "flex") fillPagePicker();
           try {
             await runQuery(null, {
-              refreshMode: "full",
-              forceLive: true,
+              refreshMode: mode,
+              forceLive: mode === "full",
               stream: true,
               limit: PAGE_LIMIT,
               offset,
@@ -5253,41 +5347,49 @@
             if (ownBook) {
               const partial = takeCaptureRows();
               if (partial.length) {
-                book.pages[idx] = partial;
+                book.pages[idx] = mode === "quote" ? overlayQuoteRows(partial, snapBy) : partial;
                 const showing = book.pages[book.view] && book.pages[book.view].length;
                 if (book.view === idx || !showing) showBookPage(book, book.view === idx ? idx : 0);
               }
             }
             if (!listQueryCurrent(gen) || isQueryAbort(err) || !ownBook) {
-              if (ownBook) {
+              if (ownBook && !(state.bothRun && state.bothRun.stop)) {
                 book.fetching = -1;
                 book.failed = "";
-                patchStatus({ table: `${statusHead()} · 已停下，再点全量更新会从这里继续` });
+                const again = mode === "quote" ? "再点刷新行情会从这里继续" : "再点全量更新会从这里继续";
+                patchStatus({ table: `${statusHead()} · 已停下，${again}` });
+              } else if (ownBook) {
+                book.fetching = -1;
+                book.failed = "";
               }
-              return;
+              return "stopped";
             }
             book.failed = (err && err.message) || "这一页没有完成";
             book.fetching = -1;
             patchStatus({ table: `${statusHead()} · 停在第 ${idx + 1} 页 · ${book.failed}` });
+            outcome = "failed";
             break;
           }
           if (!listQueryCurrent(gen) || state.pageBook !== book) {
             if (state.pageBook === book && state.pageCaptureResult && (state.pageCaptureResult.rows || []).length) {
-              book.pages[idx] = state.pageCaptureResult.rows;
+              const kept = state.pageCaptureResult.rows;
+              book.pages[idx] = mode === "quote" ? overlayQuoteRows(kept, snapBy) : kept;
             }
-            return;
+            return "stopped";
           }
           const got = state.pageCaptureResult || { rows: [] };
           if (got.resume && got.resume.reason) book.resumeNote = got.resume.reason;
           if (got.fields && got.fields.length) book.fields = got.fields;
           if (got.total && (!book.total || got.total > book.total)) book.total = got.total;
-          const rows = got.rows || [];
-          if (!rows.length) {
+          const rawRows = got.rows || [];
+          if (!rawRows.length) {
             book.failed = "这一页没有取到股票";
             book.fetching = -1;
             patchStatus({ table: `${statusHead()} · 第 ${idx + 1} 页没有取到股票` });
+            outcome = "failed";
             break;
           }
+          const rows = mode === "quote" ? overlayQuoteRows(rawRows, snapBy) : rawRows;
           book.pages[idx] = rows;
           if (book.pageClock) book.pageClock.done += 1;
           if (idx === 0) showBookPage(book, 0);
@@ -5307,7 +5409,8 @@
               pool: "",
               sort: state.sortKey ? "排序只排这一页" : "",
             });
-            await maybeAutoExport();
+            if (!skipAutoExport) await maybeAutoExport();
+            outcome = "done";
             break;
           }
           offset += PAGE_LIMIT;
@@ -5321,6 +5424,124 @@
         const mask = document.getElementById("pagePickMask");
         if (mask && mask.style.display === "flex" && state.pageBook === book) fillPagePicker();
       }
+      return outcome;
+    }
+
+    const BOTH_EXCHANGES = [
+      { id: "exchange:sz", label: "深市全部" },
+      { id: "exchange:sh", label: "沪市全部" },
+    ];
+
+    function syncBothExButton() {
+      const btn = document.getElementById("bothExBtn");
+      if (!btn) return;
+      const on = !!(state.bothRun && state.bothRun.active && !state.bothRun.stop);
+      const label = on ? "停止沪深" : "沪深全部";
+      const span = btn.querySelector("span");
+      if (span) span.textContent = label;
+      else btn.textContent = label;
+    }
+
+    function stopBothExchanges() {
+      const run = state.bothRun;
+      if (!run || run.stop) return;
+      const next = run.step === 1 ? "，沪市还没开始" : "";
+      run.stop = true;
+      run.quiet = true;
+      run.arming = true;
+      supersedeListQuery();
+      run.arming = false;
+      patchStatus({ table: `沪深全部已停下${next}`, pool: "" });
+      syncBothExButton();
+    }
+
+    async function focusExchange(poolId, label) {
+      clearDateBox();
+      if (state.side !== "exchange") setSide("exchange");
+      state.pool = poolId;
+      state.poolPage = 1;
+      state.sortKey = "pct";
+      state.sortDir = "desc";
+      renderPoolChips(state.pools);
+      updateExportScope(label);
+      let data = null;
+      try {
+        data = await api("/markets/pools/" + encodeURIComponent(poolId) + "/instruments");
+      } catch (err) {
+        toast((err && err.message) || "名单没有打开");
+        return false;
+      }
+      if (state.pool !== poolId || (state.bothRun && state.bothRun.stop)) return false;
+      renderPoolList(data.items || []);
+      setPoolHint(poolHintText("exchange", data));
+      if (data.label) updateExportScope(data.label);
+      return true;
+    }
+
+    function openBothExchanges() {
+      const box = document.getElementById("bothExAuto");
+      if (box) box.checked = !!state.autoExportAfterRefresh;
+      const mask = document.getElementById("bothExMask");
+      if (mask) mask.style.display = "flex";
+      mountHelpTips(mask);
+    }
+
+    function closeBothExchanges() {
+      const mask = document.getElementById("bothExMask");
+      if (mask) mask.style.display = "none";
+    }
+
+    async function runBothExchanges(mode) {
+      if (state.listFlightOn || (state.bothRun && state.bothRun.active && !state.bothRun.stop)) {
+        toast("这一轮还在进行");
+        return;
+      }
+      const token = (state.bothToken || 0) + 1;
+      state.bothToken = token;
+      state.bothRun = {
+        token,
+        mode: mode === "quote" ? "quote" : "full",
+        step: 1,
+        label: "深市全部",
+        stop: false,
+        quiet: false,
+        arming: false,
+        active: true,
+      };
+      syncBothExButton();
+      try {
+        for (let i = 0; i < BOTH_EXCHANGES.length; i += 1) {
+          const item = BOTH_EXCHANGES[i];
+          const run = state.bothRun;
+          if (!run || run.token !== token || run.stop) return;
+          run.step = i + 1;
+          run.label = item.label;
+          const ready = await focusExchange(item.id, item.label);
+          if (!state.bothRun || state.bothRun.token !== token || state.bothRun.stop || state.bothRun.quiet) return;
+          if (!ready) {
+            patchStatus({ table: `沪深全部 · ${item.label}的名单没有打开` });
+            return;
+          }
+          const outcome = await runFullPool({ mode: run.mode, skipAutoExport: true, both: true });
+          if (!state.bothRun || state.bothRun.token !== token || state.bothRun.stop || state.bothRun.quiet) return;
+          if (outcome !== "done") return;
+          if (!state.autoExportAfterRefresh) continue;
+          patchStatus({ table: `沪深全部 · ${item.label}已完成 · 正在导出 Excel`, pool: "" });
+          const exported = await maybeAutoExport();
+          if (!state.bothRun || state.bothRun.token !== token || state.bothRun.stop || state.bothRun.quiet) return;
+          if (!exported) {
+            const tail = i === 0 ? "，沪市还没开始" : "";
+            patchStatus({ table: `沪深全部 · ${item.label}已刷新，导出没有完成${tail}` });
+            return;
+          }
+        }
+        if (state.bothRun && state.bothRun.token === token && !state.bothRun.stop) {
+          patchStatus({ table: "沪深全部 · 两市都已完成", pool: "" });
+        }
+      } finally {
+        if (state.bothRun && state.bothRun.token === token) state.bothRun = null;
+        syncBothExButton();
+      }
     }
 
     document.getElementById("queryBtn").addEventListener("click", () =>
@@ -5331,6 +5552,28 @@
     document.getElementById("fullQueryBtn").addEventListener("click", () =>
       runFullPool().catch(toastQueryError)
     );
+    document.getElementById("bothExBtn").addEventListener("click", () => {
+      if (state.bothRun && state.bothRun.active && !state.bothRun.stop) {
+        stopBothExchanges();
+        return;
+      }
+      openBothExchanges();
+    });
+    document.getElementById("bothExStart").addEventListener("click", () => {
+      const picked = document.querySelector('input[name="bothExMode"]:checked');
+      const mode = picked && picked.value === "quote" ? "quote" : "full";
+      const auto = document.getElementById("bothExAuto");
+      if (auto) rememberAutoExport(auto.checked);
+      closeBothExchanges();
+      runBothExchanges(mode).catch(toastQueryError);
+    });
+    document.getElementById("bothExCancel").addEventListener("click", closeBothExchanges);
+    document.getElementById("bothExAuto").addEventListener("change", () => {
+      rememberAutoExport(document.getElementById("bothExAuto").checked);
+    });
+    document.getElementById("bothExMask").addEventListener("click", (e) => {
+      if (e.target.id === "bothExMask") closeBothExchanges();
+    });
     document.getElementById("xDate").addEventListener("change", onDateBoxChange);
     document.getElementById("refreshBtn").addEventListener("click", async () => {
       clearDateBox();
@@ -5422,12 +5665,7 @@
       }
     });
     document.getElementById("expAuto").addEventListener("change", () => {
-      state.autoExportAfterRefresh = document.getElementById("expAuto").checked;
-      try {
-        localStorage.setItem("sa_auto_export", state.autoExportAfterRefresh ? "1" : "0");
-      } catch (err) {
-        /* 这一页仍按勾选生效 */
-      }
+      rememberAutoExport(document.getElementById("expAuto").checked);
     });
     document.getElementById("expCancel").addEventListener("click", closeExport);
     document.getElementById("exportMask").addEventListener("click", (e) => {
